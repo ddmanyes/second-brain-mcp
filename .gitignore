@@ -1,0 +1,13 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+uv.lock
+
+# IDE
+.DS_Store
+pyrightconfig.json
+
+# Runtime data (local only, not synced)
+# vault.db lives in ~/.second-brain/ — already outside this repo
