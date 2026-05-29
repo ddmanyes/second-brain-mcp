@@ -1,13 +1,13 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.ddmanyes/second-brain-mcp",
+  "name": "io.github.ddmanyes/mcp-second-brain",
   "title": "second-brain MCP",
   "description": "Self-maintaining personal knowledge database. Saves any article/PDF in one command, OCRs every figure with Claude Vision, builds a semantic index with auto-wikilinks, and compresses old notes while you sleep — all queryable via 19 MCP tools.",
   "version": "0.1.0",
   "packages": [
     {
       "registryType": "pypi",
-      "identifier": "second-brain-mcp",
+      "identifier": "mcp-second-brain",
       "version": "0.1.0",
       "transport": {
         "type": "stdio"

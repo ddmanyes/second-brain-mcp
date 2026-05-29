@@ -1,6 +1,6 @@
 # second-brain MCP Server
 
-<!-- mcp-name: io.github.ddmanyes/second-brain-mcp -->
+<!-- mcp-name: io.github.ddmanyes/mcp-second-brain -->
 
 **A self-maintaining personal knowledge database — powered by MCP, DuckDB, and biological memory models.**
 

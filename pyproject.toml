@@ -1,5 +1,5 @@
 [project]
-name = "second-brain-mcp"
+name = "mcp-second-brain"
 version = "0.1.0"
 description = "Self-maintaining personal knowledge database — MCP server with figure-level search, auto-wikilinks, and Ebbinghaus-based memory compression"
 readme = "README.md"
@@ -34,6 +34,7 @@ Repository = "https://github.com/ddmanyes/second-brain-mcp"
 
 [dependency-groups]
 dev = [
+    "hatchling>=1.29.0",
     "pytest>=9.0.3",
 ]
 
