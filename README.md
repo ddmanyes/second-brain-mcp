@@ -1,10 +1,16 @@
 # second-brain MCP Server
 
-> Turn any URL, PDF, or note into a searchable knowledge database — with figure OCR, semantic search, and memory that compresses itself while you sleep.
+**A self-maintaining personal knowledge database — powered by MCP, DuckDB, and biological memory models.**
 
-![Tests](https://img.shields.io/badge/tests-115%20passed-brightgreen)
-![Python](https://img.shields.io/badge/python-3.11%2B-blue)
-![License](https://img.shields.io/badge/license-MIT-lightgrey)
+> **Language:** English · [中文版](README_zh.md)
+
+Turn any URL, PDF, or note into a searchable knowledge database — with figure OCR, semantic search, and memory that compresses itself while you sleep.
+
+[![Tests](https://img.shields.io/badge/tests-115%20passed-brightgreen)](https://github.com/ddmanyes/second-brain-mcp/actions)
+[![Python ≥ 3.11](https://img.shields.io/badge/Python-%E2%89%A53.11-blue)](https://www.python.org/)
+[![DuckDB](https://img.shields.io/badge/DuckDB-1.1%2B-yellow)](https://duckdb.org/)
+[![MCP](https://img.shields.io/badge/MCP-stdio-green)](https://modelcontextprotocol.io/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-lightgrey)](LICENSE)
 
 ---
 
@@ -379,6 +385,12 @@ uv run python benchmark.py --quick --markdown   # search latency + accuracy
 
 ---
 
+## Contributing
+
+PRs and Issues welcome. Please open an issue first to discuss significant changes.
+
+---
+
 ## License
 
-MIT
+MIT License — © 2026 Chan Chi Ru. See [LICENSE](LICENSE).
