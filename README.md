@@ -33,33 +33,45 @@ search_figures("UMAP cluster melanocyte")
 ## What Makes It Different
 
 ```mermaid
-quadrantChart
-    title Portability vs. Automation
-    x-axis "Low Portability" --> "High Portability"
-    y-axis "Low Automation" --> "High Automation"
-    quadrant-1 Best of Both
-    quadrant-2 Powerful but locked
-    quadrant-3 Manual work
-    quadrant-4 Portable but manual
-    second-brain-mcp: [0.88, 0.92]
-    Mem0: [0.18, 0.72]
-    MemGPT: [0.22, 0.78]
-    Obsidian + Smart Connections: [0.82, 0.32]
-    Zotero + AI: [0.58, 0.28]
-    Plain Markdown + Claude: [0.92, 0.12]
+flowchart LR
+    subgraph input["📥 Any Content Source"]
+        A1["arXiv / PubMed paper"]
+        A2["Web article / blog"]
+        A3["Local PDF / DOCX"]
+        A4["Personal note"]
+    end
+
+    subgraph core["⚙️ second-brain-mcp"]
+        B1["Markdown note\n30-resources/"]
+        B2["Figure OCR\n+ VLM description"]
+        B3["Semantic embedding\n+ auto-wikilinks"]
+        B4["Ebbinghaus score\nranking"]
+        B5["PNG snapshots\n80–92% token reduction"]
+    end
+
+    subgraph query["🔍 Queryable Knowledge"]
+        C1["search_figures\n'UMAP melanocyte'"]
+        C2["search_notes\n'batch correction scRNA'"]
+        C3["get_context\ntop-20 relevant notes"]
+    end
+
+    input --> core
+    B1 --> B2
+    B1 --> B3
+    B3 --> B4
+    B4 --> B5
+    B2 --> C1
+    B3 --> C2
+    B4 --> C3
 ```
 
-| Capability | **This Project** | Obsidian + Smart Connections | Zotero + AI | Mem0 / MemGPT |
-| --------- | :-: | :-: | :-: | :-: |
-| Save any URL / PDF as Markdown | ✅ | ❌ | Partial | ❌ |
-| Figure extraction + OCR search | ✅ | ❌ | ❌ | ❌ |
-| Semantic search (self-hosted) | ✅ | ✅ | ❌ | ✅ (cloud) |
-| Memory auto-compression (sleep) | ✅ | ❌ | ❌ | ❌ |
-| Ebbinghaus forgetting curve | ✅ | ❌ | ❌ | ❌ |
-| Visual memory (PNG tiers) | ✅ | ❌ | ❌ | ❌ |
-| Pure Markdown — no vendor lock-in | ✅ | ✅ | ❌ | ❌ |
-| Works with any MCP agent | ✅ | ❌ | ❌ | ❌ |
-| 100% self-hosted | ✅ | ✅ | ✅ | ❌ |
+**Five capabilities no other self-hosted tool combines:**
+
+- 🔬 **Scientific article → searchable database in one command** — `save_article` fetches any URL or PDF, converts to Markdown, downloads every figure, OCRs them with Claude Vision, and builds a semantic index automatically
+- 🧠 **Memory that mirrors how brains forget** — Ebbinghaus score ranks notes by recency × access frequency; old low-access notes compress automatically while you sleep
+- 🖼 **Figure-level search across your entire library** — `search_figures("p < 0.001")` returns the exact figure from the exact paper, not just the document
+- 📉 **Token cost shrinks with age** — PNG snapshots replace full text at 60–92% compression; frequently-read papers always stay full-fidelity
+- 🔓 **Zero vendor lock-in** — pure Markdown files, any AI agent via MCP, sync via any cloud drive or git
 
 ---
 
@@ -124,41 +136,42 @@ get_decisions("Evo_PRISM")
 
 ## Token Efficiency
 
-Memory that gets cheaper over time — unlike flat-file systems where old notes cost the same as new ones.
+Memory that gets cheaper over time — old notes compress automatically while high-access papers always stay full-fidelity.
 
-```mermaid
-xychart-beta
-    title "Tokens to Represent a Note (by age)"
-    x-axis ["Full text (any age)", "Large tier (>3 months)", "Base tier (>6 months)", "Small tier (>1 year)"]
-    y-axis "Token cost" 0 --> 1100
-    bar [1000, 400, 256, 100]
+```text
+Note age →     fresh        3 months      6 months       1 year+
+               │            │             │              │
+token cost:  ██████████   ████          ██▌            █
+             ~1000 tok    ~400 tok      ~256 tok       ~100 tok
+             (full text)  large tier    base tier      small tier
+                          ▼ 60%         ▼ 74%          ▼ 90%
 ```
 
 ```mermaid
-xychart-beta
-    title "Cumulative Token Savings — 100-note Vault Over 2 Years"
-    x-axis ["Month 3", "Month 6", "Month 12", "Month 18", "Month 24"]
-    y-axis "Tokens saved (k)" 0 --> 80
-    bar [0, 14, 37, 58, 74]
+pie title Token Distribution After Auto-compression (100-note vault, 2 years)
+    "Full text — high-access papers" : 15000
+    "Large tier  400 tok  (3–6 mo)" : 10000
+    "Base tier   256 tok  (6–12 mo)" : 7680
+    "Small tier  100 tok  (1 yr+)" : 2500
 ```
 
-> Tier is selected by **score × age** (Phase 9 adaptive). High-access notes stay full-text regardless of age.
+> Tier assigned by **score × age** (Phase 9 adaptive). Frequently-accessed notes stay full-text regardless of age.
 
 ---
 
 ## Search Performance
 
-```mermaid
-xychart-beta
-    title "Search Latency p50 (ms) — Apple Silicon MacBook"
-    x-axis ["10 notes", "50 notes", "100 notes"]
-    y-axis "Latency (ms)" 0 --> 55
-    line [21, 25, 27]
-    line [37, 39, 45]
+Measured on Apple Silicon MacBook (20-rep average). Both modes scale sub-linearly with vault size.
+
+```text
+Vault size    BM25-only (p50)    Hybrid BM25+semantic (p50)
+──────────    ───────────────    ──────────────────────────
+   10 notes   ████░░░░░  21 ms   ██████████░  37 ms
+   50 notes   ██████░░░  25 ms   ████████████ 39 ms
+  100 notes   ███████░░  27 ms   ██████████████ 45 ms
 ```
 
-> Line 1: BM25-only · Line 2: Hybrid (BM25 + semantic)  
-> Hybrid adds ~18 ms for embedding lookup. Both scale sub-linearly with vault size.
+> Hybrid adds ~18 ms for embedding lookup — negligible for interactive use.
 
 | Vault Size | BM25 p50 | Hybrid p50 | Recall@1 | Recall@5 | MRR |
 | :--------: | :------: | :--------: | :------: | :------: | :-: |
@@ -263,11 +276,11 @@ tests/test_vault_sleep.py ···················
 ```
 
 ```mermaid
-xychart-beta
-    title "Test Coverage by Phase"
-    x-axis ["FTS Index", "Ebbinghaus", "Vault Sleep", "PNG Snap", "Archive", "Semantic", "Auto-Link", "L3 Rules", "Consolidate", "Adaptive Tier"]
-    y-axis "Tests passing (%)" 0 --> 110
-    bar [100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
+pie title Test Distribution (115 total)
+    "vault_sleep — compression, consolidation, rules, prune" : 50
+    "vault_db — search, indexing, embeddings, figures" : 33
+    "figures — OCR, snapshots, VLM read" : 19
+    "server — MCP tools, path safety" : 13
 ```
 
 ---
