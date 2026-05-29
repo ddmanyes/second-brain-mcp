@@ -28,8 +28,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 import vault_db
 
 # ---------------------------------------------------------------------------
-# Ground truth queries — verified against the real vault
-# Format: (query, [expected_path_substrings])
+# Ground truth queries — verified against the author's vault.
+#
+# NOTE for new users: these expected_path_substrings reference notes that exist
+# in the author's personal vault. On a fresh install, Recall and MRR metrics
+# will show 0% — this is expected. Search *latency* benchmarks are unaffected.
+# To calibrate accuracy for your own vault, replace these entries with queries
+# and note-path substrings from your own content.
 # ---------------------------------------------------------------------------
 GROUND_TRUTH: list[tuple[str, list[str]]] = [
     ("DuckDB full text search index",          ["vault-evolution", "vault_db"]),

@@ -3,6 +3,7 @@
 
 import os
 import re
+import sys
 import threading
 from datetime import date
 from pathlib import Path
@@ -81,7 +82,8 @@ def _inject_related_links(note_path: Path, rel: str) -> int:
         fm_text += f"\nrelated: [{links}]"
 
     new_text = f"---\n{fm_text}\n---\n\n" + text[fm_match.end():]
-    note_path.write_text(new_text, encoding="utf-8")
+    if new_text != text:
+        note_path.write_text(new_text, encoding="utf-8")
     return len(related)
 
 
@@ -133,8 +135,8 @@ def get_context() -> str:
                 for p, links in related_map.items()
             ]
             related_section = "\n\n---\n\n## Related Links (semantic)\n\n" + "\n".join(rel_lines)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[second-brain] warning: related links failed: {e}", file=sys.stderr)
 
     return f"{rules_section}## Current Goals\n\n{goals}\n\n---\n\n{index_section}{related_section}"
 
@@ -175,7 +177,8 @@ def new_note(note_type: str, title: str, content: str = "") -> str:
         with vault_db._connect() as con:
             vault_db.upsert_note(con, VAULT, dest)
         n_links = _inject_related_links(dest, rel)
-    except Exception:
+    except Exception as e:
+        print(f"[second-brain] warning: index/link failed for {rel}: {e}", file=sys.stderr)
         n_links = 0
 
     link_msg = f" ({n_links} related links added)" if n_links else ""
@@ -346,8 +349,8 @@ def vault_sleep(dry_run: bool = False) -> str:
             rules_result = _vs.run_rules_extraction(VAULT)
             if rules_result["total_rules"] > 0:
                 lines.append(f"\n📜 Rules extracted: {rules_result['total_rules']} rules from {rules_result['processed']} notes → memory/rules.md")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[second-brain] warning: rules extraction failed: {e}", file=sys.stderr)
 
     return "\n".join(lines)
 
@@ -468,8 +471,8 @@ def save_article(source: str, title: str = "", tags: str = "") -> str:
     try:
         with vault_db._connect() as con:
             vault_db.upsert_note(con, VAULT, dest)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[second-brain] warning: index failed for {rel}: {e}", file=sys.stderr)
 
     # Auto-link: find related notes and write into frontmatter
     n_links = _inject_related_links(dest, rel)

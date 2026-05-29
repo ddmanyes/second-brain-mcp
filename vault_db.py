@@ -155,7 +155,7 @@ _URL_RE = re.compile(r"https?://\S+")
 _MD_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 
 
-def _embed_text_for(text: str, max_chars: int = 1600) -> str:
+def _embed_text_for(text: str, max_chars: int = 900) -> str:
     """Prepare text for embedding: strip code/URLs/fullwidth chars, keep prose.
 
     Three known llama-server crash triggers:
