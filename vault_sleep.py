@@ -6,9 +6,10 @@ with Claude API as fallback. No local model required.
 
 Resolution tiers (Phase 9: score × age dual-axis, from Experience Compression Spectrum):
   High score (>1.5)          → text   (no compression, keep full markdown)
-  score >0.8 or age ≤180d    → large  (~400 tokens, ~10× compression)
-  score >0.3 or age ≤365d    → base   (~256 tokens, ~20× compression)
-  otherwise                  → small  (~100 tokens, ~60× compression)
+  score >0.8 or age ≤180d    → large  (~400 tokens — ~60% reduction)
+  score >0.3 or age ≤365d    → base   (~256 tokens — ~74% reduction)
+  otherwise                  → small  (~100 tokens — ~90% reduction)
+  (reductions relative to a ~1,000-token note; token_est lives in SNAPSHOT_TIERS, figures.py)
 """
 
 import re
@@ -151,7 +152,8 @@ def _update_frontmatter(content: str, updates: dict) -> str:
     fm_text = fm_match.group(1)
     for key, val in updates.items():
         if re.search(rf"^{key}:", fm_text, re.MULTILINE):
-            fm_text = re.sub(rf"^{key}:.*$", f"{key}: {val}", fm_text, flags=re.MULTILINE)
+            replacement = f"{key}: {val}"
+            fm_text = re.sub(rf"^{key}:.*$", lambda _: replacement, fm_text, flags=re.MULTILINE)
         else:
             fm_text += f"\n{key}: {val}"
 
@@ -343,6 +345,20 @@ RULE: FastMCP Image type cannot be used in Union return annotations — Pydantic
 """
 
 
+_RULE_LINE_RE = re.compile(r"^RULE:\s+[A-Za-z].{5,300}$")
+_RULE_SHELL_CHARS = re.compile(r"[`$(){}|;&<>]")
+
+
+def _sanitize_rule(rule: str) -> str | None:
+    """Return rule if it matches expected format and contains no shell metacharacters."""
+    rule = rule.strip()
+    if not _RULE_LINE_RE.match(rule):
+        return None
+    if _RULE_SHELL_CHARS.search(rule):
+        return None
+    return rule
+
+
 def _extract_rules_with_gemini(content: str) -> list[str]:
     """Call Gemini CLI to extract declarative rules from note content."""
     try:
@@ -353,15 +369,15 @@ def _extract_rules_with_gemini(content: str) -> list[str]:
         if result.returncode != 0 or not result.stdout.strip():
             return []
         lines = result.stdout.strip().splitlines()
-        return [l.strip() for l in lines if l.strip().startswith("RULE:")]
+        return [r for l in lines if (r := _sanitize_rule(l)) is not None]
     except Exception:
         return []
 
 
 def extract_rules_for(note_path: str, vault: Path) -> list[str]:
     """Extract L3 rules from a single note. Returns list of rule strings."""
-    full = vault / note_path
-    if not full.exists():
+    full = (vault / note_path).resolve()
+    if not full.is_relative_to(vault.resolve()) or not full.exists():
         return []
     content = full.read_text(encoding="utf-8")
     rules = _extract_rules_with_gemini(content)

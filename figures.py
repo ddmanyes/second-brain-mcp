@@ -11,8 +11,10 @@ Flow per article:
 
 import base64
 import hashlib
+import ipaddress
 import os
 import re
+import socket
 import subprocess
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -20,6 +22,32 @@ from urllib.parse import urljoin, urlparse
 import requests
 
 import vault_db
+
+# RFC-1918, loopback, link-local, AWS metadata — all off-limits for outbound fetches
+_BLOCKED_NETS = [
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+]
+
+
+def _is_ssrf_safe(url: str) -> bool:
+    """Return False if the URL resolves to a private/loopback address."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = parsed.hostname
+    if not host:
+        return False
+    try:
+        ip = ipaddress.ip_address(socket.gethostbyname(host))
+        return not any(ip in net for net in _BLOCKED_NETS)
+    except Exception:
+        return False
 
 FIGURES_DIR = Path(os.environ.get(
     "SECOND_BRAIN_PATH",
@@ -63,6 +91,8 @@ def _download_image(url: str, dest: Path) -> bool:
     """Download image to dest. Returns True on success."""
     if dest.exists():
         return True
+    if not _is_ssrf_safe(url):
+        return False
     try:
         r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
         if r.status_code == 200 and r.content:
@@ -143,10 +173,10 @@ def _analyse_with_gemini(image_path: Path) -> dict:
             '"description": "one sentence describing what this figure shows"}'
         )
         result = subprocess.run(
-            ["gemini", "--yolo", "--output-format", "text", "-", str(image_path)],
+            ["gemini", "--output-format", "text", "-", str(image_path)],
             input=prompt,
             capture_output=True, text=True, timeout=60,
-            cwd=str(FIGURES_DIR.parent),  # run from vault root so path is in workspace
+            cwd=str(FIGURES_DIR.parent),
         )
         if result.returncode == 0 and result.stdout.strip():
             import json
@@ -425,10 +455,15 @@ def read_snapshot_with_gemini(snapshot_path: Path, vault: Path) -> str | None:
     Uses @filepath syntax so Gemini reads the image directly (not via file tools).
     """
     try:
+        # Reject DB-sourced paths that escape the snapshots directory
+        resolved = Path(snapshot_path).resolve()
+        if not resolved.is_relative_to(SNAPSHOTS_DIR.resolve()):
+            return None
+
         try:
-            rel = snapshot_path.relative_to(vault)
+            rel = resolved.relative_to(vault.resolve())
         except ValueError:
-            rel = snapshot_path
+            rel = resolved
 
         prompt = f"@{rel} {_SNAPSHOT_READ_PROMPT}"
         result = subprocess.run(
@@ -451,7 +486,7 @@ def measure_snapshot_tokens(snapshot_path: Path, vault: Path) -> int | None:
     Returns token count or None if unavailable."""
     try:
         result = subprocess.run(
-            ["gemini", "--yolo", "--output-format", "json", "-", str(snapshot_path)],
+            ["gemini", "--output-format", "json", "-", str(snapshot_path)],
             input="How many visual tokens did you use to process this image? Reply with just a number.",
             capture_output=True, text=True, timeout=60,
             cwd=str(vault),

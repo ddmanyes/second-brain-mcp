@@ -2,8 +2,6 @@
 
 **A self-maintaining personal knowledge database — powered by MCP, DuckDB, and biological memory models.**
 
-> **Language:** English · [中文版](README_zh.md)
-
 [![CI](https://github.com/ddmanyes/second-brain-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ddmanyes/second-brain-mcp/actions/workflows/ci.yml)
 [![Python ≥ 3.11](https://img.shields.io/badge/Python-%E2%89%A53.11-blue)](https://www.python.org/)
 [![DuckDB](https://img.shields.io/badge/DuckDB-1.1%2B-yellow)](https://duckdb.org/)
@@ -11,6 +9,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-lightgrey)](LICENSE)
 
 ---
+
+> **For anyone who saves more papers, notes, and figures than they could ever re-read.**
+> second-brain turns everything you capture into a database that *maintains itself* — auto-linking related notes, compressing what you stop reading, and keeping every figure searchable by its content. What you saved a year ago is still one query away, at a fraction of the token cost.
 
 ## Why Does This Exist?
 
@@ -58,17 +59,17 @@ flowchart LR
     end
 
     subgraph core["⚙️ second-brain-mcp"]
-        B1["Markdown note\n30-resources/"]
-        B2["Figure OCR\n+ VLM description"]
-        B3["Semantic embedding\n+ auto-wikilinks"]
-        B4["Ebbinghaus score\nranking"]
-        B5["PNG snapshots\n80–92% token reduction"]
+        B1["Markdown note<br/>30-resources/"]
+        B2["Figure OCR<br/>+ VLM description"]
+        B3["Semantic embedding<br/>+ auto-wikilinks"]
+        B4["Ebbinghaus score<br/>ranking"]
+        B5["PNG snapshots<br/>60–90% token reduction"]
     end
 
     subgraph query["🔍 Queryable Knowledge"]
-        C1["search_figures\n'UMAP melanocyte'"]
-        C2["search_notes\n'batch correction scRNA'"]
-        C3["get_context\ntop-20 relevant notes"]
+        C1["search_figures<br/>'UMAP melanocyte'"]
+        C2["search_notes<br/>'batch correction scRNA'"]
+        C3["get_context<br/>top-20 relevant notes"]
     end
 
     input --> core
@@ -81,16 +82,18 @@ flowchart LR
     B4 --> C3
 ```
 
-**Eight capabilities no other self-hosted tool combines:**
+**Eight things most self-hosted memory tools can't do — combined in one:**
 
-- 🔬 **Scientific article → searchable database in one command** — `save_article` fetches any URL or PDF, converts to Markdown, downloads every figure, OCRs them with Claude Vision, and builds a semantic index automatically
-- 📑 **arXiv full-text, not just abstract** — `/abs/` URLs are automatically upgraded to `/html/` so you get the complete paper with methods, results, and discussion
-- 🔗 **Auto-wikilinks — knowledge graph builds itself** — every saved note is automatically linked to semantically related notes already in your vault; no manual tagging needed
-- 🧠 **Memory that mirrors how brains forget** — Ebbinghaus score ranks notes by recency × access frequency; old low-access notes compress automatically while you sleep
-- 🖼 **Figure-level search across your entire library** — `search_figures("p < 0.001")` returns the exact figure from the exact paper, not just the document
-- 📋 **AI learns your project rules** — frequently-accessed notes auto-extract constraints and decisions into `memory/rules.md`, injected at every session start so the AI never forgets your hard-won insights
-- 📉 **Token cost shrinks with age** — PNG snapshots replace full text at 60–92% compression; frequently-read papers always stay full-fidelity
-- 🔓 **Zero vendor lock-in** — pure Markdown files, any AI agent via MCP, sync via any cloud drive or git
+| Most memory tools… | second-brain |
+| :----------------- | :----------- |
+| Save a link or PDF, then leave you to read and tag it | 🔬 **One command builds the database** — `save_article` fetches any URL/PDF, converts to Markdown, downloads & OCRs every figure with Claude Vision, then semantic-indexes it |
+| Store the arXiv *abstract* you pasted | 📑 **Full text, not abstracts** — `/abs/` URLs auto-upgrade to `/html/` for the complete paper: methods, results, discussion |
+| Leave new notes isolated until you tag them | 🔗 **The knowledge graph builds itself** — every note is auto-linked to semantically related notes already in your vault |
+| Cost the same whether a note is read daily or never | 🧠 **Memory that forgets like a brain** — Ebbinghaus score ranks by recency × frequency; stale notes compress while you sleep |
+| Search *documents*, not what's inside the figures | 🖼 **Figure-level search across your whole library** — `search_figures("p < 0.001")` returns the exact panel from the exact paper |
+| Forget your project decisions between sessions | 📋 **The AI learns your rules** — hot notes auto-extract constraints into `memory/rules.md`, injected at every session start |
+| Grow more expensive as the vault grows | 📉 **Token cost shrinks with age** — PNG snapshots replace old text at 60–90% compression; frequently-read papers stay full-fidelity |
+| Lock you into their database format | 🔓 **Zero lock-in** — pure Markdown, any MCP agent, sync via any cloud drive or git |
 
 ---
 
@@ -100,10 +103,10 @@ Every project you work on can be resumed in a new session with full context — 
 
 ```mermaid
 flowchart LR
-    A["🟢 Session Start\nget_context()"] --> B["AI receives:\n• goals.md — current priorities\n• Top-20 recent notes\n• Extracted rules"]
-    B --> C["Work on project\nnew_note / search / read"]
-    C --> D["🔴 Before ending session\nupdate_goals(...)"]
-    D --> E["New session\nget_context() again"]
+    A["🟢 Session Start<br/>get_context()"] --> B["AI receives:<br/>• goals.md — current priorities<br/>• Top-20 recent notes<br/>• Extracted rules"]
+    B --> C["Work on project<br/>new_note / search / read"]
+    C --> D["🔴 Before ending session<br/>update_goals(...)"]
+    D --> E["New session<br/>get_context() again"]
     E --> B
 ```
 
@@ -217,6 +220,8 @@ Vault    BM25-only p50          Hybrid BM25+semantic p50
 | 100 notes | 27 ms | 45 ms | 70% | 80% | 0.73 |
 
 > Hybrid mode adds ~18 ms for embedding lookup. Both modes scale sub-linearly with vault size.
+>
+> Recall figures at this scale (10–100 notes) carry high sample variance — a single ambiguous query shifts Recall@1 by 10%. Treat them as directional, not as benchmarks against large corpora; the takeaway is that hybrid consistently beats BM25-only on relevance for a fixed query set.
 
 ---
 
@@ -305,8 +310,8 @@ Every Sunday 02:00 (launchd, no interaction needed)
 ```text
 tests/test_figures.py      19 passed   (OCR, snapshots, VLM)
 tests/test_server.py       13 passed   (MCP tools, path safety)
-tests/test_vault_db.py     33 passed   (FTS, semantic search, embeddings)
-tests/test_vault_sleep.py  50 passed   (compression, consolidation, rules, prune)
+tests/test_vault_db.py     39 passed   (FTS, semantic search, embeddings)
+tests/test_vault_sleep.py  44 passed   (compression, consolidation, rules, prune)
 ────────────────────────────────────────
 115 passed in 3.37s
 ```
@@ -356,7 +361,8 @@ Option A: **Claude Code (CLI)**
 
 ```bash
 claude mcp add --scope user second-brain \
-  uv run --project /path/to/second-brain-mcp python server.py
+  --env SECOND_BRAIN_PATH=/path/to/your/vault \
+  -- uv run --project /path/to/second-brain-mcp python server.py
 ```
 
 Option B: **Claude Desktop** — add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
@@ -405,6 +411,18 @@ launchctl load ~/Library/LaunchAgents/com.yourname.vault-sleep.plist
 
 ---
 
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+| :------ | :----------- | :-- |
+| Semantic search silently falls back to BM25 | llama-server not running on `EMBED_PORT` | Start the embedding server (see [Auto-start](#auto-start-macos-optional)); verify with `curl localhost:11435/v1/embeddings` |
+| `read_note_as_image` / snapshots fail | Playwright chromium not installed | `uv run playwright install chromium` |
+| `vault_sleep` never compresses anything | No Gemini CLI / `ANTHROPIC_API_KEY` → naive fallback, or no eligible notes | Install Gemini CLI or export `ANTHROPIC_API_KEY`; remember only notes >90 days old with Ebbinghaus score ≤ 0.5 are candidates (`sleep_status` shows them) |
+| Agent sees no notes / empty results | Index not built | Run `sync_index` once after install (and after bulk file changes) |
+| Notes land in the wrong place | `SECOND_BRAIN_PATH` unset or wrong | Set it in your MCP config `env` block; defaults to `~/second-brain` |
+
+---
+
 ## Vault Structure
 
 ```text
@@ -442,13 +460,13 @@ uv run python benchmark.py --quick --markdown   # search latency + accuracy repo
 
 | Paper | Where Used |
 | :---- | :--------- |
-| [LLM Sleep: Language Models Need Sleep (2025)](https://arxiv.org/abs/2605.26099) | Phase 3 Vault Sleep — hippocampal replay as batch memory consolidation |
-| [Experience Compression Spectrum (2025)](https://arxiv.org/abs/2604.15877) | Phase 9 adaptive tier — score × age dual-axis; addresses the "missing diagonal" in existing systems |
+| [Do Language Models Need Sleep? Offline Recurrence for Improved Online Inference (2026)](https://arxiv.org/abs/2605.26099) | Phase 3 Vault Sleep — hippocampal replay as batch memory consolidation |
+| [Experience Compression Spectrum: Unifying Memory, Skills, and Rules in LLM Agents (2026)](https://arxiv.org/abs/2604.15877) | Phase 9 adaptive tier — score × age dual-axis; addresses the "missing diagonal" in existing systems |
 | [DeepSeek-OCR: Contexts Optical Compression (2025)](https://arxiv.org/abs/2510.18234) | Phase 4 PNG tiers — image as compressed medium, 10× compression at 97% fidelity |
-| [MemOCR: Layout-Aware Visual Memory (2025)](https://arxiv.org/abs/2601.21468) | Phase 4 vision API — Playwright render → VLM reading pipeline |
-| [Active Context Compression (2025)](https://arxiv.org/abs/2601.07190) | Phase 3 design comparison — session-level vs. nightly batch consolidation |
-| [SimpleMem: Efficient Lifelong Memory (2025)](https://arxiv.org/abs/2601.02553) | Phase 8 consolidation — 3-stage semantic compression, 30× token reduction |
-| [Memory for Autonomous LLM Agents: Survey (2026)](https://arxiv.org/abs/2603.07670) | Architecture positioning — mechanisms, evaluation, and frontiers |
+| [MemOCR: Layout-Aware Visual Memory for Efficient Long-Horizon Reasoning (2026)](https://arxiv.org/abs/2601.21468) | Phase 4 vision API — Playwright render → VLM reading pipeline |
+| [Active Context Compression: Autonomous Memory Management in LLM Agents (2026)](https://arxiv.org/abs/2601.07190) | Phase 3 design comparison — session-level vs. nightly batch consolidation |
+| [SimpleMem: Efficient Lifelong Memory for LLM Agents (2026)](https://arxiv.org/abs/2601.02553) | Phase 8 consolidation — 3-stage semantic compression, 30× token reduction |
+| [Memory for Autonomous LLM Agents: Mechanisms, Evaluation, and Emerging Frontiers (2026)](https://arxiv.org/abs/2603.07670) | Architecture positioning — mechanisms, evaluation, and frontiers |
 
 ### Cognitive Science Foundations
 

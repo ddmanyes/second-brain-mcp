@@ -56,7 +56,29 @@ def _append_to_index(rel: str, label: str, today: str) -> None:
 
 
 def _safe_yaml(value: str) -> str:
-    return value.replace('"', "'").replace("\n", " ").strip()
+    import json as _json
+    return _json.dumps(value.strip())[1:-1]  # JSON-escaped without outer quotes
+
+
+_ALLOWED_LOCAL_EXTENSIONS = {".pdf", ".docx", ".pptx", ".txt", ".md"}
+
+
+def _validate_source(source: str) -> str | None:
+    """Return source if safe to pass to MarkItDown, else None.
+
+    - http/https: allowed only when the resolved IP is not private/loopback (SSRF guard).
+    - Local paths: allowed only for document extensions (.pdf/.docx/.pptx/.txt/.md).
+    - Everything else (file://, ftp://, bare /etc/passwd, etc.): rejected.
+    """
+    parsed = urlparse(source)
+    if parsed.scheme in ("http", "https"):
+        return source if _fig._is_ssrf_safe(source) else None
+    if parsed.scheme in ("", "file") or not parsed.scheme:
+        p = Path(source).resolve()
+        if p.suffix.lower() in _ALLOWED_LOCAL_EXTENSIONS and p.exists():
+            return str(p)
+        return None
+    return None
 
 
 def _inject_related_links(note_path: Path, rel: str) -> int:
@@ -436,6 +458,13 @@ def save_article(source: str, title: str = "", tags: str = "") -> str:
         tags: Comma-separated tags to add to frontmatter, e.g. 'bioinformatics,clustering'.
     """
     source = _normalise_source_url(source)
+    safe = _validate_source(source)
+    if safe is None:
+        return (
+            "Unsupported source. Provide an http/https URL or a path to a "
+            f".pdf/.docx/.pptx/.txt/.md file. Got: {source!r}"
+        )
+    source = safe
     try:
         body = _md_converter.convert(source).text_content.strip()
     except Exception as e:

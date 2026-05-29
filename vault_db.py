@@ -9,6 +9,7 @@ import hashlib
 import json
 import re
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -97,20 +98,22 @@ PRAGMA create_fts_index(
 # ---------------------------------------------------------------------------
 
 _schema_applied = False
+_schema_lock = threading.Lock()
 
 
 def _connect() -> duckdb.DuckDBPyConnection:
     global _schema_applied
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(DB_PATH))
-    if not _schema_applied:
-        con.execute(SCHEMA)
-        for migration in _MIGRATIONS:
-            try:
-                con.execute(migration)
-            except Exception:
-                pass
-        _schema_applied = True
+    with _schema_lock:
+        if not _schema_applied:
+            con.execute(SCHEMA)
+            for migration in _MIGRATIONS:
+                try:
+                    con.execute(migration)
+                except Exception:
+                    pass
+            _schema_applied = True
     return con
 
 
