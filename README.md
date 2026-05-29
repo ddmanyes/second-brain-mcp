@@ -440,32 +440,13 @@ uv run python benchmark.py --quick --markdown   # search latency + accuracy repo
 
 ### Theoretical Foundations
 
-The memory model in this project is grounded in established cognitive science:
-
-- **Ebbinghaus, H.** (1885). *Über das Gedächtnis: Untersuchungen zur experimentellen Psychologie*. Duncker & Humblot. — The original forgetting curve; the Ebbinghaus score formula `access_count / ln(age_days + 1)` is derived from this decay model.
-- **Stickgold, R.** (2005). Sleep-dependent memory consolidation. *Nature*, 437, 1272–1278. — Theoretical basis for Vault Sleep: offline consolidation of low-priority memories during sleep.
-- **Yang, G., et al.** (2014). Sleep promotes branch-specific formation of dendritic spines after learning. *Science*, 344(6188), 1173–1178. — Evidence that sleep selectively strengthens high-value memories while pruning low-value ones; motivates the adaptive tier selection (score × age).
-
-### Related GitHub Projects
-
-Projects that inspired the architecture or are directly referenced in the design:
-
-- [**SimpleMem**](https://github.com/tleyden/simplemem) — Lightweight agent memory over plain files; inspired the Markdown-first approach
-- [**mem0**](https://github.com/mem0ai/mem0) — Agent memory layer; compared in the design for vendor lock-in trade-offs
-- [**MemGPT / Letta**](https://github.com/cpacker/MemGPT) — Hierarchical memory for LLMs; informed the multi-tier compression design
-- [**Obsidian**](https://obsidian.md) — Markdown vault concept and `[[wikilink]]` convention
+- Ebbinghaus, H. (1885). *Über das Gedächtnis*. — forgetting curve; basis for the Ebbinghaus score `access_count / ln(age_days + 1)`
+- [Stickgold, R. (2005). Sleep-dependent memory consolidation. *Nature*, 437, 1272–1278.](https://www.nature.com/articles/nature04286) — basis for Vault Sleep
+- [Yang, G., et al. (2014). Sleep promotes branch-specific formation of dendritic spines after learning. *Science*, 344(6188), 1173–1178.](https://www.science.org/doi/10.1126/science.1249098) — basis for adaptive tier selection
 
 ### Built With
 
-| Tool | Purpose |
-| :--- | :------ |
-| [MarkItDown](https://github.com/microsoft/markitdown) (Microsoft) | Convert HTML, PDF, DOCX → Markdown |
-| [DuckDB](https://duckdb.org) | Embedded analytics DB for FTS + vector storage |
-| [llama.cpp](https://github.com/ggerganov/llama.cpp) | Local embedding server (`nomic-embed-text`) |
-| [nomic-embed-text-v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF) | 768-dim embedding model, 256-token context |
-| [FastMCP](https://github.com/jlowin/fastmcp) | MCP server framework |
-| [Playwright](https://playwright.dev) | Headless Chromium for PNG snapshot rendering |
-| [Anthropic Claude API](https://docs.anthropic.com) | Figure OCR + VLM description (claude-haiku) |
+[MarkItDown](https://github.com/microsoft/markitdown) · [DuckDB](https://duckdb.org) · [llama.cpp](https://github.com/ggerganov/llama.cpp) · [nomic-embed-text](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF) · [FastMCP](https://github.com/jlowin/fastmcp) · [Playwright](https://playwright.dev) · [Anthropic Claude API](https://docs.anthropic.com)
 
 ---
 
