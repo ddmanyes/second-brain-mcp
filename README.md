@@ -87,9 +87,63 @@ flowchart LR
 
 ---
 
+## Cross-Session Continuity — Pick Up Where You Left Off
+
+Every project you work on can be resumed in a new session with full context — no re-explaining, no lost progress.
+
+```mermaid
+flowchart LR
+    A["🟢 Session Start\nget_context()"] --> B["AI receives:\n• goals.md — current priorities\n• Top-20 recent notes\n• Extracted rules"]
+    B --> C["Work on project\nnew_note / search / read"]
+    C --> D["🔴 Before ending session\nupdate_goals(...)"]
+    D --> E["New session\nget_context() again"]
+    E --> B
+```
+
+### How It Works in Practice
+
+**End of session** — tell the agent to save state:
+
+```text
+Update goals: currently working on the scRNA batch correction pipeline.
+Completed: harmony integration. Blocked on: choosing n_components for PCA.
+Next session: start from the PCA parameter sweep in 20-areas/research/harmony-notes.md
+```
+
+The agent calls `update_goals()` and optionally `new_note("project", ...)` for detailed progress.
+
+**Start of next session** — just say:
+
+```text
+Get context and continue where we left off.
+```
+
+The agent calls `get_context()` and immediately sees:
+
+- `goals.md` with the state you saved
+- The harmony-notes.md surfaced at the top (recently accessed, high Ebbinghaus score)
+- Any rules extracted from that note (e.g. "RULE: use n_components=30 for this dataset")
+
+### What Gets Persisted
+
+| What | Where | Always in context? |
+| :--- | :---- | :----------------: |
+| Current priorities / blocked items | `memory/goals.md` | ✅ every session |
+| Project progress notes | `10-projects/` or `20-areas/` | ✅ if recently accessed |
+| Decisions and rationale | `decisions/` | via `get_decisions()` |
+| Extracted rules from notes | `memory/rules.md` | ✅ every session |
+| Saved papers and figures | `30-resources/` | via `search_notes/figures` |
+
+> **This works across any project** — bioinformatics analysis, coding, writing, research. Save state with one sentence at the end of a session; resume instantly at the start of the next.
+
+---
+
 ## Example Queries
 
 ```python
+# Resume a project from last session
+get_context()  # → goals + recent notes + rules loaded automatically
+
 # Find a specific figure panel across all saved papers
 search_figures("p < 0.001 UMAP cluster")
 
@@ -98,9 +152,6 @@ search_notes("single cell integration batch correction")
 
 # Decision records for a specific project
 get_decisions("MyProject")
-
-# Start a session — Claude loads goals + top-20 relevant notes automatically
-get_context()
 ```
 
 ---
