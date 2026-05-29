@@ -4,9 +4,6 @@ __pycache__/
 *.pyc
 *.pyo
 
-# uv lockfile (regenerated per-machine)
-uv.lock
-
 # IDE / OS
 .DS_Store
 pyrightconfig.json
