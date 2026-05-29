@@ -4,7 +4,7 @@
 
 > **Language:** English · [中文版](README_zh.md)
 
-[![Tests](https://img.shields.io/badge/tests-115%20passed-brightgreen)](https://github.com/ddmanyes/second-brain-mcp/actions)
+[![CI](https://github.com/ddmanyes/second-brain-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ddmanyes/second-brain-mcp/actions/workflows/ci.yml)
 [![Python ≥ 3.11](https://img.shields.io/badge/Python-%E2%89%A53.11-blue)](https://www.python.org/)
 [![DuckDB](https://img.shields.io/badge/DuckDB-1.1%2B-yellow)](https://duckdb.org/)
 [![MCP](https://img.shields.io/badge/MCP-stdio-green)](https://modelcontextprotocol.io/)
