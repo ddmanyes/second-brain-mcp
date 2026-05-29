@@ -1,13 +1,8 @@
 {
   "mcpServers": {
     "second-brain": {
-      "command": "uv",
-      "args": [
-        "run",
-        "--with", "mcp[cli]",
-        "python",
-        "/path/to/second-brain-mcp/server.py"
-      ],
+      "command": "python",
+      "args": ["-m", "mcp_second_brain"],
       "env": {
         "SECOND_BRAIN_PATH": "/path/to/your/vault"
       }

@@ -333,15 +333,13 @@ tests/test_vault_sleep.py  44 passed   (compression, consolidation, rules, prune
 | [nomic-embed-text-v1.5.Q8_0.gguf](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF) | Optional | ~300 MB embedding model |
 | Gemini CLI or `ANTHROPIC_API_KEY` | Optional | Better compression quality; naive fallback if absent |
 
-### Quick Start
+### Quick Start (PyPI — recommended)
 
-#### Step 1 — Clone and install
+#### Step 1 — Install
 
 ```bash
-git clone https://github.com/ddmanyes/second-brain-mcp
-cd second-brain-mcp
-uv sync
-uv run playwright install chromium
+pip install mcp-second-brain
+playwright install chromium
 ```
 
 #### Step 2 — Create your vault
@@ -350,21 +348,14 @@ uv run playwright install chromium
 mkdir -p ~/second-brain/{00-inbox,10-projects,20-areas,30-resources,40-archive,decisions,memory,templates}
 ```
 
-#### Step 3 — Configure MCP
-
-```bash
-cp mcp_config.example.json mcp_config.json
-# Edit mcp_config.json — set SECOND_BRAIN_PATH to your vault path
-```
-
-#### Step 4 — Register with your AI agent
+#### Step 3 — Register with your AI agent
 
 Option A: **Claude Code (CLI)**
 
 ```bash
 claude mcp add --scope user second-brain \
-  --env SECOND_BRAIN_PATH=/path/to/your/vault \
-  -- uv run --project /path/to/second-brain-mcp python server.py
+  --env SECOND_BRAIN_PATH=~/second-brain \
+  -- python -m mcp_second_brain
 ```
 
 Option B: **Claude Desktop** — add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
@@ -373,20 +364,39 @@ Option B: **Claude Desktop** — add to `~/Library/Application Support/Claude/cl
 {
   "mcpServers": {
     "second-brain": {
-      "command": "uv",
-      "args": ["run", "--project", "/path/to/second-brain-mcp", "python", "server.py"],
+      "command": "python",
+      "args": ["-m", "mcp_second_brain"],
       "env": { "SECOND_BRAIN_PATH": "/path/to/your/vault" }
     }
   }
 }
 ```
 
-#### Step 5 — Index your vault
+#### Step 4 — Index your vault
 
 In Claude Code or Claude Desktop, tell the agent:
 
 ```text
 Run sync_index to build the initial index.
+```
+
+---
+
+### Development Install (clone)
+
+```bash
+git clone https://github.com/ddmanyes/second-brain-mcp
+cd second-brain-mcp
+uv sync
+uv run playwright install chromium
+```
+
+Then register with Claude Code:
+
+```bash
+claude mcp add --scope user second-brain \
+  --env SECOND_BRAIN_PATH=~/second-brain \
+  -- uv run --project /path/to/second-brain-mcp python server.py
 ```
 
 ### Environment Variables
