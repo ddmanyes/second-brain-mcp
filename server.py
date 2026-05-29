@@ -164,13 +164,14 @@ def get_context() -> str:
 
 
 @mcp.tool()
-def new_note(note_type: str, title: str, content: str = "") -> str:
+def new_note(note_type: str, title: str, content: str = "", tags: str = "") -> str:
     """Create a new note in the vault using the correct folder and template.
 
     Args:
         note_type: Type of note — decision, project, research, coding, resource, or inbox
         title: Human-readable title (will be converted to kebab-case filename)
         content: Optional initial content to append after the template
+        tags: Comma-separated tags, e.g. 'evo-prism,architecture'. Added to frontmatter.
     """
     folder, tmpl_rel = NOTE_CONFIG.get(note_type.lower(), _DEFAULT_CONFIG)
     tmpl_path = VAULT / tmpl_rel
@@ -180,6 +181,9 @@ def new_note(note_type: str, title: str, content: str = "") -> str:
 
     today = date.today().isoformat()
     filled = tmpl_path.read_text(encoding="utf-8").replace("{{title}}", title).replace("{{date}}", today)
+    if tags:
+        tag_list = f"[{', '.join(t.strip() for t in tags.split(',') if t.strip())}]"
+        filled = filled.replace("tags: []", f"tags: {tag_list}", 1)
     if content:
         filled += f"\n{content}\n"
 
