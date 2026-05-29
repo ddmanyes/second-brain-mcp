@@ -438,11 +438,22 @@ uv run python benchmark.py --quick --markdown   # search latency + accuracy repo
 
 ## References & Acknowledgements
 
-### Theoretical Foundations
+### Papers That Directly Inspired This Project
 
-- Ebbinghaus, H. (1885). *Über das Gedächtnis*. — forgetting curve; basis for the Ebbinghaus score `access_count / ln(age_days + 1)`
-- [Stickgold, R. (2005). Sleep-dependent memory consolidation. *Nature*, 437, 1272–1278.](https://www.nature.com/articles/nature04286) — basis for Vault Sleep
-- [Yang, G., et al. (2014). Sleep promotes branch-specific formation of dendritic spines after learning. *Science*, 344(6188), 1173–1178.](https://www.science.org/doi/10.1126/science.1249098) — basis for adaptive tier selection
+| Paper | Where Used |
+| :---- | :--------- |
+| [LLM Sleep: Language Models Need Sleep (2025)](https://arxiv.org/abs/2605.26099) | Phase 3 Vault Sleep — hippocampal replay as batch memory consolidation |
+| [Experience Compression Spectrum (2025)](https://arxiv.org/abs/2604.15877) | Phase 9 adaptive tier — score × age dual-axis; addresses the "missing diagonal" in existing systems |
+| [DeepSeek-OCR: Contexts Optical Compression (2025)](https://arxiv.org/abs/2510.18234) | Phase 4 PNG tiers — image as compressed medium, 10× compression at 97% fidelity |
+| [MemOCR: Layout-Aware Visual Memory (2025)](https://arxiv.org/abs/2601.21468) | Phase 4 vision API — Playwright render → VLM reading pipeline |
+| [Active Context Compression (2025)](https://arxiv.org/abs/2601.07190) | Phase 3 design comparison — session-level vs. nightly batch consolidation |
+| [SimpleMem: Efficient Lifelong Memory (2025)](https://arxiv.org/abs/2601.02553) | Phase 8 consolidation — 3-stage semantic compression, 30× token reduction |
+| [Memory for Autonomous LLM Agents: Survey (2026)](https://arxiv.org/abs/2603.07670) | Architecture positioning — mechanisms, evaluation, and frontiers |
+
+### Cognitive Science Foundations
+
+- Ebbinghaus, H. (1885). *Über das Gedächtnis*. — forgetting curve; basis for `access_count / ln(age_days + 1)`
+- [Stickgold, R. (2005). *Nature*, 437, 1272–1278.](https://www.nature.com/articles/nature04286) — sleep-dependent memory consolidation
 
 ### Built With
 
