@@ -129,14 +129,6 @@ token cost:  ██████████████   ██████    
                               ▼ 60%          ▼ 74%          ▼ 90%
 ```
 
-```mermaid
-pie title Token budget — 100-note vault after 2 years of auto-compression
-    "Full text (high-access papers)" : 15000
-    "Large tier  ~400 tok  (3–6 mo)" : 10000
-    "Base tier   ~256 tok  (6–12 mo)" : 7680
-    "Small tier  ~100 tok  (1 yr+)" : 2500
-```
-
 > Tier assigned by **score × age** (adaptive). Frequently-accessed notes stay full-text regardless of age.
 
 ---
@@ -252,14 +244,6 @@ tests/test_vault_db.py     33 passed   (FTS, semantic search, embeddings)
 tests/test_vault_sleep.py  50 passed   (compression, consolidation, rules, prune)
 ────────────────────────────────────────
 115 passed in 3.37s
-```
-
-```mermaid
-pie title Test distribution by module (115 total)
-    "vault_sleep — compression, consolidation, rules, prune" : 50
-    "vault_db — search, indexing, embeddings" : 33
-    "figures — OCR, snapshots, VLM" : 19
-    "server — MCP tools, path safety" : 13
 ```
 
 ---
