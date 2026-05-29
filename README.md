@@ -432,6 +432,7 @@ launchctl load ~/Library/LaunchAgents/com.yourname.vault-sleep.plist
 | `vault_sleep` never compresses anything | No Gemini CLI / `ANTHROPIC_API_KEY` → naive fallback, or no eligible notes | Install Gemini CLI or export `ANTHROPIC_API_KEY`; remember only notes >90 days old with Ebbinghaus score ≤ 0.5 are candidates (`sleep_status` shows them) |
 | Agent sees no notes / empty results | Index not built | Run `sync_index` once after install (and after bulk file changes) |
 | Notes land in the wrong place | `SECOND_BRAIN_PATH` unset or wrong | Set it in your MCP config `env` block; defaults to `~/second-brain` |
+| Tools unavailable when working in other project folders | Installed as local config instead of user scope | Re-register with `--scope user`: `claude mcp remove second-brain -s local && claude mcp add --scope user second-brain ...` |
 
 ---
 
