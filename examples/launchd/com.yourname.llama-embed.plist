@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Keep the nomic-embed-text llama-server running at all times (macOS).
+  Required for semantic search and auto-linking features.
+  Install:
+    cp com.yourname.llama-embed.plist ~/Library/LaunchAgents/
+    # Edit paths below, then:
+    launchctl load ~/Library/LaunchAgents/com.yourname.llama-embed.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.yourname.llama-embed</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/path/to/llama.cpp/build/bin/llama-server</string>
+    <string>-m</string>
+    <string>/path/to/nomic-embed-text-v1.5.Q8_0.gguf</string>
+    <string>--port</string><string>11435</string>
+    <string>--embedding</string>
+    <string>--pooling</string><string>mean</string>
+    <string>-np</string><string>4</string>
+    <string>-c</string><string>2048</string>
+    <string>--log-disable</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/yourname/.second-brain/logs/llama_embed.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/yourname/.second-brain/logs/llama_embed_err.log</string>
+</dict>
+</plist>

@@ -23,7 +23,7 @@ import vault_db
 
 FIGURES_DIR = Path(os.environ.get(
     "SECOND_BRAIN_PATH",
-    Path.home() / "Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/second-brain"
+    Path.home() / "second-brain"
 )).expanduser().resolve() / ".figures"
 IMG_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
@@ -95,6 +95,7 @@ def _analyse_with_claude(image_path: Path) -> dict:
         message = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=512,
+            stream=False,
             messages=[{
                 "role": "user",
                 "content": [
@@ -359,3 +360,108 @@ def snapshot_note(note_path: str, vault: Path, tier: str = "base") -> dict:
         "token_est": SNAPSHOT_TIERS[tier]["token_est"],
         "size_kb": size_kb,
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 Vision API: read snapshot via Gemini
+# ---------------------------------------------------------------------------
+
+_SNAPSHOT_READ_PROMPT = (
+    "You are reading a rendered markdown note stored as a PNG image. "
+    "Summarise the note content concisely: include the title, key findings or decisions, "
+    "methods or tools mentioned, any numerical results, and next actions if present. "
+    "Do NOT describe the image as an image — treat the content as the note itself."
+)
+
+
+def read_snapshot_with_ollama(
+    snapshot_path: Path,
+    model: str = "qwen2.5vl:7b",
+    fallback_model: str = "moondream",
+    ollama_url: str = "http://localhost:11434",
+) -> str | None:
+    """Read a note snapshot via local Ollama vision model (REST API).
+
+    Tries model first; falls back to fallback_model if load fails (e.g. OOM).
+    qwen2.5vl:7b needs ~6 GB RAM; moondream needs ~1.1 GB.
+    """
+    import base64
+    import json
+    import urllib.request
+
+    img_b64 = base64.b64encode(snapshot_path.read_bytes()).decode()
+    prompt = (
+        "This is a rendered markdown note screenshot. "
+        "What is the title? List the key points, any decisions made, "
+        "tools or methods mentioned, numerical results, and next actions."
+    )
+
+    for m in [model, fallback_model]:
+        try:
+            payload = json.dumps({
+                "model": m,
+                "prompt": prompt,
+                "images": [img_b64],
+                "stream": False,
+            }).encode()
+            req = urllib.request.Request(
+                f"{ollama_url}/api/generate",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            resp = urllib.request.urlopen(req, timeout=90)
+            data = json.loads(resp.read())
+            text = data.get("response", "").strip()
+            if text:
+                return f"[via {m}]\n{text}"
+        except Exception:
+            continue
+    return None
+
+
+def read_snapshot_with_gemini(snapshot_path: Path, vault: Path) -> str | None:
+    """Pass a PNG snapshot to Gemini CLI and return the note summary.
+
+    Uses @filepath syntax so Gemini reads the image directly (not via file tools).
+    """
+    try:
+        try:
+            rel = snapshot_path.relative_to(vault)
+        except ValueError:
+            rel = snapshot_path
+
+        prompt = f"@{rel} {_SNAPSHOT_READ_PROMPT}"
+        result = subprocess.run(
+            ["gemini", "--output-format", "text", "-p", prompt],
+            capture_output=True, text=True, timeout=90,
+            cwd=str(vault),
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            lines = [l for l in result.stdout.splitlines()
+                     if not any(skip in l for skip in
+                                ("YOLO mode", "Ripgrep", "MCP issues", "Warning:", "Loaded"))]
+            return "\n".join(lines).strip() or None
+    except Exception:
+        pass
+    return None
+
+
+def measure_snapshot_tokens(snapshot_path: Path, vault: Path) -> int | None:
+    """Ask Gemini to count how many tokens it used reading the snapshot.
+    Returns token count or None if unavailable."""
+    try:
+        result = subprocess.run(
+            ["gemini", "--yolo", "--output-format", "json", "-", str(snapshot_path)],
+            input="How many visual tokens did you use to process this image? Reply with just a number.",
+            capture_output=True, text=True, timeout=60,
+            cwd=str(vault),
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            import json
+            data = json.loads(result.stdout)
+            # Gemini JSON output may include token usage
+            usage = data.get("usageMetadata", {})
+            return usage.get("totalTokenCount")
+    except Exception:
+        pass
+    return None

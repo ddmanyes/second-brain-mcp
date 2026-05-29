@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Weekly vault maintenance (sync + compress) via run_sleep.py.
+  Install:
+    cp com.yourname.vault-sleep.plist ~/Library/LaunchAgents/
+    # Edit paths below, then:
+    launchctl load ~/Library/LaunchAgents/com.yourname.vault-sleep.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.yourname.vault-sleep</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/path/to/uv</string>
+    <string>run</string>
+    <string>python</string>
+    <string>/path/to/second-brain-mcp/run_sleep.py</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/path/to/second-brain-mcp</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SECOND_BRAIN_PATH</key>
+    <string>/path/to/your/vault</string>
+  </dict>
+
+  <!-- Every Sunday at 02:00 -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Weekday</key><integer>0</integer>
+    <key>Hour</key><integer>2</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/yourname/.second-brain/logs/launchd_stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/yourname/.second-brain/logs/launchd_stderr.log</string>
+
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

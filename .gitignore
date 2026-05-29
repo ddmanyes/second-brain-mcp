@@ -3,11 +3,23 @@
 __pycache__/
 *.pyc
 *.pyo
+
+# uv lockfile (regenerated per-machine)
 uv.lock
 
-# IDE
+# IDE / OS
 .DS_Store
 pyrightconfig.json
+.idea/
+.vscode/
 
-# Runtime data (local only, not synced)
+# Runtime data (all local-only, rebuild with sync_index)
 # vault.db lives in ~/.second-brain/ — already outside this repo
+.snapshots/
+.figures/
+logs/
+*.log
+
+# Personal config (copy from mcp_config.example.json)
+mcp_config.json
+.env

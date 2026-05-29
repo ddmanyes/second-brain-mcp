@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from markitdown import MarkItDown
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Image
 
 import vault_db
 import vault_sleep as _vs
@@ -17,7 +17,7 @@ import figures as _fig
 
 VAULT = Path(os.environ.get(
     "SECOND_BRAIN_PATH",
-    Path.home() / "Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/second-brain"
+    Path.home() / "second-brain"
 )).expanduser().resolve()
 
 mcp = FastMCP("second-brain")
@@ -58,6 +58,33 @@ def _safe_yaml(value: str) -> str:
     return value.replace('"', "'").replace("\n", " ").strip()
 
 
+def _inject_related_links(note_path: Path, rel: str) -> int:
+    """Find semantically related notes and write them into the frontmatter `related` field.
+
+    Returns count of links added (0 = no embedding server or no matches).
+    """
+    related = vault_db.find_related(rel, limit=5, threshold=0.7)
+    if not related:
+        return 0
+
+    links = ", ".join(f"[[{r}]]" for r in related)
+    text = note_path.read_text(encoding="utf-8")
+
+    fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
+    if not fm_match:
+        return 0
+
+    fm_text = fm_match.group(1)
+    if "related:" in fm_text:
+        fm_text = re.sub(r"^related:.*$", f"related: [{links}]", fm_text, flags=re.MULTILINE)
+    else:
+        fm_text += f"\nrelated: [{links}]"
+
+    new_text = f"---\n{fm_text}\n---\n\n" + text[fm_match.end():]
+    note_path.write_text(new_text, encoding="utf-8")
+    return len(related)
+
+
 @mcp.tool()
 def get_context() -> str:
     """Load session context: current goals + top-20 most recently active notes.
@@ -69,24 +96,47 @@ def get_context() -> str:
 
     goals = _read(VAULT / "memory" / "goals.md")
 
+    # Phase 7 — L3 Rules injection
+    rules_path = VAULT / "memory" / "rules.md"
+    rules_section = ""
+    if rules_path.exists():
+        rules_text = rules_path.read_text(encoding="utf-8")
+        rule_lines = [l for l in rules_text.splitlines() if l.strip().startswith("- [")]
+        if rule_lines:
+            rules_section = "## Active Rules (auto-extracted)\n\n" + "\n".join(rule_lines) + "\n\n---\n\n"
+
+    top: list[dict] = []
     try:
-        top = vault_db.top_by_score(limit=20)
-        if not top:
-            top = vault_db.top_by_recency(limit=20)
-        if top:
-            rows = "\n".join(
-                f"- [{r['title']}]({r['path']})"
-                + (f" _(score: {r['score']})_" if "score" in r else "")
-                for r in top
-            )
-            index_section = f"## Active Notes (top 20 by Ebbinghaus score)\n\n{rows}"
-        else:
+        top = vault_db.top_by_score(limit=20) or vault_db.top_by_recency(limit=20)
+        rows = "\n".join(
+            f"- [{r['title']}]({r['path']})"
+            + (f" _(score: {r['score']:.2f})_" if "score" in r else "")
+            for r in top
+        )
+        index_section = f"## Active Notes (top 20 by Ebbinghaus score)\n\n{rows}" if rows else ""
+        if not index_section:
             raise ValueError("empty")
     except Exception:
-        # Fallback to static index if DB not yet initialised
         index_section = "## Vault Index\n\n" + _read(VAULT / "memory" / "index.md")
 
-    return f"## Current Goals\n\n{goals}\n\n---\n\n{index_section}"
+    # Layer 2: reuse already-fetched top list (no second DB call)
+    related_section = ""
+    try:
+        related_map: dict[str, list[str]] = {}
+        for r in top[:5]:
+            links = vault_db.find_related(r["path"], limit=3, threshold=0.75)
+            if links:
+                related_map[r["path"]] = links
+        if related_map:
+            rel_lines = [
+                f"- {Path(p).stem}: {' · '.join(f'[[{l}]]' for l in links)}"
+                for p, links in related_map.items()
+            ]
+            related_section = "\n\n---\n\n## Related Links (semantic)\n\n" + "\n".join(rel_lines)
+    except Exception:
+        pass
+
+    return f"{rules_section}## Current Goals\n\n{goals}\n\n---\n\n{index_section}{related_section}"
 
 
 @mcp.tool()
@@ -119,18 +169,31 @@ def new_note(note_type: str, title: str, content: str = "") -> str:
     dest.write_text(filled, encoding="utf-8")
     rel = str(dest.relative_to(VAULT))
     _append_to_index(rel, rel, today)
-    return f"Created: {rel}"
+
+    # Sync into DuckDB (includes embedding) then auto-link
+    try:
+        with vault_db._connect() as con:
+            vault_db.upsert_note(con, VAULT, dest)
+        n_links = _inject_related_links(dest, rel)
+    except Exception:
+        n_links = 0
+
+    link_msg = f" ({n_links} related links added)" if n_links else ""
+    return f"Created: {rel}{link_msg}"
 
 
 @mcp.tool()
 def search_notes(query: str) -> str:
-    """Full-text search across all markdown notes in the vault (DuckDB FTS).
+    """Hybrid semantic + full-text search across all vault notes.
+
+    Uses BM25 + cosine similarity (nomic-embed-text) when embedding server is
+    available, falls back to BM25-only, then file scan.
 
     Args:
-        query: Search term (case-insensitive)
+        query: Search term — supports natural language and keywords
     """
     try:
-        hits = vault_db.fts_search(query, limit=20)
+        hits = vault_db.hybrid_search(query, limit=20)
     except Exception:
         hits = []
 
@@ -224,9 +287,11 @@ def sync_index() -> str:
     Run this after adding notes manually, or when setting up on a new machine.
     """
     count = vault_db.sync_all(VAULT)
+    emb = vault_db.sync_embeddings(vault=VAULT)
     stats = vault_db.db_stats()
     return (
         f"Synced {count} files → {stats['total_notes']} notes in index.\n"
+        f"Embeddings: +{emb['updated']} new (llama-server {'✓' if emb['updated'] or emb['failed'] == 0 else '✗ unavailable'})\n"
         f"DB: {stats['db_path']}\n"
         f"By type: {stats['by_type']}"
     )
@@ -269,9 +334,21 @@ def vault_sleep(dry_run: bool = False) -> str:
             snap = "📷" if entry.get("snapshot") else "  "
             lines.append(f"  ✓ {snap} [{entry['tier']}] {path} (age {entry['age']}d)")
         elif status == "dry_run":
-            lines.append(f"  ~ [{entry['tier']}] {path} (age {entry['age']}d)")
+            lines.append(f"  ~ [{entry['tier']}] {path} (age {entry['age']}d, score {entry.get('score', 0):.2f})")
+        elif status == "skipped_high_score":
+            lines.append(f"  ⭐ [text] {path} (score {entry['score']:.2f} — kept full text)")
         else:
             lines.append(f"  ✗ {path} — {entry.get('reason', status)}")
+
+    # Phase 7: auto-run L3 rules extraction after sleep (non-blocking)
+    if not dry_run and result["processed"] > 0:
+        try:
+            rules_result = _vs.run_rules_extraction(VAULT)
+            if rules_result["total_rules"] > 0:
+                lines.append(f"\n📜 Rules extracted: {rules_result['total_rules']} rules from {rules_result['processed']} notes → memory/rules.md")
+        except Exception:
+            pass
+
     return "\n".join(lines)
 
 
@@ -298,7 +375,52 @@ def sleep_status() -> str:
     return "\n".join(lines)
 
 
+@mcp.tool()
+def extract_rules_tool(note_path: str = "") -> str:
+    """Extract L3 declarative rules from high-access notes into memory/rules.md.
+
+    Rules are auto-injected at the top of every get_context() call so Claude
+    always has the most important project constraints in view.
+
+    Args:
+        note_path: Specific note to extract from (e.g. 'decisions/my-note.md').
+                   Leave empty to run batch extraction on all eligible notes
+                   (access_count >= 5, not extracted in last 90 days).
+    """
+    if note_path:
+        full = (VAULT / note_path).resolve()
+        if not full.is_relative_to(VAULT) or not full.exists():
+            return f"Note not found: {note_path}"
+        rules = _vs.extract_rules_for(note_path, VAULT)
+        if not rules:
+            return f"No rules extracted from {note_path} (Gemini unavailable or no rules found)"
+        _vs._append_rules_to_file(VAULT, note_path, rules)
+        return f"Extracted {len(rules)} rules from {note_path}:\n" + "\n".join(f"  {r}" for r in rules)
+
+    result = _vs.run_rules_extraction(VAULT)
+    if result["processed"] == 0:
+        return "No eligible notes (need access_count >= 5). Try accessing notes first, or pass a specific note_path."
+    lines = [f"Extracted {result['total_rules']} rules from {result['processed']} notes → memory/rules.md"]
+    for entry in result["log"]:
+        lines.append(f"  {entry['path']}: {entry['rules']} rules")
+    return "\n".join(lines)
+
+
 _md_converter = MarkItDown()
+
+
+def _normalise_source_url(source: str) -> str:
+    """Convert known abstract-only URLs to full-text equivalents.
+
+    arxiv /abs/ pages contain only the abstract; /html/ has the full paper.
+    """
+    import re as _re
+    # arxiv: https://arxiv.org/abs/2601.07190 → https://arxiv.org/html/2601.07190v1
+    m = _re.match(r"(https?://arxiv\.org)/abs/(\d{4}\.\d+)(v\d+)?$", source)
+    if m:
+        base, paper_id, ver = m.group(1), m.group(2), m.group(3) or "v1"
+        return f"{base}/html/{paper_id}{ver}"
+    return source
 
 
 @mcp.tool()
@@ -310,6 +432,7 @@ def save_article(source: str, title: str = "", tags: str = "") -> str:
         title: Optional title override. If empty, inferred from the source filename or URL.
         tags: Comma-separated tags to add to frontmatter, e.g. 'bioinformatics,clustering'.
     """
+    source = _normalise_source_url(source)
     try:
         body = _md_converter.convert(source).text_content.strip()
     except Exception as e:
@@ -341,19 +464,60 @@ def save_article(source: str, title: str = "", tags: str = "") -> str:
     rel = f"30-resources/{slug}.md"
     _append_to_index(rel, title, today)
 
-    # Sync new note into DuckDB and trigger figure extraction asynchronously
+    # Sync new note into DuckDB (includes embedding computation)
     try:
         with vault_db._connect() as con:
             vault_db.upsert_note(con, VAULT, dest)
     except Exception:
         pass
 
+    # Auto-link: find related notes and write into frontmatter
+    n_links = _inject_related_links(dest, rel)
+
     # Trigger figure extraction in background (non-blocking)
     threading.Thread(
         target=_fig.process_article, args=(rel, VAULT), daemon=True
     ).start()
 
-    return f"Saved: {rel} (figure extraction started in background)"
+    link_msg = f", {n_links} related links added" if n_links else ""
+    return f"Saved: {rel} (figure extraction started in background{link_msg})"
+
+
+@mcp.tool()
+def update_links_tool(note_path: str = "") -> str:
+    """Refresh auto-generated related wikilinks in one note or all notes.
+
+    Uses semantic similarity (nomic-embed-text) to find related notes and
+    writes them into the frontmatter `related` field.
+
+    Args:
+        note_path: Relative path within vault (e.g. 'decisions/my-note.md').
+                   Leave empty to update ALL notes that have embeddings.
+    """
+    if note_path:
+        full = (VAULT / note_path).resolve()
+        if not full.is_relative_to(VAULT) or not full.exists():
+            return f"Note not found: {note_path}"
+        n = _inject_related_links(full, note_path)
+        return f"Updated: {note_path} — {n} related links written"
+
+    # Batch: update all indexed notes
+    with vault_db._connect() as con:
+        rows = con.execute(
+            "SELECT path FROM notes WHERE embedding IS NOT NULL"
+        ).fetchall()
+
+    updated, skipped = 0, 0
+    for (rel,) in rows:
+        full = (VAULT / rel).resolve()
+        if full.exists() and full.is_relative_to(VAULT):
+            n = _inject_related_links(full, rel)
+            if n:
+                updated += 1
+            else:
+                skipped += 1
+
+    return f"Updated {updated} notes with related links ({skipped} skipped — no matches above threshold)"
 
 
 @mcp.tool()
@@ -420,10 +584,64 @@ def snapshot_note_tool(note_path: str, tier: str = "base") -> str:
 
 
 @mcp.tool()
-def read_note_as_image(path: str) -> str:
-    """Read a note preferring PNG snapshot if available (fewer tokens), else text.
+def consolidate_tool(threshold: float = 0.85, dry_run: bool = True) -> str:
+    """Find and consolidate clusters of semantically similar notes.
 
-    Returns a description of how the note was served and its content summary.
+    Groups notes with cosine similarity >= threshold, then uses Gemini CLI
+    to synthesise each cluster into one abstract note in 20-areas/consolidated/.
+    Source notes are marked status='consolidated' and deprioritised in context.
+
+    Default dry_run=True — inspect clusters before committing.
+
+    Args:
+        threshold: Cosine similarity threshold for clustering (default 0.85)
+        dry_run: If True, show clusters without consolidating (default True)
+    """
+    result = _vs.run_consolidation(VAULT, threshold=threshold, dry_run=dry_run)
+    mode = "DRY RUN" if dry_run else "EXECUTED"
+    lines = [f"[{mode}] Clusters found: {result['clusters']}, Consolidated: {result['consolidated']}"]
+    if result.get("message"):
+        lines.append(result["message"])
+    for entry in result.get("log", []):
+        status = entry["status"]
+        cluster = entry.get("cluster", [])
+        size = entry.get("size", len(cluster))
+        if status == "dry_run":
+            stems = [Path(p).stem for p in cluster]
+            lines.append(f"  ~ cluster ({size}): {' + '.join(stems)}")
+        elif status == "consolidated":
+            lines.append(f"  ✓ → {entry['output']}")
+        else:
+            lines.append(f"  ✗ cluster: {entry.get('reason', status)}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def prune_archive_tool(min_age_days: int = 365, dry_run: bool = True) -> str:
+    """Delete archived originals older than min_age_days that have a snapshot.
+
+    Safe to run: only deletes when a PNG snapshot exists as long-term memory.
+    Default dry_run=True — set to False to actually delete.
+
+    Args:
+        min_age_days: Minimum age of archived file to consider (default 365)
+        dry_run: If True, only report what would be deleted (default True)
+    """
+    result = _vs.prune_archive(VAULT, min_age_days=min_age_days, dry_run=dry_run)
+    mode = "DRY RUN" if dry_run else "EXECUTED"
+    lines = [f"[{mode}] Archive prune: {result['deleted']} deleted, {result['skipped']} skipped"]
+    for entry in result["log"]:
+        icon = {"deleted": "🗑", "dry_run": "📋", "no_snapshot": "🔒", "too_young": "⏳"}.get(entry["status"], "?")
+        lines.append(f"  {icon} {entry['path']} ({entry['age']}d) — {entry['status']}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def read_note_as_image(path: str):
+    """Read a note as a PNG snapshot (direct image for VLM agents) or text fallback.
+
+    Returns the PNG image directly so the calling agent (Claude, Gemini, etc.) reads
+    it with its own vision model — cheaper and faster than routing through an intermediary.
     Args:
         path: Relative path from vault root
     """
@@ -431,31 +649,25 @@ def read_note_as_image(path: str) -> str:
     if not full_path.is_relative_to(VAULT) or not full_path.exists():
         return f"Note not found: {path}"
 
-    # Check for existing snapshot in DB
     with vault_db._connect() as con:
         row = con.execute(
-            "SELECT snapshot_path, snapshot_tier, snapshot_token_est FROM notes WHERE path=?",
+            "SELECT snapshot_path FROM notes WHERE path=?",
             [path]
         ).fetchone()
 
-    if row and row[0] and Path(row[0]).exists():
-        snap_path, tier, token_est = row
-        vault_db.record_access(path)
-        return (
-            f"[IMAGE MODE] Serving snapshot ({tier}, ~{token_est} tokens)\n"
-            f"Snapshot: {snap_path}\n"
-            f"To analyse this image, use extract_figures_for('{path}') or view the PNG directly."
-        )
+    if row and row[0]:
+        snap_path = Path(row[0])
+        if snap_path.exists():
+            vault_db.record_access(path)
+            return Image(path=snap_path, format="png")
 
-    # Fallback: return text (capped at 8000 tokens ≈ 32KB)
+    # No snapshot — return text (capped at 32KB)
     vault_db.record_access(path)
     text = full_path.read_text(encoding="utf-8")
-    token_est = len(text) // 4
     _MAX_CHARS = 32_000
-    truncated = len(text) > _MAX_CHARS
-    excerpt = text[:_MAX_CHARS] + ("\n\n[…truncated]" if truncated else "")
+    excerpt = text[:_MAX_CHARS] + ("\n\n[…truncated]" if len(text) > _MAX_CHARS else "")
     hint = f"run snapshot_note_tool('{path}') to create one"
-    return f"[TEXT MODE] ~{token_est} tokens (no snapshot yet — {hint})\n\n{excerpt}"
+    return f"[TEXT MODE] ~{len(text)//4} tokens (no snapshot — {hint})\n\n{excerpt}"
 
 
 if __name__ == "__main__":
