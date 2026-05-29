@@ -17,7 +17,9 @@
 | Problem | Solution |
 | :------ | :------- |
 | 📄 You save dozens of papers but can never find the right figure | `search_figures("UMAP melanocyte")` — returns the exact panel, across every paper you've saved |
+| 📑 arXiv gives you the abstract; you need the full paper | Auto-upgrades `/abs/` → `/html/` — fetches the complete paper with all sections, not just the abstract |
 | 🗂 Notes pile up; older ones never get cleaned up | **Vault Sleep**: low-access notes compress automatically every Sunday while you sleep (60–90% token reduction) |
+| 🔗 New notes stay isolated; you forget what's connected | **Auto-wikilinks**: every saved note is automatically linked to semantically related notes already in your vault |
 | 🔎 Semantic search needs a cloud API or Docker stack | Self-hosted `nomic-embed-text` via llama-server; BM25 fallback when offline |
 | 🔒 Every AI memory tool locks you into their format | Pure Markdown vault — sync with Google Drive, iCloud, or git; switch agents anytime |
 | 🖼 Figure context is lost when you read a paper | Every figure is downloaded, OCR'd by Claude Vision, and stored in DuckDB — searchable by gene name, p-value, axis label |
@@ -29,9 +31,11 @@
 ```text
 save_article("https://arxiv.org/abs/2405.01234")
   ↓
-• Full paper fetched and converted to Markdown
+• /abs/ auto-upgraded to /html/ — full paper, not just abstract
+• Full text converted to Markdown
 • All figures downloaded + OCR'd by Claude Vision
-• Semantic embeddings computed and linked to related notes
+• Semantic embeddings computed
+• Auto-linked to related notes already in your vault   ← auto-wikilinks
 • Stored in 30-resources/ — queryable immediately
 
 search_figures("UMAP cluster batch correction")
@@ -77,11 +81,14 @@ flowchart LR
     B4 --> C3
 ```
 
-**Five capabilities no other self-hosted tool combines:**
+**Eight capabilities no other self-hosted tool combines:**
 
 - 🔬 **Scientific article → searchable database in one command** — `save_article` fetches any URL or PDF, converts to Markdown, downloads every figure, OCRs them with Claude Vision, and builds a semantic index automatically
+- 📑 **arXiv full-text, not just abstract** — `/abs/` URLs are automatically upgraded to `/html/` so you get the complete paper with methods, results, and discussion
+- 🔗 **Auto-wikilinks — knowledge graph builds itself** — every saved note is automatically linked to semantically related notes already in your vault; no manual tagging needed
 - 🧠 **Memory that mirrors how brains forget** — Ebbinghaus score ranks notes by recency × access frequency; old low-access notes compress automatically while you sleep
 - 🖼 **Figure-level search across your entire library** — `search_figures("p < 0.001")` returns the exact figure from the exact paper, not just the document
+- 📋 **AI learns your project rules** — frequently-accessed notes auto-extract constraints and decisions into `memory/rules.md`, injected at every session start so the AI never forgets your hard-won insights
 - 📉 **Token cost shrinks with age** — PNG snapshots replace full text at 60–92% compression; frequently-read papers always stay full-fidelity
 - 🔓 **Zero vendor lock-in** — pure Markdown files, any AI agent via MCP, sync via any cloud drive or git
 
@@ -122,7 +129,14 @@ The agent calls `get_context()` and immediately sees:
 
 - `goals.md` with the state you saved
 - The harmony-notes.md surfaced at the top (recently accessed, high Ebbinghaus score)
-- Any rules extracted from that note (e.g. "RULE: use n_components=30 for this dataset")
+- Rules auto-extracted from that note, e.g.:
+
+```text
+RULE: use n_components=30 for this dataset — tested 20/30/50, 30 minimises batch effect without losing resolution
+RULE: exclude sample CRC_04 — library size outlier confirmed by QC
+```
+
+These rules live in `memory/rules.md` and are injected at every `get_context()` call — the AI carries your hard-won decisions forward automatically, without you having to repeat them.
 
 ### What Gets Persisted
 
