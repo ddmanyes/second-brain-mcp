@@ -558,15 +558,21 @@ def top_by_recency(limit: int = 20) -> list[dict]:
         ]
 
 
+_SCORE_SQL = (
+    "(access_count + 1.0) / "
+    "(1.0 + ln(GREATEST("
+    "date_diff('day', COALESCE(CAST(last_accessed AS DATE), note_date, current_date), current_date)"
+    ", 1) + 1))"
+)
+
+
 def top_by_score(limit: int = 20) -> list[dict]:
     """Return top notes by Ebbinghaus score (Phase 2). Falls back to recency."""
     with _connect() as con:
         rows = con.execute(
-            """
+            f"""
             SELECT path, title, note_type,
-                   (access_count + 1.0) /
-                   (1.0 + ln(GREATEST(date_diff('day', COALESCE(CAST(last_accessed AS DATE), note_date, current_date), current_date), 1) + 1))
-                   AS score
+                   {_SCORE_SQL} AS score
             FROM notes
             WHERE status != 'archived'
             ORDER BY score DESC
@@ -584,13 +590,11 @@ def sleep_candidates(min_age_days: int = 90, max_score: float = 0.5) -> list[dic
     """Return notes eligible for Vault Sleep consolidation (Phase 3)."""
     with _connect() as con:
         rows = con.execute(
-            """
+            f"""
             SELECT path, title, age_days, score FROM (
                 SELECT path, title,
                        date_diff('day', COALESCE(note_date, current_date), current_date) AS age_days,
-                       (access_count + 1.0) /
-                       (1.0 + ln(GREATEST(date_diff('day', COALESCE(CAST(last_accessed AS DATE), note_date, current_date), current_date), 1) + 1))
-                       AS score
+                       {_SCORE_SQL} AS score
                 FROM notes
                 WHERE status NOT IN ('archived', 'deprecated')
                   AND date_diff('day', COALESCE(note_date, current_date), current_date) >= ?

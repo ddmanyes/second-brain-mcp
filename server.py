@@ -717,15 +717,15 @@ def _bootstrap_vault(vault: Path) -> list[str]:
     for folder in ("00-inbox", "10-projects", "20-areas", "30-resources",
                    "40-archive", "decisions", "memory", "templates"):
         d = vault / folder
-        if d.is_file():
-            d.unlink()  # stale placeholder file — remove before mkdir
+        if (d.exists() or d.is_symlink()) and not d.is_dir():
+            d.unlink()  # remove any non-directory obstacle (file, symlink, junction)
         if not d.is_dir():
             d.mkdir(parents=True, exist_ok=True)
             actions.append(f"Created directory: {folder}/")
 
     bundled = Path(__file__).parent / "templates"
     if bundled.is_dir():
-        for tmpl in sorted(bundled.glob("*.md")):
+        for tmpl in bundled.glob("*.md"):
             dest = vault / "templates" / tmpl.name
             if not dest.exists():
                 dest.write_text(tmpl.read_text(encoding="utf-8"), encoding="utf-8")
@@ -733,11 +733,9 @@ def _bootstrap_vault(vault: Path) -> list[str]:
 
     goals = vault / "memory" / "goals.md"
     if not goals.exists():
-        goals.parent.mkdir(parents=True, exist_ok=True)
         goals.write_text(
-            "---\ntitle: Current Goals & Priorities\ndate: "
-            + date.today().isoformat()
-            + "\ntype: memory\nstatus: active\ntags: [memory, goals]\n---\n\n"
+            f"---\ntitle: Current Goals & Priorities\ndate: {date.today().isoformat()}\n"
+            "type: memory\nstatus: active\ntags: [memory, goals]\n---\n\n"
             "# Current Goals\n\n## In Progress\n\n- [ ] \n\n"
             "---\n*Update this file when priorities shift.*\n",
             encoding="utf-8",
