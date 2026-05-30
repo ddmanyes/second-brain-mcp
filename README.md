@@ -327,13 +327,17 @@ tests/test_vault_sleep.py  44 passed   (compression, consolidation, rules, prune
 | Dependency | Required | Notes |
 | :--------- | :------: | :---- |
 | Python 3.11+ | ✅ | |
-| [uv](https://docs.astral.sh/uv/) | ✅ | Package manager |
 | [Playwright](https://playwright.dev/) | ✅ | PNG snapshot rendering |
-| [llama-server](https://github.com/ggerganov/llama.cpp) | Optional | Semantic search; BM25 fallback if absent |
-| [nomic-embed-text-v1.5.Q8_0.gguf](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF) | Optional | ~300 MB embedding model |
-| Gemini CLI or `ANTHROPIC_API_KEY` | Optional | Better compression quality; naive fallback if absent |
+| [uv](https://docs.astral.sh/uv/) | Dev only | Only needed for `Development Install` path |
+| [llama-server](https://github.com/ggerganov/llama.cpp) or [Ollama](https://ollama.com) | Optional | Enables semantic search; BM25 fallback if absent |
+| [nomic-embed-text-v1.5.Q8_0.gguf](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF) | Optional | ~300 MB — needed for llama-server path only |
+| `ANTHROPIC_API_KEY` | Optional | Better compression quality in vault_sleep; naive fallback if absent |
 
-### Quick Start (PyPI — recommended)
+> **Vault structure is auto-created on first server start** — no manual `mkdir` needed.
+
+---
+
+### macOS / Linux — Quick Start
 
 #### Step 1 — Install
 
@@ -342,15 +346,9 @@ pip install mcp-second-brain
 playwright install chromium
 ```
 
-#### Step 2 — Create your vault
+#### Step 2 — Register with your AI agent
 
-```bash
-mkdir -p ~/second-brain/{00-inbox,10-projects,20-areas,30-resources,40-archive,decisions,memory,templates}
-```
-
-#### Step 3 — Register with your AI agent
-
-Option A: **Claude Code (CLI)**
+**Claude Code (CLI) — global, works in any project:**
 
 ```bash
 claude mcp add --scope user second-brain \
@@ -358,7 +356,7 @@ claude mcp add --scope user second-brain \
   -- python -m mcp_second_brain
 ```
 
-Option B: **Claude Desktop** — add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+**Claude Desktop** — add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 {
@@ -366,18 +364,141 @@ Option B: **Claude Desktop** — add to `~/Library/Application Support/Claude/cl
     "second-brain": {
       "command": "python",
       "args": ["-m", "mcp_second_brain"],
-      "env": { "SECOND_BRAIN_PATH": "/path/to/your/vault" }
+      "env": { "SECOND_BRAIN_PATH": "/Users/yourname/second-brain" }
     }
   }
 }
 ```
 
-#### Step 4 — Index your vault
+#### Step 3 — First run
 
-In Claude Code or Claude Desktop, tell the agent:
+Start your agent and say:
 
 ```text
-Run sync_index to build the initial index.
+init_vault
+```
+
+The server auto-creates all directories and templates on startup. Call `init_vault` explicitly to verify or repair the structure.
+
+---
+
+### Windows — Quick Start
+
+#### Step 1 — Install Python and the package
+
+```powershell
+# Install Python 3.11+ from python.org, or via winget:
+winget install Python.Python.3.11
+
+pip install mcp-second-brain
+playwright install chromium
+```
+
+#### Step 2 — Choose a vault location
+
+```powershell
+# Local folder:
+$vault = "C:\Users\$env:USERNAME\second-brain"
+
+# Or a cloud-synced folder (Google Drive, OneDrive, etc.):
+$vault = "G:\My Drive\second-brain"
+```
+
+> The vault directories and templates are **created automatically** when the server first starts. No manual setup needed.
+
+#### Step 3 — Register with your AI agent
+
+**Claude Code (VSCode extension)** — create `.mcp.json` in your vault folder:
+
+```json
+{
+  "mcpServers": {
+    "second-brain": {
+      "command": "python",
+      "args": ["-m", "mcp_second_brain"],
+      "env": { "SECOND_BRAIN_PATH": "C:\\Users\\YourName\\second-brain" }
+    }
+  }
+}
+```
+
+**Claude Desktop** — add to `%APPDATA%\Claude\claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "second-brain": {
+      "command": "python",
+      "args": ["-m", "mcp_second_brain"],
+      "env": { "SECOND_BRAIN_PATH": "C:\\Users\\YourName\\second-brain" }
+    }
+  }
+}
+```
+
+**Gemini CLI / other IDEs** — edit `%USERPROFILE%\.gemini\mcp_config.json` (or IDE-specific config):
+
+```json
+{
+  "mcpServers": {
+    "second-brain": {
+      "command": "C:\\Users\\YourName\\.venvs\\mcp-second-brain\\Scripts\\python.exe",
+      "args": ["-m", "mcp_second_brain"],
+      "env": { "SECOND_BRAIN_PATH": "C:\\Users\\YourName\\second-brain" }
+    }
+  }
+}
+```
+
+> **Tip:** Use a dedicated venv at `C:\Users\YourName\.venvs\mcp-second-brain\` (local SSD) rather than a venv on a network drive. Python loads thousands of small files at startup — on a cloud drive this causes 15–30 s delays and `context deadline exceeded` errors.
+
+#### Step 4 — Semantic search (optional, Windows)
+
+Ollama is the easiest path on Windows:
+
+```powershell
+winget install Ollama.Ollama
+ollama pull nomic-embed-text
+```
+
+Then add to the `env` block of your MCP config:
+
+```json
+"EMBED_URL": "http://localhost:11434/v1/embeddings",
+"EMBED_PORT": "11434"
+```
+
+Ollama starts automatically with Windows. No extra configuration needed.
+
+Alternatively, build [llama.cpp](https://github.com/ggerganov/llama.cpp) for Windows and register it as a scheduled task:
+
+```powershell
+# Register llama-server as a login-triggered scheduled task:
+$exe  = "C:\Users\$env:USERNAME\llama.cpp\build\bin\llama-server.exe"
+$model = "C:\Users\$env:USERNAME\nomic-embed-text-v1.5.Q8_0.gguf"
+$args = "-m `"$model`" --port 11435 --embedding --pooling mean -np 4 -c 2048 --log-disable"
+
+$action   = New-ScheduledTaskAction -Execute $exe -Argument $args
+$trigger  = New-ScheduledTaskTrigger -AtLogOn
+$settings = New-ScheduledTaskSettingsSet -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1)
+Register-ScheduledTask -TaskName "llama-embed" -Action $action -Trigger $trigger `
+  -Settings $settings -RunLevel Highest -Force
+```
+
+#### Step 5 — Weekly vault maintenance (optional, Windows)
+
+```powershell
+# Run vault_sleep every Sunday at 02:00
+$pythonExe = "C:\Users\$env:USERNAME\.venvs\mcp-second-brain\Scripts\python.exe"
+$serverPy  = "C:\path\to\second-brain-mcp\run_sleep.py"
+$vaultPath = "C:\Users\$env:USERNAME\second-brain"
+
+$action  = New-ScheduledTaskAction -Execute $pythonExe -Argument "`"$serverPy`"" `
+  -WorkingDirectory (Split-Path $serverPy)
+$trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At 2am
+$env_var = [System.Environment]::SetEnvironmentVariable(
+  "SECOND_BRAIN_PATH", $vaultPath, "Machine")
+Register-ScheduledTask -TaskName "vault-sleep" -Action $action -Trigger $trigger -Force
 ```
 
 ---
@@ -391,12 +512,18 @@ uv sync
 uv run playwright install chromium
 ```
 
-Then register with Claude Code:
+Register with Claude Code:
 
 ```bash
+# macOS / Linux
 claude mcp add --scope user second-brain \
   --env SECOND_BRAIN_PATH=~/second-brain \
   -- uv run --project /path/to/second-brain-mcp python server.py
+
+# Windows (PowerShell)
+claude mcp add --scope user second-brain `
+  --env SECOND_BRAIN_PATH="C:\Users\$env:USERNAME\second-brain" `
+  -- uv run --project C:\path\to\second-brain-mcp python server.py
 ```
 
 ### Environment Variables
@@ -406,7 +533,7 @@ claude mcp add --scope user second-brain \
 | `SECOND_BRAIN_PATH` | `~/second-brain` | Path to your vault directory |
 | `EMBED_URL` | `http://localhost:11435/v1/embeddings` | Embedding server endpoint |
 | `EMBED_MODEL` | `nomic-embed-text` | Embedding model name |
-| `EMBED_PORT` | `11435` | llama-server port |
+| `EMBED_PORT` | `11435` | llama-server port (use `11434` for Ollama) |
 
 ### Auto-start (macOS, optional)
 
@@ -427,12 +554,15 @@ launchctl load ~/Library/LaunchAgents/com.yourname.vault-sleep.plist
 
 | Symptom | Likely cause | Fix |
 | :------ | :----------- | :-- |
-| Semantic search silently falls back to BM25 | llama-server not running on `EMBED_PORT` | Start the embedding server (see [Auto-start](#auto-start-macos-optional)); verify with `curl localhost:11435/v1/embeddings` |
-| `read_note_as_image` / snapshots fail | Playwright chromium not installed | `uv run playwright install chromium` |
-| `vault_sleep` never compresses anything | No Gemini CLI / `ANTHROPIC_API_KEY` → naive fallback, or no eligible notes | Install Gemini CLI or export `ANTHROPIC_API_KEY`; remember only notes >90 days old with Ebbinghaus score ≤ 0.5 are candidates (`sleep_status` shows them) |
+| `new_note` returns `Error: template not found` | Templates missing from vault | Run `init_vault` — the server copies bundled templates automatically |
+| Semantic search silently falls back to BM25 | Embedding server not running | Start Ollama (`ollama serve`) or llama-server; check with `curl localhost:11435/health` (or port 11434 for Ollama) |
+| `read_note_as_image` / snapshots fail | Playwright chromium not installed | `pip install playwright && playwright install chromium` |
+| `vault_sleep` never compresses anything | No `ANTHROPIC_API_KEY` → naive fallback, or no eligible notes | Export `ANTHROPIC_API_KEY`; only notes >90 days old with Ebbinghaus score ≤ 0.5 are candidates — run `sleep_status` to see them |
 | Agent sees no notes / empty results | Index not built | Run `sync_index` once after install (and after bulk file changes) |
 | Notes land in the wrong place | `SECOND_BRAIN_PATH` unset or wrong | Set it in your MCP config `env` block; defaults to `~/second-brain` |
 | Tools unavailable when working in other project folders | Installed as local config instead of user scope | Re-register with `--scope user`: `claude mcp remove second-brain -s local && claude mcp add --scope user second-brain ...` |
+| **Windows:** MCP server times out on connect (`context deadline exceeded`) | Python venv is on a network/cloud drive | Move the venv to local SSD (e.g. `C:\Users\Name\.venvs\`) — cloud drives cause 15–30 s startup delay |
+| **Windows:** Semantic search returns no results after `sync_index` | Ollama not running | `ollama serve` in a terminal, or install Ollama with auto-start via winget |
 
 ---
 
