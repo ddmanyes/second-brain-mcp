@@ -45,4 +45,4 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["."]
-include = ["server.py", "vault_db.py", "vault_sleep.py", "figures.py"]
+include = ["server.py", "vault_db.py", "vault_sleep.py", "figures.py", "templates/*.md"]

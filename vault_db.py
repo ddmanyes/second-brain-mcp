@@ -565,7 +565,7 @@ def top_by_score(limit: int = 20) -> list[dict]:
             """
             SELECT path, title, note_type,
                    (access_count + 1.0) /
-                   (1.0 + ln(GREATEST(date_diff('day', COALESCE(note_date, current_date), current_date), 1) + 1))
+                   (1.0 + ln(GREATEST(date_diff('day', COALESCE(CAST(last_accessed AS DATE), note_date, current_date), current_date), 1) + 1))
                    AS score
             FROM notes
             WHERE status != 'archived'
@@ -589,7 +589,7 @@ def sleep_candidates(min_age_days: int = 90, max_score: float = 0.5) -> list[dic
                 SELECT path, title,
                        date_diff('day', COALESCE(note_date, current_date), current_date) AS age_days,
                        (access_count + 1.0) /
-                       (1.0 + ln(GREATEST(date_diff('day', COALESCE(note_date, current_date), current_date), 1) + 1))
+                       (1.0 + ln(GREATEST(date_diff('day', COALESCE(CAST(last_accessed AS DATE), note_date, current_date), current_date), 1) + 1))
                        AS score
                 FROM notes
                 WHERE status NOT IN ('archived', 'deprecated')

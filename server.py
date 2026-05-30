@@ -706,5 +706,62 @@ def read_note_as_image(path: str):
     return f"[TEXT MODE] ~{len(text)//4} tokens (no snapshot — {hint})\n\n{excerpt}"
 
 
+def _bootstrap_vault(vault: Path) -> list[str]:
+    """Ensure vault has required directories and default templates.
+
+    Safe to re-run: only creates missing items, never overwrites existing files.
+    Returns list of actions taken (empty if vault was already complete).
+    """
+    actions: list[str] = []
+
+    for folder in ("00-inbox", "10-projects", "20-areas", "30-resources",
+                   "40-archive", "decisions", "memory", "templates"):
+        d = vault / folder
+        if d.is_file():
+            d.unlink()  # stale placeholder file — remove before mkdir
+        if not d.is_dir():
+            d.mkdir(parents=True, exist_ok=True)
+            actions.append(f"Created directory: {folder}/")
+
+    bundled = Path(__file__).parent / "templates"
+    if bundled.is_dir():
+        for tmpl in sorted(bundled.glob("*.md")):
+            dest = vault / "templates" / tmpl.name
+            if not dest.exists():
+                dest.write_text(tmpl.read_text(encoding="utf-8"), encoding="utf-8")
+                actions.append(f"Created template: templates/{tmpl.name}")
+
+    goals = vault / "memory" / "goals.md"
+    if not goals.exists():
+        goals.parent.mkdir(parents=True, exist_ok=True)
+        goals.write_text(
+            "---\ntitle: Current Goals & Priorities\ndate: "
+            + date.today().isoformat()
+            + "\ntype: memory\nstatus: active\ntags: [memory, goals]\n---\n\n"
+            "# Current Goals\n\n## In Progress\n\n- [ ] \n\n"
+            "---\n*Update this file when priorities shift.*\n",
+            encoding="utf-8",
+        )
+        actions.append("Created memory/goals.md")
+
+    return actions
+
+
+@mcp.tool()
+def init_vault() -> str:
+    """Initialize or repair vault directory structure and default templates.
+
+    Safe to re-run: only creates missing items, never overwrites existing files.
+    Call this after cloning the repo or setting up on a new machine.
+    """
+    actions = _bootstrap_vault(VAULT)
+    if actions:
+        return "Vault initialized:\n" + "\n".join(f"  + {a}" for a in actions)
+    return "Vault already complete — nothing to create."
+
+
 if __name__ == "__main__":
+    bootstrap_log = _bootstrap_vault(VAULT)
+    if bootstrap_log:
+        print("[second-brain] Bootstrap:", ", ".join(bootstrap_log), file=sys.stderr)
     mcp.run()
