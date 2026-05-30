@@ -1,0 +1,5 @@
+# Normalize line endings
+* text=auto
+
+# Shell scripts: force LF and preserve executable bit
+*.sh text eol=lf
