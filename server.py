@@ -50,7 +50,7 @@ def _append_to_index(rel: str, label: str, today: str) -> None:
     index_path = VAULT / "memory" / "index.md"
     index_path.parent.mkdir(parents=True, exist_ok=True)
     index_text = index_path.read_text(encoding="utf-8") if index_path.exists() else ""
-    if rel not in index_text:
+    if f"]({rel})" not in index_text:
         with index_path.open("a", encoding="utf-8") as f:
             f.write(f"\n- [{label}]({rel}) — {today}")
 
@@ -213,16 +213,17 @@ def new_note(note_type: str, title: str, content: str = "", tags: str = "") -> s
 
 @mcp.tool()
 def search_notes(query: str) -> str:
-    """Hybrid semantic + full-text search across all vault notes.
+    """Hybrid semantic + full-text search across knowledge notes (excludes daily news archives).
 
     Uses BM25 + cosine similarity (nomic-embed-text) when embedding server is
     available, falls back to BM25-only, then file scan.
+    To search news specifically, use search_news_tool.
 
     Args:
         query: Search term — supports natural language and keywords
     """
     try:
-        hits = vault_db.hybrid_search(query, limit=20)
+        hits = vault_db.hybrid_search(query, limit=20, exclude_types=["cnyes_archive"])
     except Exception:
         hits = []
 
@@ -246,6 +247,31 @@ def search_notes(query: str) -> str:
 
     lines = [f"- [{h['title']}]({h['path']}) (score: {h['score']:.2f})" for h in hits]
     return f"Found {len(hits)} note(s):\n\n" + "\n".join(lines)
+
+
+@mcp.tool()
+def search_news_tool(query: str, days: int = 7) -> str:
+    """Search recent cnyes daily news archives.
+
+    Only searches cnyes_archive notes within the last N days.
+    Use search_notes for knowledge base search.
+
+    Args:
+        query: Stock ticker, keyword, or company name (e.g. '2317', 'TSMC', 'AI')
+        days:  How many days back to search (default 7)
+    """
+    try:
+        hits = vault_db.search_news(query, days=days, limit=20)
+    except Exception:
+        hits = []
+
+    if not hits:
+        return f"No news found matching '{query}' in the last {days} days."
+
+    lines = [f"Found {len(hits)} news note(s) for '{query}' (last {days}d):\n"]
+    for h in hits:
+        lines.append(f"- [{h['title']}]({h['path']}) ({h['date']})")
+    return "\n".join(lines)
 
 
 @mcp.tool()
@@ -342,8 +368,11 @@ def index_stats() -> str:
 def vault_sleep(dry_run: bool = False) -> str:
     """Compress old low-activity notes to slim down the vault.
 
-    Finds notes older than 90 days with Ebbinghaus score ≤ 0.5,
-    compresses them via LLM, and archives the originals.
+    Thresholds are read from vault/.sleep-config.json (per-folder):
+    - cnyes_archive: 7 days
+    - finance: 30 days
+    - everything else: 90 days
+    Notes with Ebbinghaus score > 0.5 are skipped.
 
     Args:
         dry_run: If True, show candidates without making changes.
@@ -396,7 +425,7 @@ def sleep_status() -> str:
     lines += ["", f"**Candidates ({len(candidates)}):**"]
     if candidates:
         for c in candidates:
-            tier = _vs._tier_for_age(c["age_days"])
+            tier = _vs._tier_for_profile(c.get("score", 0.0), c["age_days"])
             lines.append(f"- [{tier:5}] score={c['score']:.3f} age={c['age_days']}d  {c['path']}")
     else:
         lines.append("None (all notes are recent or active).")
@@ -511,9 +540,13 @@ def save_article(source: str, title: str = "", tags: str = "") -> str:
     n_links = _inject_related_links(dest, rel)
 
     # Trigger figure extraction in background (non-blocking)
-    threading.Thread(
-        target=_fig.process_article, args=(rel, VAULT), daemon=True
-    ).start()
+    def _bg_extract():
+        try:
+            _fig.process_article(rel, VAULT)
+        except Exception as e:
+            print(f"[second-brain] figure extraction failed for {rel}: {e}", file=sys.stderr)
+
+    threading.Thread(target=_bg_extract, daemon=True).start()
 
     link_msg = f", {n_links} related links added" if n_links else ""
     return f"Saved: {rel} (figure extraction started in background{link_msg})"
@@ -704,6 +737,125 @@ def read_note_as_image(path: str):
     excerpt = text[:_MAX_CHARS] + ("\n\n[…truncated]" if len(text) > _MAX_CHARS else "")
     hint = f"run snapshot_note_tool('{path}') to create one"
     return f"[TEXT MODE] ~{len(text)//4} tokens (no snapshot — {hint})\n\n{excerpt}"
+
+
+@mcp.tool()
+def find_related_notes(path: str, limit: int = 5, threshold: float = 0.7) -> str:
+    """Find semantically related notes for a given note (by vault-relative path).
+
+    Uses cosine similarity on stored embeddings. Useful for:
+    - Finance: from a stock report, find related morning briefs / sector notes
+    - Knowledge: after writing a note, discover overlapping existing notes
+
+    Args:
+        path:      Vault-relative path, e.g. "20-areas/personal/finance/NVDA_analysis_20260601.md"
+        limit:     Max results to return (default 5)
+        threshold: Minimum cosine similarity 0–1 (default 0.7)
+
+    Returns:
+        Markdown list of related note paths and titles, or a message if no embeddings found.
+    """
+    from vault_db import find_related, _connect
+    related = find_related(path, limit=limit, threshold=threshold)
+    if not related:
+        return (
+            f"No related notes found for `{path}` "
+            f"(threshold={threshold}, embeddings may not be synced — try sync_index first)."
+        )
+    lines = [f"## Related notes for `{path}`\n"]
+    with _connect() as con:
+        for stem in related:
+            row = con.execute(
+                "SELECT title, note_type FROM notes WHERE path = ? OR path = ?",
+                [stem, stem + ".md"],
+            ).fetchone()
+            title = row[0] if row else stem.split("/")[-1]
+            ntype = row[1] if row else ""
+            tag = f" `{ntype}`" if ntype else ""
+            lines.append(f"- [[{stem}]] — {title}{tag}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def search_grouped(query: str, limit: int = 10) -> str:
+    """Hybrid search that returns results split into two groups in one call:
+    - **knowledge**: permanent notes, project notes, literature (excludes cnyes_archive)
+    - **news**: cnyes morning briefs from the last 7 days
+
+    Useful for finance research (get stock report + morning brief context together)
+    and general knowledge work (see both deep notes and recent news at once).
+
+    Args:
+        query: Search terms, e.g. "NVDA" or "transformer architecture"
+        limit: Max results per group (default 10)
+
+    Returns:
+        Markdown with two sections: Knowledge and News.
+    """
+    from vault_db import hybrid_search_grouped
+    groups = hybrid_search_grouped(query, limit=limit)
+    lines = [f"## Search: `{query}`\n"]
+
+    knowledge = groups.get("knowledge", [])
+    lines.append(f"### Knowledge ({len(knowledge)} results)\n")
+    if knowledge:
+        for r in knowledge:
+            score = f"{r.get('score', 0):.2f}"
+            lines.append(f"- [[{r['path'].removesuffix('.md')}]] — {r['title']} `{r.get('type', '')}` (score: {score})")
+    else:
+        lines.append("*No knowledge notes found.*")
+
+    news = groups.get("news", [])
+    lines.append(f"\n### Morning Briefs / News ({len(news)} results)\n")
+    if news:
+        for r in news:
+            lines.append(f"- [[{r['path'].removesuffix('.md')}]] — {r['title']} `{r.get('date', '')}`")
+    else:
+        lines.append("*No recent morning briefs found.*")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def top_notes(by: str = "score", limit: int = 20) -> str:
+    """Return your most important notes ranked by engagement.
+
+    Two ranking modes:
+    - **score** (default): Ebbinghaus decay score = access_count / time_decay.
+      High score = frequently accessed AND recently accessed. Best for finding
+      your core knowledge nodes and most-researched stocks.
+    - **recency**: Last accessed time. Best for resuming recent work.
+
+    Use cases:
+    - Finance: find your most-researched tickers (= notes with highest score)
+    - Knowledge: find Evergreen note candidates (high score = worth refining)
+    - Weekly review: top 20 notes you've engaged with most this week
+
+    Args:
+        by:    "score" or "recency" (default "score")
+        limit: Number of notes to return (default 20)
+
+    Returns:
+        Ranked Markdown table of notes.
+    """
+    from vault_db import top_by_score, top_by_recency
+    by_lower = by.strip().lower()
+    if by_lower not in ("score", "recency"):
+        return "❌ `by` must be 'score' or 'recency'"
+
+    results = top_by_score(limit=limit) if by_lower == "score" else top_by_recency(limit=limit)
+    if not results:
+        return "No notes found in index — try sync_index first."
+
+    label = "Ebbinghaus Score" if by_lower == "score" else "Last Accessed"
+    lines = [f"## Top {limit} Notes by {label}\n"]
+    lines.append(f"| # | Title | Type | {label} |")
+    lines.append("|---|-------|------|---------|")
+    for i, r in enumerate(results, 1):
+        val = r.get("score", r.get("last_accessed", "—"))
+        path_stem = r["path"].removesuffix(".md")
+        lines.append(f"| {i} | [[{path_stem}]] {r['title']} | `{r.get('type', '')}` | {val} |")
+    return "\n".join(lines)
 
 
 def _bootstrap_vault(vault: Path) -> list[str]:

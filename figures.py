@@ -44,8 +44,12 @@ def _is_ssrf_safe(url: str) -> bool:
     if not host:
         return False
     try:
-        ip = ipaddress.ip_address(socket.gethostbyname(host))
-        return not any(ip in net for net in _BLOCKED_NETS)
+        infos = socket.getaddrinfo(host, None)
+        return not any(
+            ipaddress.ip_address(addr[4][0]) in net
+            for addr in infos
+            for net in _BLOCKED_NETS
+        )
     except Exception:
         return False
 
@@ -84,7 +88,7 @@ def _resolve_url(img_path: str, source_url: str) -> str | None:
 
 
 def _slug(note_path: str) -> str:
-    return hashlib.md5(note_path.encode()).hexdigest()[:12]
+    return hashlib.md5(note_path.encode(), usedforsecurity=False).hexdigest()[:12]
 
 
 def _download_image(url: str, dest: Path) -> bool:
@@ -96,6 +100,8 @@ def _download_image(url: str, dest: Path) -> bool:
     try:
         r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
         if r.status_code == 200 and r.content:
+            if not r.headers.get("Content-Type", "").startswith("image/"):
+                return False
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(r.content)
             return True

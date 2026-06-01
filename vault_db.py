@@ -36,6 +36,13 @@ del _os  # keep namespace clean
 
 DB_PATH = Path.home() / ".second-brain" / "vault.db"
 
+_DEFAULT_VAULT_PATH = Path(
+    __import__("os").environ.get(
+        "SECOND_BRAIN_PATH",
+        "~/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/second-brain",
+    )
+).expanduser()
+
 SCHEMA = """
 CREATE SEQUENCE IF NOT EXISTS figures_id_seq START 1;
 
@@ -183,7 +190,7 @@ def _embed_text_for(text: str, max_chars: int = 900) -> str:
 
 
 def _content_hash(text: str) -> str:
-    return hashlib.md5(text.encode()).hexdigest()
+    return hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()
 
 
 def _parse_date(val: str) -> date | None:
@@ -213,7 +220,17 @@ def upsert_note(con: duckdb.DuckDBPyConnection, vault: Path, md_file: Path) -> N
     tags_json = tags_raw if tags_raw.startswith("[") else json.dumps([tags_raw])
 
     # Compute embedding: title + tags + prose body (code blocks stripped to avoid server errors)
-    snippet = _body_snippet(text)          # 500 chars for DB / FTS storage
+    # For cnyes_archive, prepend tickers so FTS can find ticker mentions
+    # (body starts with US snapshot table; stock codes appear much later in the doc)
+    if fm.get("type") == "cnyes_archive":
+        tickers_raw = fm.get("tickers", "[]")
+        try:
+            tickers_str = " ".join(json.loads(tickers_raw))
+        except Exception:
+            tickers_str = tickers_raw
+        snippet = (tickers_str + " " + _body_snippet(text, max_chars=400))[:500]
+    else:
+        snippet = _body_snippet(text)          # 500 chars for DB / FTS storage
     prose = _embed_text_for(text)          # 1600 chars, code stripped
     tags_for_embed = fm.get("tags", "")
     embed_input = f"{fm.get('title', md_file.stem)} {tags_for_embed} {prose}".strip()
@@ -276,6 +293,8 @@ def sync_embeddings(vault: Path | None = None) -> dict:
         ).fetchall()
 
     updated, failed = 0, 0
+    updates: list[tuple[bytes, str]] = []
+
     for path, title, snippet, tags in rows:
         if vault:
             md_file = vault / path
@@ -289,27 +308,28 @@ def sync_embeddings(vault: Path | None = None) -> dict:
             text = f"{title or ''} {snippet or ''}".strip()
         vec = embed_text(text)
         if vec:
-            blob = _vec_to_blob(vec)
-            with _connect() as con:
-                con.execute("UPDATE notes SET embedding = ? WHERE path = ?", [blob, path])
+            updates.append((_vec_to_blob(vec), path))
             updated += 1
         else:
             failed += 1
+
+    if updates:
+        with _connect() as con:
+            con.executemany("UPDATE notes SET embedding = ? WHERE path = ?", updates)
 
     return {"updated": updated, "failed": failed, "skipped": len(rows) - updated - failed}
 
 
 def sync_all(vault: Path) -> int:
     """Scan all .md files in vault and upsert into DB. Returns count synced."""
-    con = _connect()
-    count = 0
-    for md_file in vault.rglob("*.md"):
-        if any(p in md_file.parts for p in (".obsidian", ".claude", "templates")):
-            continue
-        upsert_note(con, vault, md_file)
-        count += 1
-    _ensure_fts(con)
-    con.close()
+    with _connect() as con:
+        count = 0
+        for md_file in vault.rglob("*.md"):
+            if any(p in md_file.parts for p in (".obsidian", ".claude", "templates")):
+                continue
+            upsert_note(con, vault, md_file)
+            count += 1
+        _ensure_fts(con)
     return count
 
 
@@ -472,13 +492,32 @@ def semantic_search(query: str, limit: int = 20) -> list[dict]:
     return [{"path": p, "title": t, "score": s} for p, t, s in scored[:limit]]
 
 
-def hybrid_search(query: str, limit: int = 20, alpha: float = 0.5) -> list[dict]:
+def hybrid_search(
+    query: str,
+    limit: int = 20,
+    alpha: float = 0.5,
+    exclude_types: list[str] | None = None,
+) -> list[dict]:
     """Hybrid BM25 + cosine search. alpha=0.5 weights both equally.
 
     Falls back to fts_search if embedding server unavailable.
+    exclude_types: list of note_type values to exclude (e.g. ['cnyes_archive']).
     """
     bm25 = fts_search(query, limit=limit * 2)
     sem = semantic_search(query, limit=limit * 2)
+
+    if exclude_types and (bm25 or sem):
+        excluded = set(exclude_types)
+        with _connect() as con:
+            rows = con.execute(
+                "SELECT path, note_type FROM notes WHERE path IN ({})".format(
+                    ",".join("?" * (len(bm25) + len(sem)))
+                ),
+                [r["path"] for r in bm25 + sem],
+            ).fetchall()
+        excluded_paths = {path for path, ntype in rows if ntype in excluded}
+        bm25 = [r for r in bm25 if r["path"] not in excluded_paths]
+        sem = [r for r in sem if r["path"] not in excluded_paths]
 
     if not sem:
         return bm25[:limit]
@@ -502,6 +541,119 @@ def hybrid_search(query: str, limit: int = 20, alpha: float = 0.5) -> list[dict]
 
     combined.sort(key=lambda x: x["score"], reverse=True)
     return combined[:limit]
+
+
+def search_news(query: str, days: int = 7, limit: int = 20) -> list[dict]:
+    """Search only cnyes_archive notes within the last N days.
+
+    Uses LIKE on body_snippet first (reliable for numeric ticker codes which DuckDB
+    FTS tokenizer does not index), then falls back to BM25 for Chinese text queries.
+    Returns results sorted by note_date DESC.
+    """
+    with _connect() as con:
+        # Primary: LIKE match on body_snippet (works for numeric tickers like "2317")
+        q_like = f"% {query} %" if query.isdigit() else f"%{query.lower()}%"
+        rows = con.execute(
+            """
+            SELECT path, title, 1.0 AS score, note_date
+            FROM notes
+            WHERE note_type = 'cnyes_archive'
+              AND note_date IS NOT NULL
+              AND date_diff('day', note_date, current_date) <= ?
+              AND (body_snippet LIKE ? OR lower(body_snippet) LIKE ?)
+            ORDER BY note_date DESC
+            LIMIT ?
+            """,
+            [days, q_like, q_like.lower(), limit],
+        ).fetchall()
+        if rows:
+            return [{"path": r[0], "title": r[1], "score": r[2], "date": str(r[3])} for r in rows]
+
+        # Fallback: BM25 FTS (better for multi-word Chinese queries)
+        try:
+            _ensure_fts(con)
+            rows = con.execute(
+                """
+                SELECT path, title, score, note_date FROM (
+                    SELECT *, fts_main_notes.match_bm25(path, ?) AS score
+                    FROM notes
+                ) t
+                WHERE score IS NOT NULL
+                  AND note_type = 'cnyes_archive'
+                  AND note_date IS NOT NULL
+                  AND date_diff('day', note_date, current_date) <= ?
+                ORDER BY note_date DESC, score DESC
+                LIMIT ?
+                """,
+                [query, days, limit],
+            ).fetchall()
+            return [{"path": r[0], "title": r[1], "score": r[2], "date": str(r[3])} for r in rows]
+        except Exception:
+            q = f"%{query.lower()}%"
+            rows = con.execute(
+                """
+                SELECT path, title, 1.0 AS score, note_date
+                FROM notes
+                WHERE note_type = 'cnyes_archive'
+                  AND note_date IS NOT NULL
+                  AND date_diff('day', note_date, current_date) <= ?
+                  AND (lower(title) LIKE ? OR lower(body_snippet) LIKE ?)
+                ORDER BY note_date DESC
+                LIMIT ?
+                """,
+                [days, q, q, limit],
+            ).fetchall()
+            return [{"path": r[0], "title": r[1], "score": r[2], "date": str(r[3])} for r in rows]
+
+
+def get_note_snippet(path: str, query: str, max_per_line: int = 250, max_lines: int = 3) -> str:
+    """Return body lines from a vault note that mention *query* (case-insensitive).
+
+    Skips YAML frontmatter and lines that are purely metadata (tickers/tags lists).
+    Returns matched lines joined by ' | ', or empty string if nothing found.
+    """
+    full_path = _DEFAULT_VAULT_PATH / path
+    if not full_path.exists():
+        return ""
+    try:
+        q = query.lower()
+        lines = full_path.read_text(encoding="utf-8").splitlines()
+
+        # Skip frontmatter (between opening and closing ---)
+        body_start = 0
+        if lines and lines[0].strip() == "---":
+            for i, ln in enumerate(lines[1:], 1):
+                if ln.strip() == "---":
+                    body_start = i + 1
+                    break
+
+        matches = []
+        for line in lines[body_start:]:
+            stripped = line.strip()
+            # Skip pure metadata lines (JSON arrays, headings without context)
+            if not stripped or stripped.startswith("tickers:") or stripped.startswith("tags:"):
+                continue
+            if q in stripped.lower() and len(stripped) > 20:
+                # Clean markdown bold/italic markers for cleaner display
+                clean = re.sub(r"\*{1,2}([^*]+)\*{1,2}", r"\1", stripped)
+                matches.append(clean[:max_per_line])
+                if len(matches) >= max_lines:
+                    break
+        return " | ".join(matches)
+    except Exception:
+        return ""
+
+
+def hybrid_search_grouped(query: str, limit: int = 10) -> dict[str, list[dict]]:
+    """Hybrid search returning results split into knowledge vs news groups.
+
+    Returns {"knowledge": [...], "news": [...]} where:
+    - knowledge: all note types except cnyes_archive
+    - news: only cnyes_archive notes from the last 7 days
+    """
+    knowledge = hybrid_search(query, limit=limit, exclude_types=["cnyes_archive"])
+    news = search_news(query, days=7, limit=limit)
+    return {"knowledge": knowledge, "news": news}
 
 
 def find_related(path: str, limit: int = 5, threshold: float = 0.7) -> list[str]:

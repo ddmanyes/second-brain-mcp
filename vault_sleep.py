@@ -12,6 +12,7 @@ Resolution tiers (Phase 9: score × age dual-axis, from Experience Compression S
   (reductions relative to a ~1,000-token note; token_est lives in SNAPSHOT_TIERS, figures.py)
 """
 
+import json
 import re
 import subprocess
 from datetime import date
@@ -22,6 +23,34 @@ import figures as _fig
 
 # Resolution tiers: token estimates imported from figures to avoid duplication
 TIERS = _fig.SNAPSHOT_TIERS
+
+_SLEEP_CONFIG_FILE = ".sleep-config.json"
+
+
+def _load_sleep_config(vault: Path) -> dict:
+    """Load per-folder sleep config from vault root .sleep-config.json.
+
+    Schema:
+      { "folder_overrides": { "<prefix>": { "min_age_days": N } }, "default": { "min_age_days": N } }
+    """
+    config_path = vault / _SLEEP_CONFIG_FILE
+    if not config_path.exists():
+        return {"folder_overrides": {}, "default": {"min_age_days": 90}}
+    try:
+        return json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"folder_overrides": {}, "default": {"min_age_days": 90}}
+
+
+def _min_age_for_path(path: str, config: dict) -> int:
+    """Longest-prefix match to determine min_age_days for a note path."""
+    overrides: dict = config.get("folder_overrides", {})
+    default_age = config.get("default", {}).get("min_age_days", 90)
+    for prefix in sorted(overrides.keys(), key=len, reverse=True):
+        norm = str(prefix).rstrip("/")
+        if path.startswith(norm + "/") or path == norm:
+            return overrides[prefix].get("min_age_days", default_age)
+    return default_age
 
 
 def _tier_for_profile(score: float, age_days: int) -> str:
@@ -68,11 +97,14 @@ Output ONLY the compressed markdown note preserving the original frontmatter str
 # Model backends
 # ---------------------------------------------------------------------------
 
+_MAX_COMPRESS_CHARS = 12_000
+
+
 def _compress_with_gemini(content: str) -> str | None:
     """Primary: Gemini CLI (free tier covers ~100k tokens/month)."""
     try:
         result = subprocess.run(
-            ["gemini", "-p", f"{COMPRESS_PROMPT}\n\n---\n\n{content}"],
+            ["gemini", "-p", f"{COMPRESS_PROMPT}\n\n---\n\n{content[:_MAX_COMPRESS_CHARS]}"],
             capture_output=True, text=True, timeout=180,
         )
         if result.returncode == 0 and result.stdout.strip():
@@ -86,7 +118,7 @@ def _compress_with_claude(content: str) -> str | None:
     """Fallback: Claude API via claude CLI."""
     try:
         result = subprocess.run(
-            ["claude", "-p", f"{COMPRESS_PROMPT}\n\n---\n\n{content}"],
+            ["claude", "-p", f"{COMPRESS_PROMPT}\n\n---\n\n{content[:_MAX_COMPRESS_CHARS]}"],
             capture_output=True, text=True, timeout=180,
         )
         if result.returncode == 0 and result.stdout.strip():
@@ -151,9 +183,9 @@ def _update_frontmatter(content: str, updates: dict) -> str:
 
     fm_text = fm_match.group(1)
     for key, val in updates.items():
-        if re.search(rf"^{key}:", fm_text, re.MULTILINE):
+        if re.search(rf"^{re.escape(key)}:", fm_text, re.MULTILINE):
             replacement = f"{key}: {val}"
-            fm_text = re.sub(rf"^{key}:.*$", lambda _: replacement, fm_text, flags=re.MULTILINE)
+            fm_text = re.sub(rf"^{re.escape(key)}:.*$", lambda _: replacement, fm_text, flags=re.MULTILINE)
         else:
             fm_text += f"\n{key}: {val}"
 
@@ -166,14 +198,37 @@ def _update_frontmatter(content: str, updates: dict) -> str:
 
 def run_sleep(
     vault: Path,
-    min_age_days: int = 90,
+    min_age_days: int | None = None,
     max_score: float = 0.5,
     dry_run: bool = False,
 ) -> dict:
-    """Find sleep candidates and compress them via Gemini/Claude."""
+    """Find sleep candidates and compress them via Gemini/Claude.
+
+    min_age_days: global floor override. When None, uses .sleep-config.json
+    (lowest configured threshold as the DB query floor; per-folder thresholds
+    applied per-note). When provided, overrides the config entirely.
+    """
+    sleep_config = _load_sleep_config(vault)
+
+    if min_age_days is None:
+        # Use the smallest configured threshold as the DB query floor so we
+        # cast the widest net, then filter per-note below.
+        all_ages = [v.get("min_age_days", 90) for v in sleep_config.get("folder_overrides", {}).values()]
+        all_ages.append(sleep_config.get("default", {}).get("min_age_days", 90))
+        query_min_age = min(all_ages)
+    else:
+        query_min_age = min_age_days
+
     candidates = vault_db.sleep_candidates(
-        min_age_days=min_age_days, max_score=max_score
+        min_age_days=query_min_age, max_score=max_score
     )
+
+    # Apply per-folder thresholds when not overridden globally.
+    if min_age_days is None:
+        candidates = [
+            c for c in candidates
+            if c["age_days"] >= _min_age_for_path(c["path"], sleep_config)
+        ]
 
     if not candidates:
         return {
@@ -282,12 +337,12 @@ def prune_archive(
     if not archive_dir.exists():
         return {"deleted": 0, "skipped": 0, "log": [], "message": "No archive directory."}
 
-    # Build set of note stems that have snapshots in DuckDB
+    # Build set of note paths that have snapshots in DuckDB (full path for exact matching)
     with vault_db._connect() as con:
         rows = con.execute(
             "SELECT path FROM notes WHERE snapshot_path IS NOT NULL AND snapshot_path != ''"
         ).fetchall()
-    snapshotted_stems = {Path(r[0]).stem for r in rows}
+    snapshotted_paths = {r[0] for r in rows}
 
     today = date.today()
     deleted, skipped = 0, 0
@@ -303,7 +358,7 @@ def prune_archive(
             log.append({"path": str(rel), "status": "too_young", "age": age_days})
             continue
 
-        if archived.stem not in snapshotted_stems:
+        if str(rel) not in snapshotted_paths:
             skipped += 1
             log.append({"path": str(rel), "status": "no_snapshot", "age": age_days})
             continue
