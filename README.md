@@ -234,7 +234,7 @@ Vault    BM25-only p50          Hybrid BM25+semantic p50
 │                    AI Agent Layer                    │
 │         Claude Code · Gemini CLI · Any MCP           │
 └──────────────────────┬──────────────────────────────┘
-                       │ MCP Protocol (19 tools)
+                       │ MCP Protocol (22 tools)
 ┌──────────────────────▼──────────────────────────────┐
 │               Layer 2 — MCP Server                   │
 │                    server.py                         │
@@ -281,7 +281,7 @@ Every Sunday 02:00 (launchd, no interaction needed)
 
 ---
 
-## MCP Tools (19 total)
+## MCP Tools (22 total)
 
 | Tool | Description |
 | :--- | :---------- |
@@ -304,6 +304,9 @@ Every Sunday 02:00 (launchd, no interaction needed)
 | `consolidate_tool` | Merge semantically similar notes into one abstract note |
 | `update_links_tool` | Refresh auto-generated `[[wikilinks]]` |
 | `prune_archive_tool` | Delete archived originals that have a PNG snapshot |
+| `find_related_notes` | Find semantically related notes by cosine similarity (finance & knowledge management) |
+| `search_grouped` | Hybrid search returning knowledge notes + cnyes morning briefs in one call |
+| `top_notes` | Rank notes by Ebbinghaus score or recency — find your most-engaged knowledge nodes |
 
 ---
 
