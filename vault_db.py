@@ -9,6 +9,7 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -30,9 +31,12 @@ import os as _os
 EMBED_PORT = int(_os.environ.get("EMBED_PORT", "11435"))
 EMBED_URL = _os.environ.get("EMBED_URL", f"http://localhost:{EMBED_PORT}/v1/embeddings")
 EMBED_MODEL = _os.environ.get("EMBED_MODEL", "nomic-embed-text")
-EMBED_DIM = 768
-
 del _os  # keep namespace clean
+
+# Note-type exclusion lists (centralised to avoid scattered magic strings)
+NEWS_TYPES: list[str] = ["cnyes_archive"]
+FINANCE_DAILY_TYPES: list[str] = ["stock_analysis", "daily_briefing", "market_calendar", "dashboard"]
+KNOWLEDGE_EXCLUDE: list[str] = NEWS_TYPES + FINANCE_DAILY_TYPES
 
 DB_PATH = Path.home() / ".second-brain" / "vault.db"
 
@@ -77,6 +81,8 @@ CREATE TABLE IF NOT EXISTS figures (
 
 CREATE INDEX IF NOT EXISTS idx_last_accessed ON notes(last_accessed DESC);
 CREATE INDEX IF NOT EXISTS idx_note_date     ON notes(note_date DESC);
+CREATE INDEX IF NOT EXISTS idx_note_type     ON notes(note_type);
+CREATE INDEX IF NOT EXISTS idx_status        ON notes(status);
 CREATE INDEX IF NOT EXISTS idx_figures_note  ON figures(note_path);
 """
 
@@ -88,17 +94,6 @@ _MIGRATIONS = [
     "ALTER TABLE notes ADD COLUMN IF NOT EXISTS embedding BLOB",           # Phase 6
     "ALTER TABLE notes ADD COLUMN IF NOT EXISTS rules_extracted_at TIMESTAMP",  # Phase 7
 ]
-
-FTS_SETUP = """
-INSTALL fts;
-LOAD fts;
-PRAGMA create_fts_index(
-    'notes', 'path',
-    'title', 'tags', 'body_snippet',
-    overwrite = 1
-);
-"""
-
 
 # ---------------------------------------------------------------------------
 # Connection
@@ -118,8 +113,8 @@ def _connect() -> duckdb.DuckDBPyConnection:
             for migration in _MIGRATIONS:
                 try:
                     con.execute(migration)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[vault_db] migration skipped: {migration!r} → {e}", file=sys.stderr)
             _schema_applied = True
     return con
 
@@ -240,8 +235,8 @@ def upsert_note(con: duckdb.DuckDBPyConnection, vault: Path, md_file: Path) -> N
     con.execute(
         """
         INSERT INTO notes (path, title, note_type, status, tags, note_date,
-                           content_hash, body_snippet, last_accessed, embedding)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, current_timestamp, ?)
+                           content_hash, body_snippet, embedding)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (path) DO UPDATE SET
             title              = excluded.title,
             note_type          = excluded.note_type,
@@ -263,7 +258,7 @@ def upsert_note(con: duckdb.DuckDBPyConnection, vault: Path, md_file: Path) -> N
             chash,
             snippet,
             blob,
-        ],
+        ],  # last_accessed intentionally omitted; set only by record_access()
     )
 
 
@@ -321,14 +316,28 @@ def sync_embeddings(vault: Path | None = None) -> dict:
 
 
 def sync_all(vault: Path) -> int:
-    """Scan all .md files in vault and upsert into DB. Returns count synced."""
+    """Scan all .md files in vault and upsert into DB. Returns count synced.
+
+    Also removes DB rows for notes/figures whose markdown files no longer exist.
+    """
+    seen: set[str] = set()
     with _connect() as con:
         count = 0
         for md_file in vault.rglob("*.md"):
             if any(p in md_file.parts for p in (".obsidian", ".claude", "templates")):
                 continue
             upsert_note(con, vault, md_file)
+            seen.add(str(md_file.relative_to(vault)))
             count += 1
+        # Reconcile: remove stale rows that no longer have a backing file
+        if seen:
+            placeholders = ",".join("?" * len(seen))
+            con.execute(
+                f"DELETE FROM figures WHERE note_path NOT IN ({placeholders})", list(seen)
+            )
+            con.execute(
+                f"DELETE FROM notes WHERE path NOT IN ({placeholders})", list(seen)
+            )
         _ensure_fts(con)
     return count
 
@@ -442,7 +451,6 @@ def fts_search(query: str, limit: int = 20) -> list[dict]:
     """Full-text search using DuckDB FTS. Falls back to LIKE if FTS unavailable."""
     with _connect() as con:
         try:
-            _ensure_fts(con)
             rows = con.execute(
                 """
                 SELECT path, title, score
@@ -571,7 +579,6 @@ def search_news(query: str, days: int = 7, limit: int = 20) -> list[dict]:
 
         # Fallback: BM25 FTS (better for multi-word Chinese queries)
         try:
-            _ensure_fts(con)
             rows = con.execute(
                 """
                 SELECT path, title, score, note_date FROM (
@@ -651,7 +658,7 @@ def hybrid_search_grouped(query: str, limit: int = 10) -> dict[str, list[dict]]:
     - knowledge: all note types except cnyes_archive
     - news: only cnyes_archive notes from the last 7 days
     """
-    knowledge = hybrid_search(query, limit=limit, exclude_types=["cnyes_archive"])
+    knowledge = hybrid_search(query, limit=limit, exclude_types=KNOWLEDGE_EXCLUDE)
     news = search_news(query, days=7, limit=limit)
     return {"knowledge": knowledge, "news": news}
 
@@ -666,19 +673,14 @@ def find_related(path: str, limit: int = 5, threshold: float = 0.7) -> list[str]
         row = con.execute(
             "SELECT embedding FROM notes WHERE path = ?", [path]
         ).fetchone()
-
-    if not row or not row[0]:
-        return []
-
-    q_vec = _blob_to_vec(row[0])
-
-    with _connect() as con:
+        if not row or not row[0]:
+            return []
+        q_vec = _blob_to_vec(row[0])
         rows = con.execute(
             "SELECT path, embedding FROM notes WHERE embedding IS NOT NULL AND path != ?",
-            [path]
+            [path],
         ).fetchall()
 
-    # SQL already filters NULL; blob is always non-None here
     scored = []
     for other_path, blob in rows:
         sim = _cosine(q_vec, _blob_to_vec(blob))
@@ -686,23 +688,29 @@ def find_related(path: str, limit: int = 5, threshold: float = 0.7) -> list[str]
             scored.append((other_path, sim))
 
     scored.sort(key=lambda x: x[1], reverse=True)
-    # Return as wikilink stems (strip .md)
     return [p.removesuffix(".md") for p, _ in scored[:limit]]
 
 
-def top_by_recency(limit: int = 20) -> list[dict]:
+def top_by_recency(limit: int = 20, exclude_types: list[str] | None = None) -> list[dict]:
     """Return top notes by last_accessed for get_context() (Phase 1)."""
+    extra = ""
+    params: list = [limit]
+    if exclude_types:
+        placeholders = ",".join("?" * len(exclude_types))
+        extra = f"AND note_type NOT IN ({placeholders})"
+        params = list(exclude_types) + params
     with _connect() as con:
         rows = con.execute(
-            """
+            f"""
             SELECT path, title, note_type, last_accessed
             FROM notes
             WHERE status != 'archived'
+              {extra}
             ORDER BY last_accessed DESC NULLS LAST,
                      note_date DESC NULLS LAST
             LIMIT ?
             """,
-            [limit],
+            params,
         ).fetchall()
         return [
             {"path": r[0], "title": r[1], "type": r[2], "last_accessed": str(r[3])}
@@ -718,8 +726,14 @@ _SCORE_SQL = (
 )
 
 
-def top_by_score(limit: int = 20) -> list[dict]:
+def top_by_score(limit: int = 20, exclude_types: list[str] | None = None) -> list[dict]:
     """Return top notes by Ebbinghaus score (Phase 2). Falls back to recency."""
+    extra = ""
+    params: list = [limit]
+    if exclude_types:
+        placeholders = ",".join("?" * len(exclude_types))
+        extra = f"AND note_type NOT IN ({placeholders})"
+        params = list(exclude_types) + params
     with _connect() as con:
         rows = con.execute(
             f"""
@@ -727,10 +741,11 @@ def top_by_score(limit: int = 20) -> list[dict]:
                    {_SCORE_SQL} AS score
             FROM notes
             WHERE status != 'archived'
+              {extra}
             ORDER BY score DESC
             LIMIT ?
             """,
-            [limit],
+            params,
         ).fetchall()
         return [
             {"path": r[0], "title": r[1], "type": r[2], "score": round(r[3], 4)}

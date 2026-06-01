@@ -374,3 +374,94 @@ class TestSearchFigures:
         )
         results = vault_db.search_figures("token compression")
         assert len(results) == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.1 — sync_all reconcile
+# ---------------------------------------------------------------------------
+
+class TestSyncReconcile:
+    def test_sync_removes_deleted_notes(self, tmp_path: Path) -> None:
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        (vault / "30-resources").mkdir()
+
+        note_a = vault / "30-resources" / "keep.md"
+        note_b = vault / "30-resources" / "delete.md"
+        for n in (note_a, note_b):
+            n.write_text(
+                f"---\ntitle: {n.stem}\ndate: 2025-01-01\ntype: note\nstatus: active\ntags: []\n---\n\nbody\n",
+                encoding="utf-8",
+            )
+
+        vault_db.sync_all(vault)
+        with vault_db._connect() as con:
+            assert con.execute("SELECT COUNT(*) FROM notes").fetchone()[0] == 2
+
+        note_b.unlink()
+        vault_db.sync_all(vault)
+
+        with vault_db._connect() as con:
+            paths = {r[0] for r in con.execute("SELECT path FROM notes").fetchall()}
+        assert "30-resources/keep.md" in paths
+        assert "30-resources/delete.md" not in paths
+
+    def test_sync_removes_orphaned_figures(self, tmp_path: Path) -> None:
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        (vault / "30-resources").mkdir()
+
+        keep = vault / "30-resources" / "keep.md"
+        delete = vault / "30-resources" / "delete.md"
+        for n in (keep, delete):
+            n.write_text(
+                f"---\ntitle: {n.stem}\ndate: 2025-01-01\ntype: note\nstatus: active\ntags: []\n---\n\nbody\n",
+                encoding="utf-8",
+            )
+
+        vault_db.sync_all(vault)
+        vault_db.upsert_figure("30-resources/delete.md", 0, "", "", "ocr", "desc", 10)
+
+        with vault_db._connect() as con:
+            assert con.execute("SELECT COUNT(*) FROM figures").fetchone()[0] == 1
+
+        delete.unlink()
+        vault_db.sync_all(vault)
+
+        with vault_db._connect() as con:
+            assert con.execute("SELECT COUNT(*) FROM figures").fetchone()[0] == 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.1 — KNOWLEDGE_EXCLUDE filtering
+# ---------------------------------------------------------------------------
+
+class TestKnowledgeExclude:
+    def _insert(self, path: str, note_type: str, title: str = "T") -> None:
+        with vault_db._connect() as con:
+            con.execute(
+                "INSERT INTO notes (path, title, note_type, status, tags, note_date, content_hash)"
+                " VALUES (?,?,?,'active','[]','2025-01-01',?)",
+                [path, title, note_type, path],
+            )
+
+    def test_top_by_score_excludes_finance_types(self) -> None:
+        self._insert("knowledge/article.md", "tech_note", "Good Article")
+        self._insert("finance/report.md", "stock_analysis", "Daily Report")
+        results = vault_db.top_by_score(limit=20, exclude_types=vault_db.KNOWLEDGE_EXCLUDE)
+        paths = [r["path"] for r in results]
+        assert "knowledge/article.md" in paths
+        assert "finance/report.md" not in paths
+
+    def test_top_by_score_without_exclude_shows_finance(self) -> None:
+        self._insert("finance/report.md", "stock_analysis", "Daily Report")
+        results = vault_db.top_by_score(limit=20)
+        assert any(r["path"] == "finance/report.md" for r in results)
+
+    def test_top_by_recency_excludes_finance_types(self) -> None:
+        self._insert("knowledge/article.md", "tech_note", "Good Article")
+        self._insert("finance/daily.md", "daily_briefing", "Briefing")
+        results = vault_db.top_by_recency(limit=20, exclude_types=vault_db.KNOWLEDGE_EXCLUDE)
+        paths = [r["path"] for r in results]
+        assert "knowledge/article.md" in paths
+        assert "finance/daily.md" not in paths

@@ -13,6 +13,7 @@ from markitdown import MarkItDown
 from mcp.server.fastmcp import FastMCP, Image
 
 import vault_db
+from vault_db import KNOWLEDGE_EXCLUDE
 import vault_sleep as _vs
 import figures as _fig
 
@@ -131,7 +132,8 @@ def get_context() -> str:
 
     top: list[dict] = []
     try:
-        top = vault_db.top_by_score(limit=20) or vault_db.top_by_recency(limit=20)
+        top = (vault_db.top_by_score(limit=20, exclude_types=KNOWLEDGE_EXCLUDE)
+               or vault_db.top_by_recency(limit=20, exclude_types=KNOWLEDGE_EXCLUDE))
         rows = "\n".join(
             f"- [{r['title']}]({r['path']})"
             + (f" _(score: {r['score']:.2f})_" if "score" in r else "")
@@ -223,7 +225,7 @@ def search_notes(query: str) -> str:
         query: Search term — supports natural language and keywords
     """
     try:
-        hits = vault_db.hybrid_search(query, limit=20, exclude_types=["cnyes_archive"])
+        hits = vault_db.hybrid_search(query, limit=20, exclude_types=KNOWLEDGE_EXCLUDE)
     except Exception:
         hits = []
 

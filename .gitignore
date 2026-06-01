@@ -23,3 +23,5 @@ mcp_config.json
 
 # Local dev artifacts
 execution_trace.md
+dist/
+.pytest_cache/

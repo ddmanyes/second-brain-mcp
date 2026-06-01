@@ -337,12 +337,12 @@ def prune_archive(
     if not archive_dir.exists():
         return {"deleted": 0, "skipped": 0, "log": [], "message": "No archive directory."}
 
-    # Build set of note paths that have snapshots in DuckDB (full path for exact matching)
+    # Build set of filenames (stems) that have snapshots — archive path differs from original
     with vault_db._connect() as con:
         rows = con.execute(
             "SELECT path FROM notes WHERE snapshot_path IS NOT NULL AND snapshot_path != ''"
         ).fetchall()
-    snapshotted_paths = {r[0] for r in rows}
+    snapshotted_names = {Path(r[0]).name for r in rows}
 
     today = date.today()
     deleted, skipped = 0, 0
@@ -358,7 +358,7 @@ def prune_archive(
             log.append({"path": str(rel), "status": "too_young", "age": age_days})
             continue
 
-        if str(rel) not in snapshotted_paths:
+        if archived.name not in snapshotted_names:
             skipped += 1
             log.append({"path": str(rel), "status": "no_snapshot", "age": age_days})
             continue

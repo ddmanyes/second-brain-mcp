@@ -461,9 +461,9 @@ def read_snapshot_with_gemini(snapshot_path: Path, vault: Path) -> str | None:
     Uses @filepath syntax so Gemini reads the image directly (not via file tools).
     """
     try:
-        # Reject DB-sourced paths that escape the snapshots directory
+        # Reject DB-sourced paths that escape the vault
         resolved = Path(snapshot_path).resolve()
-        if not resolved.is_relative_to(SNAPSHOTS_DIR.resolve()):
+        if not resolved.is_relative_to(vault.resolve()):
             return None
 
         try:

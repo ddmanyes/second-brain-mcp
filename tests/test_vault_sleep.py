@@ -17,6 +17,7 @@ import vault_sleep
 def isolated_db(tmp_path, monkeypatch):
     monkeypatch.setattr(vault_db, "DB_PATH", tmp_path / "vault.db")
     monkeypatch.setattr(vault_db, "_schema_applied", False)
+    monkeypatch.setattr(vault_db, "EMBED_AUTO_START", False)
 
 
 @pytest.fixture()
