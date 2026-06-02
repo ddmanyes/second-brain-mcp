@@ -11,7 +11,10 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# SECOND_BRAIN_SERVER_DIR 可覆蓋 server.py 所在目錄
+# launchd 複製此 script 到本機路徑時，需透過此環境變數指回原始目錄
+_DEFAULT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SERVER_DIR="${SECOND_BRAIN_SERVER_DIR:-$_DEFAULT_DIR}"
 PORT="${SECOND_BRAIN_REMOTE_PORT:-9100}"
 
 # ── 偵測 tailscale CLI ────────────────────────────────────────────────────────
@@ -36,10 +39,24 @@ if [ -z "$_TAILSCALE" ]; then
   exit 1
 fi
 
-# ── 取得 Tailscale IP ─────────────────────────────────────────────────────────
+# ── 確認 Tailscale 已連線（Running 狀態）────────────────────────────────────
+_TS_STATE=$("$_TAILSCALE" status --json 2>/dev/null | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d.get('BackendState',''))
+except Exception:
+    print('')
+" 2>/dev/null || true)
+
+if [ "$_TS_STATE" != "Running" ]; then
+  echo "[second-brain] Tailscale not running (state=${_TS_STATE:-unknown}), will retry" >&2
+  exit 1
+fi
+
 TAILSCALE_IP=$("$_TAILSCALE" ip -4 2>/dev/null || true)
 if [ -z "$TAILSCALE_IP" ]; then
-  echo "[second-brain] ERROR: Tailscale not connected (no IPv4 address)" >&2
+  echo "[second-brain] ERROR: Tailscale running but no IPv4 address" >&2
   exit 1
 fi
 
@@ -63,11 +80,21 @@ if [ -z "$_UV" ]; then
 fi
 
 echo "[second-brain] Binding to Tailscale IP ${TAILSCALE_IP}:${PORT}" >&2
+echo "[second-brain] Server dir: ${SERVER_DIR}" >&2
 
-exec "$_UV" run \
-  --with "mcp[cli]" \
-  --with "markitdown[all]" \
-  python "${SCRIPT_DIR}/server.py" \
-  --transport streamable-http \
-  --host "${TAILSCALE_IP}" \
-  --port "${PORT}"
+# 優先使用 .venv（uv sync 建立），確保 launchd 環境下路徑正確
+_PYTHON="${SERVER_DIR}/.venv/bin/python"
+if [ -x "$_PYTHON" ]; then
+  exec "$_PYTHON" "${SERVER_DIR}/server.py" \
+    --transport streamable-http \
+    --host "${TAILSCALE_IP}" \
+    --port "${PORT}"
+else
+  # fallback：用 uv run（需要 uv 且 network 可用）
+  exec "$_UV" run \
+    --project "${SERVER_DIR}" \
+    python "${SERVER_DIR}/server.py" \
+    --transport streamable-http \
+    --host "${TAILSCALE_IP}" \
+    --port "${PORT}"
+fi

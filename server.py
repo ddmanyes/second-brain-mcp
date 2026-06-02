@@ -938,12 +938,13 @@ if __name__ == "__main__":
     if args.transport == "stdio":
         mcp.run()
     else:
-        kwargs: dict = {"transport": args.transport, "port": args.port}
+        # host/port are FastMCP constructor settings; update before run
+        mcp.settings.port = args.port
         if args.host:
-            kwargs["host"] = args.host
+            mcp.settings.host = args.host
         print(
             f"[second-brain] Starting {args.transport} on "
-            f"{args.host or '127.0.0.1'}:{args.port}",
+            f"{mcp.settings.host}:{mcp.settings.port}",
             file=sys.stderr,
         )
-        mcp.run(**kwargs)
+        mcp.run(transport=args.transport)
