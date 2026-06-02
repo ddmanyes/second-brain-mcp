@@ -234,7 +234,7 @@ Vault    BM25-only p50          Hybrid BM25+semantic p50
 │                    AI Agent Layer                    │
 │         Claude Code · Gemini CLI · Any MCP           │
 └──────────────────────┬──────────────────────────────┘
-                       │ MCP Protocol (22 tools)
+                       │ MCP Protocol (24 tools)
 ┌──────────────────────▼──────────────────────────────┐
 │               Layer 2 — MCP Server                   │
 │                    server.py                         │
