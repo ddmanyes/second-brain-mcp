@@ -93,6 +93,7 @@ _MIGRATIONS = [
     "ALTER TABLE notes ADD COLUMN IF NOT EXISTS snapshot_token_est INTEGER",
     "ALTER TABLE notes ADD COLUMN IF NOT EXISTS embedding BLOB",           # Phase 6
     "ALTER TABLE notes ADD COLUMN IF NOT EXISTS rules_extracted_at TIMESTAMP",  # Phase 7
+    "ALTER TABLE notes ADD COLUMN IF NOT EXISTS violations TEXT",               # Phase 10 schema
 ]
 
 # ---------------------------------------------------------------------------
@@ -127,6 +128,78 @@ def _ensure_fts(con: duckdb.DuckDBPyConnection) -> None:
         )
     except Exception:
         pass  # FTS index already exists or extension unavailable
+
+
+# ---------------------------------------------------------------------------
+# Schema validation (Phase 10)
+# ---------------------------------------------------------------------------
+
+def _load_vault_schema() -> dict:
+    """Load vault-schema.json from vault root. Returns empty dict if missing."""
+    schema_path = _DEFAULT_VAULT_PATH / "vault-schema.json"
+    if schema_path.exists():
+        try:
+            return json.loads(schema_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"[vault_db] vault-schema.json parse error: {e}", file=sys.stderr)
+    return {}
+
+
+_VAULT_SCHEMA: dict = {}
+_VAULT_SCHEMA_LOADED = False
+
+
+def _get_vault_schema() -> dict:
+    global _VAULT_SCHEMA, _VAULT_SCHEMA_LOADED
+    if not _VAULT_SCHEMA_LOADED:
+        _VAULT_SCHEMA = _load_vault_schema()
+        _VAULT_SCHEMA_LOADED = True
+    return _VAULT_SCHEMA
+
+
+def validate_note(fm: dict, path: str) -> list[str]:
+    """Return list of violation strings. Empty list = passes schema.
+
+    Non-blocking: violations are recorded but never prevent writes.
+    """
+    schema = _get_vault_schema()
+    if not schema:
+        return []
+
+    violations: list[str] = []
+
+    # Required fields
+    for field in schema.get("frontmatter_required", []):
+        if not fm.get(field):
+            violations.append(f"missing: {field}")
+
+    # type value check
+    type_val = fm.get("type", "")
+    valid_types = schema.get("type_values", [])
+    if type_val and valid_types and type_val not in valid_types:
+        violations.append(f"invalid type: {type_val!r}")
+
+    # status value check
+    status_val = fm.get("status", "")
+    valid_statuses = schema.get("status_values", [])
+    if status_val and valid_statuses and status_val not in valid_statuses:
+        violations.append(f"invalid status: {status_val!r}")
+
+    # folder vs type consistency — longest matching prefix wins
+    folder_map = schema.get("folder_type_map", {})
+    matched_prefix = ""
+    matched_types: list[str] = []
+    for folder_prefix, allowed_types in folder_map.items():
+        if (path.startswith(folder_prefix + "/") or path == folder_prefix) and \
+                len(folder_prefix) > len(matched_prefix):
+            matched_prefix = folder_prefix
+            matched_types = allowed_types
+    if matched_prefix and type_val and type_val not in matched_types:
+        violations.append(
+            f"folder/type mismatch: {matched_prefix!r} expects {matched_types}, got {type_val!r}"
+        )
+
+    return violations
 
 
 # ---------------------------------------------------------------------------
@@ -232,11 +305,14 @@ def upsert_note(con: duckdb.DuckDBPyConnection, vault: Path, md_file: Path) -> N
     vec = embed_text(embed_input)
     blob = _vec_to_blob(vec) if vec else None
 
+    violations = validate_note(fm, rel)
+    violations_json = json.dumps(violations) if violations else None
+
     con.execute(
         """
         INSERT INTO notes (path, title, note_type, status, tags, note_date,
-                           content_hash, body_snippet, embedding)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           content_hash, body_snippet, embedding, violations)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (path) DO UPDATE SET
             title              = excluded.title,
             note_type          = excluded.note_type,
@@ -245,7 +321,8 @@ def upsert_note(con: duckdb.DuckDBPyConnection, vault: Path, md_file: Path) -> N
             note_date          = excluded.note_date,
             content_hash       = excluded.content_hash,
             body_snippet       = excluded.body_snippet,
-            embedding          = COALESCE(excluded.embedding, notes.embedding)
+            embedding          = COALESCE(excluded.embedding, notes.embedding),
+            violations         = excluded.violations
             -- snapshot fields managed by update_snapshot(), not here
         """,
         [
@@ -258,6 +335,7 @@ def upsert_note(con: duckdb.DuckDBPyConnection, vault: Path, md_file: Path) -> N
             chash,
             snippet,
             blob,
+            violations_json,
         ],  # last_accessed intentionally omitted; set only by record_access()
     )
 
