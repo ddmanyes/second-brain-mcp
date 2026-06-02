@@ -77,7 +77,7 @@ def _send_telegram(message: str) -> None:
 # ---------------------------------------------------------------------------
 
 _STOCK_ANALYSIS_RE = re.compile(
-    r"^([A-Z0-9\-]+)_analysis_(\d{8})\.md$", re.IGNORECASE
+    r"^([A-Z0-9\.\-]+)_analysis_(\d{8})\.md$", re.IGNORECASE
 )
 
 
