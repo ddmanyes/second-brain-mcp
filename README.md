@@ -238,7 +238,7 @@ Vault    BM25-only p50          Hybrid BM25+semantic p50
 ┌──────────────────────▼──────────────────────────────┐
 │               Layer 2 — MCP Server                   │
 │                    server.py                         │
-│   get_context · search_notes · save_article · …      │
+│  get_context · search_notes · save_article · … (24)  │
 └──────┬───────────────┬────────────────┬─────────────┘
        │               │                │
 ┌──────▼──────┐ ┌──────▼──────┐ ┌──────▼──────┐
@@ -281,7 +281,7 @@ Every Sunday 02:00 (launchd, no interaction needed)
 
 ---
 
-## MCP Tools (22 total)
+## MCP Tools (24 total)
 
 | Tool | Description |
 | :--- | :---------- |
@@ -289,6 +289,7 @@ Every Sunday 02:00 (launchd, no interaction needed)
 | `save_article` | **Fetch URL/PDF → Markdown + auto-extract figures** |
 | `search_notes` | Hybrid BM25 + semantic search across all notes |
 | `search_figures` | **Search figure OCR text / VLM descriptions** |
+| `search_news_tool` | Search cnyes morning briefs and financial news by keyword |
 | `extract_figures_for` | Manually trigger figure extraction for a saved article |
 | `read_note` | Read note + record access (updates Ebbinghaus score) |
 | `read_note_as_image` | Return PNG snapshot for token-efficient reading |
@@ -307,6 +308,7 @@ Every Sunday 02:00 (launchd, no interaction needed)
 | `find_related_notes` | Find semantically related notes by cosine similarity (finance & knowledge management) |
 | `search_grouped` | Hybrid search returning knowledge notes + cnyes morning briefs in one call |
 | `top_notes` | Rank notes by Ebbinghaus score or recency — find your most-engaged knowledge nodes |
+| `init_vault` | Create or repair vault directory structure and templates |
 
 ---
 
