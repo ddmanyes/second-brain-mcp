@@ -138,6 +138,120 @@ def sync_all(vault: Path) -> int:
 
 ---
 
+## Phase 11 — 遠端存取（Tailscale + streamable-http）
+
+> 目標：讓第二台 Mac 透過 Tailscale 私有網路使用同一個 second-brain MCP server。
+
+### 11.1 server.py 加 transport / host / port 參數 🟡
+
+**改動**：`server.py` 最末 `if __name__ == "__main__"` 區塊。
+
+```python
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--transport", default="stdio",
+                        choices=["stdio", "streamable-http", "sse"])
+    parser.add_argument("--port", type=int, default=9100)
+    parser.add_argument("--host", default="")   # 空字串 = FastMCP 預設 (127.0.0.1)
+    args = parser.parse_args()
+
+    bootstrap_log = _bootstrap_vault(VAULT)
+    if bootstrap_log:
+        print("[second-brain] Bootstrap:", ", ".join(bootstrap_log), file=sys.stderr)
+
+    if args.transport == "stdio":
+        mcp.run()
+    else:
+        kwargs: dict = {"transport": args.transport, "port": args.port}
+        if args.host:
+            kwargs["host"] = args.host
+        mcp.run(**kwargs)
+```
+
+**重點**：`--host` 預設空字串（不傳給 FastMCP），讓它綁 `127.0.0.1`。
+用 Tailscale 啟動時需明確傳入 Tailscale IP：`--host $(tailscale ip -4)`。
+**不要用 `0.0.0.0`**（見資安備註）。
+
+**驗證**：
+
+```bash
+# 本機 stdio 模式（不受影響）
+uv run python server.py
+
+# 遠端 http 模式
+uv run python server.py --transport streamable-http --host $(tailscale ip -4) --port 9100
+curl http://$(tailscale ip -4):9100/mcp  # 應返回 MCP endpoint 描述
+```
+
+### 11.2 launchd plist（持久化遠端模式）🟡
+
+檔案：`~/Library/LaunchAgents/com.user.second-brain-remote.plist`
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>       <string>com.user.second-brain-remote</string>
+  <key>RunAtLoad</key>   <true/>
+  <key>KeepAlive</key>   <true/>
+  <key>WorkingDirectory</key>
+  <string>/path/to/mcp-tools/second-brain</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/path/to/uv</string>
+    <string>run</string>
+    <string>--with</string><string>mcp[cli]</string>
+    <string>--with</string><string>markitdown[all]</string>
+    <string>python</string><string>server.py</string>
+    <string>--transport</string><string>streamable-http</string>
+    <string>--port</string><string>9100</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SECOND_BRAIN_PATH</key>
+    <string>/path/to/second-brain</string>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>StandardOutPath</key>  <string>/tmp/second-brain-remote.log</string>
+  <key>StandardErrorPath</key><string>/tmp/second-brain-remote.log</string>
+</dict>
+</plist>
+```
+
+> ⚠️ `--host` 不要寫死進 plist，Tailscale IP 可能在 Tailscale 重裝後改變。
+> 改用啟動 wrapper script，讓它動態取 `$(tailscale ip -4)`。
+
+### 11.3 遠端 Mac 的 Claude Code 設定 🟢
+
+```bash
+claude mcp add --scope user second-brain-remote \
+  --transport http \
+  http://100.x.x.x:9100/mcp
+```
+
+---
+
+### 資安備註（Phase 11 專用）
+
+| 風險 | 等級 | 現況 / 說明 |
+| --- | --- | --- |
+| 路徑遍歷 | ✅ 已防護 | `is_relative_to(VAULT)` 所有 read/write 都有 |
+| SSRF | ✅ 已防護 | `_is_ssrf_safe()` + `save_article` URL 白名單 |
+| 無認證 | ⚠️ Tailscale 緩解 | **Tailscale = 裝置層認證**，只有同帳號裝置可連；不開放 public internet |
+| 破壞性工具 | ⚠️ 設計緩解 | `vault_sleep` / `prune_archive_tool` 預設 `dry_run=True`，需明確傳 `False` 才真正執行 |
+| 個資曝露 | ⚠️ Tailscale 緩解 | vault 含個人財務/決策筆記；Tailscale 限制只有你的設備能讀 |
+| 0.0.0.0 綁定 | 🔴 **禁止** | 不要 bind 到所有介面；只綁 Tailscale IP（`100.x.x.x`）或 loopback |
+| 無 rate limit | ℹ️ 低風險 | 兩台 Mac 個人使用，不需要 |
+| 無 audit log | ℹ️ 可接受 | 如有需要，可在 FastMCP middleware 加 access log |
+
+**Tailscale ACL（選做，更嚴謹）**：在 Tailscale admin console 設定，只允許特定 device tag 能訪問 port 9100，其餘設備即使在同一個 Tailnet 也無法連線。
+
+---
+
 ## 驗收清單
 
 - [ ] Phase 1：FTS 不再每查重建；新增 index；migration 會 log。`pytest` 綠。
@@ -145,6 +259,7 @@ def sync_all(vault: Path) -> int:
 - [ ] Phase 3：知識搜尋/get_context 排除每日金融報告；top_notes 金融用途不受影響。
 - [ ] Phase 4：（至少）find_related/get_context 不再重複載入 embedding。
 - [ ] Phase 5：清理項目。
+- [ ] Phase 11：`server.py` 支援 `--transport streamable-http --host --port`；本機 stdio 不受影響；遠端 Mac 測試 `get_context()` 回應正常。
 - [ ] 全部完成後跑一次 `sync_index()` 重建 DB，並用 `index_stats()` 確認筆數正常。
 
 ## 風險備註
@@ -152,3 +267,4 @@ def sync_all(vault: Path) -> int:
 - DB 可從 markdown 完全重建（`sync_index`），所以 schema 變更失敗時：刪除 `~/.second-brain/vault.db` 重跑 sync 即可恢復。
 - **不要**改 vault 裡的 markdown 內容（那是真實資料）。本計畫只動 `mcp-tools/second-brain/` 下的程式碼與 DB。
 - Phase 4.2 風險最高，可獨立評估或略過。
+- Phase 11 安全前提：Tailscale 帳號安全 = MCP server 安全。啟用 Tailscale 2FA。
