@@ -913,7 +913,37 @@ def init_vault() -> str:
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Second Brain MCP server")
+    parser.add_argument(
+        "--transport",
+        default="stdio",
+        choices=["stdio", "streamable-http", "sse"],
+        help="MCP transport (default: stdio)",
+    )
+    parser.add_argument("--port", type=int, default=9100, help="HTTP port (default: 9100)")
+    parser.add_argument(
+        "--host",
+        default="",
+        help="Bind host for HTTP transport. Empty = FastMCP default (127.0.0.1). "
+             "Use Tailscale IP for remote access; never use 0.0.0.0.",
+    )
+    args = parser.parse_args()
+
     bootstrap_log = _bootstrap_vault(VAULT)
     if bootstrap_log:
         print("[second-brain] Bootstrap:", ", ".join(bootstrap_log), file=sys.stderr)
-    mcp.run()
+
+    if args.transport == "stdio":
+        mcp.run()
+    else:
+        kwargs: dict = {"transport": args.transport, "port": args.port}
+        if args.host:
+            kwargs["host"] = args.host
+        print(
+            f"[second-brain] Starting {args.transport} on "
+            f"{args.host or '127.0.0.1'}:{args.port}",
+            file=sys.stderr,
+        )
+        mcp.run(**kwargs)
