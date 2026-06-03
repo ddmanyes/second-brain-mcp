@@ -1,5 +1,9 @@
 # Second Brain MCP Server
 
+> **本地 Claude Code**：操作 SOP 見 [AGENTS.md](AGENTS.md)，vault 目錄結構與工具清單在同一文件。
+> **遠端 MCP 連入**：呼叫 `get_agent_instructions()` 工具可取得 AGENTS.md 完整內容。
+> **CLAUDE.md 位置**：`second-brain/CLAUDE.md`（由 Claude Code 在此目錄啟動時自動載入）。
+
 ## 執行
 
 `uv run --with "mcp[cli]" --with "markitdown[all]" python server.py`

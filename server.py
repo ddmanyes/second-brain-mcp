@@ -34,6 +34,7 @@ NOTE_CONFIG: dict[str, tuple[str, str]] = {
     "finding":   ("20-areas/research", "templates/research-note-template.md"),
     "coding":    ("20-areas/coding",   "templates/note-template.md"),
     "tool":      ("20-areas/coding",   "templates/note-template.md"),
+    "mcp":       ("10-projects",       "templates/mcp-project-template.md"),
     "resource":  ("30-resources",      "templates/note-template.md"),
     "reference": ("30-resources",      "templates/note-template.md"),
 }
@@ -336,6 +337,62 @@ def read_note(path: str) -> str:
     except Exception:
         pass  # access tracking is best-effort
     return full_path.read_text(encoding="utf-8")
+
+
+@mcp.tool()
+def update_note(path: str, content: str) -> str:
+    """Overwrite an existing note with new content.
+
+    Use when rewriting or restructuring a note. For adding content without
+    losing existing text, use append_to_note instead.
+
+    Args:
+        path: Relative path from vault root, e.g. 'decisions/my-decision.md'
+        content: Full new content to write (replaces the entire file)
+    """
+    full_path = (VAULT / path).resolve()
+    if not full_path.is_relative_to(VAULT):
+        return "Error: path must be within the vault."
+    if not full_path.exists():
+        return f"Note not found: {path}. Use new_note to create it."
+    full_path.write_text(content, encoding="utf-8")
+    try:
+        with vault_db._connect() as con:
+            vault_db.upsert_note(con, VAULT, full_path)
+        n_links = _inject_related_links(full_path, path)
+    except Exception as e:
+        print(f"[second-brain] warning: index/link failed for {path}: {e}", file=sys.stderr)
+        n_links = 0
+    link_msg = f" ({n_links} related links refreshed)" if n_links else ""
+    return f"Updated: {path}{link_msg}"
+
+
+@mcp.tool()
+def append_to_note(path: str, content: str) -> str:
+    """Append content to the end of an existing note.
+
+    Safer than update_note — existing text is never lost.
+    Use for adding progress updates, new findings, or extra sections.
+
+    Args:
+        path: Relative path from vault root, e.g. '10-projects/my-project.md'
+        content: Text to append (added after a blank line at end of file)
+    """
+    full_path = (VAULT / path).resolve()
+    if not full_path.is_relative_to(VAULT):
+        return "Error: path must be within the vault."
+    if not full_path.exists():
+        return f"Note not found: {path}. Use new_note to create it."
+    existing = full_path.read_text(encoding="utf-8")
+    separator = "\n" if existing.endswith("\n") else "\n\n"
+    full_path.write_text(existing + separator + content, encoding="utf-8")
+    try:
+        with vault_db._connect() as con:
+            vault_db.upsert_note(con, VAULT, full_path)
+        _inject_related_links(full_path, path)
+    except Exception as e:
+        print(f"[second-brain] warning: index/link failed for {path}: {e}", file=sys.stderr)
+    return f"Appended to: {path}"
 
 
 @mcp.tool()
@@ -910,6 +967,25 @@ def init_vault() -> str:
     if actions:
         return "Vault initialized:\n" + "\n".join(f"  + {a}" for a in actions)
     return "Vault already complete — nothing to create."
+
+
+@mcp.tool()
+def get_agent_instructions() -> str:
+    """Return the full AGENTS.md operating manual for AI agents.
+
+    Call this at the start of a remote session (when AGENTS.md cannot be read
+    from the filesystem) to learn vault structure, tool SOP, and hard constraints.
+
+    Returns:
+        str: Full contents of AGENTS.md
+    """
+    def _read(filename: str) -> str:
+        path = Path(__file__).parent / filename
+        if not path.exists():
+            return f"⚠️ 找不到 {filename}"
+        return path.read_text(encoding="utf-8")
+
+    return _read("AGENTS.md")
 
 
 if __name__ == "__main__":
