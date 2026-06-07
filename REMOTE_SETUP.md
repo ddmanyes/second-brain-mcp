@@ -1,6 +1,66 @@
-# Second Brain MCP — 遠端主機設定指南
+# Second Brain MCP — 跨平台 & 遠端設定指南
 
-> 本文件說明如何在新 Mac 上架設 second-brain MCP server，讓遠端客戶端（另一台 Mac 的 Antigravity IDE / Claude Code）透過 Tailscale 存取。
+> 本文件說明：
+>
+> 1. **跨平台（Mac + Windows）本機直連設定** — 兩台電腦各自用 user-scope MCP，vault/.mcp.json 保持空白不干擾
+> 2. **遠端 Tailscale 存取** — 讓遠端 Mac 透過加密隧道連入主機
+
+---
+
+## 跨平台本機設定（Mac + Windows）
+
+### 設計原則
+
+`vault/.mcp.json` 跟著 Google Drive 同步，**不能放機器特定路徑**。  
+每台電腦改用 `--scope user` 設定，存在本機 `~/.claude/`（不同步）。
+
+### Mac（已設定，確認用）
+
+```bash
+# 確認目前設定
+claude mcp list
+```
+
+若需要重新設定（路徑依實際 Google Drive 掛載點）：
+
+```bash
+claude mcp add --scope user second-brain \
+  "/Users/zhanqiru/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/mcp-tools/second-brain/.venv/bin/python" \
+  "/Users/zhanqiru/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/mcp-tools/second-brain/server.py" \
+  --env SECOND_BRAIN_PATH="/Users/zhanqiru/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/second-brain"
+```
+
+### Windows（PowerShell，初次設定）
+
+前置條件：已建立 venv 並安裝依賴：
+
+```powershell
+# 建立 venv（只需執行一次）
+python -m venv C:\Users\User\.venvs\mcp-second-brain
+C:\Users\User\.venvs\mcp-second-brain\Scripts\pip install -r "G:\我的雲端硬碟\PJ_save\mcp-tools\second-brain\requirements.txt"
+```
+
+設定 user-scope MCP：
+
+```powershell
+claude mcp add --scope user second-brain `
+  --env SECOND_BRAIN_PATH="G:\我的雲端硬碟\PJ_save\second-brain" `
+  -- "C:\Users\User\.venvs\mcp-second-brain\Scripts\python.exe" `
+  "G:\我的雲端硬碟\PJ_save\mcp-tools\second-brain\server.py"
+```
+
+確認：
+
+```powershell
+claude mcp list
+```
+
+### vault/.mcp.json 說明
+
+此檔案已設為空設定（`"mcpServers": {}`），跟著 Google Drive 同步但**不含任何路徑**。  
+各機器的實際設定存放在本機 `~/.claude/`，互不干擾。
+
+---
 
 ---
 

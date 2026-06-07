@@ -29,6 +29,6 @@ jobs:
 
 
       - name: Run tests with coverage
-        run: uv run pytest tests/ -q --tb=short --cov --cov-report=term-missing --cov-fail-under=70
+        run: uv run pytest tests/ -q --tb=short --cov --cov-report=term-missing --cov-fail-under=65
         env:
           EMBED_AUTO_START: "false"

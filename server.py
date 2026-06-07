@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Second Brain MCP Server — domain-specific tools for the personal knowledge vault."""
+"""Second Brain MCP Server — domain-specific tools for the personal knowledge vault. (Trigger Restart 2)"""
 
+
+import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import threading
+import time
 from datetime import date
 from pathlib import Path
 from urllib.parse import urlparse
@@ -39,6 +44,53 @@ NOTE_CONFIG: dict[str, tuple[str, str]] = {
     "reference": ("30-resources",      "templates/note-template.md"),
 }
 _DEFAULT_CONFIG = ("00-inbox", "templates/note-template.md")
+
+# When a note matches a project slug, note_type → subfolder within project
+_PROJECT_SUBTYPE_MAP: dict[str, str] = {
+    "coding":    "phases",
+    "research":  "research",
+    "paper":     "research",
+    "finding":   "research",
+    "resource":  "docs",
+    "reference": "docs",
+    "tool":      "docs",
+}
+
+
+def _load_project_registry() -> dict[str, str]:
+    """Parse PROJECT_REGISTRY.md table → {slug: project_folder}.
+
+    Only includes projects with a dedicated subfolder (e.g. 10-projects/second-brain/).
+    Flat projects (overview directly in 10-projects/) are excluded from routing.
+    """
+    reg_path = VAULT / "10-projects" / "PROJECT_REGISTRY.md"
+    if not reg_path.exists():
+        return {}
+    result: dict[str, str] = {}
+    for line in reg_path.read_text(encoding="utf-8").splitlines():
+        parts = [p.strip() for p in line.split("|")]
+        parts = [p for p in parts if p]
+        if len(parts) < 3:
+            continue
+        slug = parts[0]
+        if slug.startswith("-") or slug.lower() in ("slug", "---"):
+            continue
+        overview = parts[2]  # e.g. "10-projects/second-brain/overview.md"
+        folder = str(Path(overview).parent)
+        # Only route projects that have their own subfolder
+        if folder != "10-projects":
+            result[slug] = folder
+    return result
+
+
+def _detect_project_slug(title: str, tags: str, registry: dict[str, str]) -> str | None:
+    """Return matching project slug if title or tags contain a known slug."""
+    combined = (title + " " + tags).lower()
+    # Prefer longer slugs first to avoid partial matches
+    for slug in sorted(registry, key=len, reverse=True):
+        if slug.lower() in combined:
+            return slug
+    return None
 
 
 def _slugify(text: str) -> str:
@@ -83,6 +135,115 @@ def _validate_source(source: str) -> str | None:
     return None
 
 
+def _extract_semantic_keywords_via_gemini(content: str) -> list[str]:
+    """Call Gemini CLI to extract up to 10 semantic keywords from content.
+
+    Returns empty list if CLI unavailable or extraction fails — never raises.
+    """
+    gemini_cli = shutil.which("gemini")
+    if not gemini_cli:
+        return []
+    prompt = (
+        "從以下文章中提取最多10個繁體中文語義關鍵字（同義詞、概念、主題），"
+        "以JSON array格式回傳，例如：[\"關鍵字1\",\"關鍵字2\"]，只輸出JSON array，不要其他文字。\n\n"
+        + content[:2000]
+    )
+    try:
+        env = os.environ.copy()
+        env["GEMINI_CLI_TRUST_WORKSPACE"] = "false"
+        result = subprocess.run(
+            [gemini_cli, "-p", prompt],
+            capture_output=True, text=True, timeout=60, env=env,
+            cwd=str(Path.home()),
+        )
+        output = result.stdout.strip()
+        m = re.search(r"\[.*?\]", output, re.DOTALL)
+        if m:
+            keywords = json.loads(m.group())
+            return [str(k) for k in keywords if k][:10]
+        # Fallback: comma-separated plain text
+        return [s.strip() for s in output.split(",") if s.strip()][:10]
+    except Exception as e:
+        print(f"[second-brain] semantic keyword extraction failed: {e}", file=sys.stderr)
+        return []
+
+
+def _inject_semantic_keywords(note_path: Path, keywords: list[str]) -> None:
+    """Write semantic_keywords into the frontmatter of an existing note file."""
+    text = note_path.read_text(encoding="utf-8")
+    fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
+    if not fm_match:
+        return
+    fm_text = fm_match.group(1)
+    kw_line = f"semantic_keywords: {json.dumps(keywords, ensure_ascii=False)}"
+    if "semantic_keywords:" in fm_text:
+        fm_text = re.sub(r"^semantic_keywords:.*$", kw_line, fm_text, flags=re.MULTILINE)
+    else:
+        fm_text += f"\n{kw_line}"
+    new_text = f"---\n{fm_text}\n---\n\n" + text[fm_match.end():]
+    if new_text != text:
+        note_path.write_text(new_text, encoding="utf-8")
+
+
+def _run_keyword_enrichment_async(dest: Path, content: str) -> None:
+    """Fire-and-forget: extract semantic keywords via Gemini and re-index in background thread.
+
+    Returns immediately — never blocks the caller.
+    """
+    def _worker():
+        try:
+            sk = _extract_semantic_keywords_via_gemini(content)
+            if sk:
+                _inject_semantic_keywords(dest, sk)
+                with vault_db._connect() as con:
+                    vault_db.upsert_note(con, VAULT, dest)
+        except Exception as e:
+            print(f"[second-brain] background keyword enrichment failed for {dest.name}: {e}", file=sys.stderr)
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _inject_neighbor_keywords(note_path: Path, data: dict) -> None:
+    """Write neighbor_keywords and cluster_topic into the frontmatter of a note file."""
+    text = note_path.read_text(encoding="utf-8")
+    fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
+    if not fm_match:
+        return
+    fm_text = fm_match.group(1)
+    nk_line = f"neighbor_keywords: {json.dumps(data['neighbor_keywords'], ensure_ascii=False)}"
+    ct_line = f"cluster_topic: {json.dumps(data['cluster_topic'], ensure_ascii=False)}"
+    for field, line in (("neighbor_keywords:", nk_line), ("cluster_topic:", ct_line)):
+        if field in fm_text:
+            fm_text = re.sub(f"^{field}.*$", line, fm_text, flags=re.MULTILINE)
+        else:
+            fm_text += f"\n{line}"
+    new_text = f"---\n{fm_text}\n---\n\n" + text[fm_match.end():]
+    if new_text != text:
+        note_path.write_text(new_text, encoding="utf-8")
+
+
+def _maybe_sync(vault: Path) -> None:
+    """Sync vault index at startup if DB is stale or missing.
+
+    Throttled to 30 minutes — skips if DB was updated recently and vault has no
+    newer markdown files. Non-blocking on first run (no DB yet → full sync).
+    """
+    db_path = vault_db.DB_PATH
+    if not db_path.exists():
+        vault_db.sync_all(vault)
+        return
+    db_mtime = db_path.stat().st_mtime
+    if time.time() - db_mtime > 1800:
+        try:
+            latest_md = max(
+                (f.stat().st_mtime for f in vault.rglob("*.md")), default=0
+            )
+        except Exception:
+            return
+        if latest_md > db_mtime:
+            vault_db.sync_incremental(vault)
+
+
 def _inject_related_links(note_path: Path, rel: str) -> int:
     """Find semantically related notes and write them into the frontmatter `related` field.
 
@@ -92,7 +253,7 @@ def _inject_related_links(note_path: Path, rel: str) -> int:
     if not related:
         return 0
 
-    links = ", ".join(f"[[{r}]]" for r in related)
+    links = ", ".join(f"[[{r.removesuffix('.md')}]]" for r in related)
     text = note_path.read_text(encoding="utf-8")
 
     fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
@@ -146,22 +307,24 @@ def get_context() -> str:
     except Exception:
         index_section = "## Vault Index\n\n" + _read(VAULT / "memory" / "index.md")
 
-    # Layer 2: reuse already-fetched top list (no second DB call)
+    # Layer 2: load embedding cache once, reuse across all find_related calls
     related_section = ""
     try:
+        emb_cache = vault_db.load_embedding_cache()
         related_map: dict[str, list[str]] = {}
         for r in top[:5]:
-            links = vault_db.find_related(r["path"], limit=3, threshold=0.75)
+            links = vault_db.find_related(r["path"], limit=3, threshold=0.75, _embedding_cache=emb_cache)
             if links:
                 related_map[r["path"]] = links
         if related_map:
             rel_lines = [
-                f"- {Path(p).stem}: {' · '.join(f'[[{l}]]' for l in links)}"
+                "- {}: {}".format(Path(p).stem, " · ".join("[[{}]]".format(l.removesuffix(".md")) for l in links))
                 for p, links in related_map.items()
             ]
             related_section = "\n\n---\n\n## Related Links (semantic)\n\n" + "\n".join(rel_lines)
     except Exception as e:
         print(f"[second-brain] warning: related links failed: {e}", file=sys.stderr)
+        related_section = "\n\n---\n\n## Related Links (semantic)\n\n⚠️ *embedding server offline — related links unavailable*"
 
     return f"{rules_section}## Current Goals\n\n{goals}\n\n---\n\n{index_section}{related_section}"
 
@@ -170,13 +333,30 @@ def get_context() -> str:
 def new_note(note_type: str, title: str, content: str = "", tags: str = "") -> str:
     """Create a new note in the vault using the correct folder and template.
 
+    If the title or tags contain a known project slug (from PROJECT_REGISTRY.md),
+    the note is automatically routed into that project's subfolder:
+      coding → {project}/phases/, research/paper/finding → {project}/research/,
+      resource/reference/tool → {project}/docs/
+    decision/adr always go to decisions/; project always goes to 10-projects/.
+
     Args:
         note_type: Type of note — decision, project, research, coding, resource, or inbox
         title: Human-readable title (will be converted to kebab-case filename)
         content: Optional initial content to append after the template
         tags: Comma-separated tags, e.g. 'evo-prism,architecture'. Added to frontmatter.
     """
-    folder, tmpl_rel = NOTE_CONFIG.get(note_type.lower(), _DEFAULT_CONFIG)
+    nt = note_type.lower()
+    registry = _load_project_registry()
+    matched_slug = _detect_project_slug(title, tags, registry)
+
+    if matched_slug and nt in _PROJECT_SUBTYPE_MAP:
+        proj_folder = registry[matched_slug]
+        subfolder = _PROJECT_SUBTYPE_MAP[nt]
+        folder = f"{proj_folder}/{subfolder}"
+        _, tmpl_rel = NOTE_CONFIG.get(nt, _DEFAULT_CONFIG)
+    else:
+        folder, tmpl_rel = NOTE_CONFIG.get(nt, _DEFAULT_CONFIG)
+
     tmpl_path = VAULT / tmpl_rel
 
     if not tmpl_path.exists():
@@ -201,7 +381,7 @@ def new_note(note_type: str, title: str, content: str = "", tags: str = "") -> s
     rel = str(dest.relative_to(VAULT))
     _append_to_index(rel, rel, today)
 
-    # Sync into DuckDB (includes embedding) then auto-link
+    # Index immediately, then enrich keywords in background (avoids blocking on Gemini CLI)
     try:
         with vault_db._connect() as con:
             vault_db.upsert_note(con, VAULT, dest)
@@ -210,8 +390,11 @@ def new_note(note_type: str, title: str, content: str = "", tags: str = "") -> s
         print(f"[second-brain] warning: index/link failed for {rel}: {e}", file=sys.stderr)
         n_links = 0
 
+    _run_keyword_enrichment_async(dest, filled)
+
+    route_msg = f" [project:{matched_slug}→{folder}]" if matched_slug and nt in _PROJECT_SUBTYPE_MAP else ""
     link_msg = f" ({n_links} related links added)" if n_links else ""
-    return f"Created: {rel}{link_msg}"
+    return f"Created: {rel}{route_msg}{link_msg}"
 
 
 @mcp.tool()
@@ -396,15 +579,52 @@ def append_to_note(path: str, content: str) -> str:
 
 
 @mcp.tool()
+def mark_note_status(path: str, status: str) -> str:
+    """Update the frontmatter status field of a note and sync to DB.
+
+    Use this to track note lifecycle without rewriting the whole file.
+
+    Args:
+        path: Relative path from vault root, e.g. '30-resources/my-note.md'
+        status: One of: active | archived | consolidated | archive_backup
+    """
+    allowed = {"active", "archived", "consolidated", "archive_backup"}
+    if status not in allowed:
+        return f"Invalid status {status!r}. Choose from: {', '.join(sorted(allowed))}"
+
+    full_path = (VAULT / path).resolve()
+    if not full_path.is_relative_to(VAULT):
+        return "Error: path must be within the vault."
+    if not full_path.exists():
+        return f"Note not found: {path}"
+
+    text = full_path.read_text(encoding="utf-8")
+    if re.search(r"^status\s*:", text, re.MULTILINE):
+        updated = re.sub(r"(?m)^(status\s*:).*", rf"\1 {status}", text)
+    else:
+        updated = re.sub(r"(^---\n)", rf"\1status: {status}\n", text, count=1)
+    full_path.write_text(updated, encoding="utf-8")
+
+    try:
+        with vault_db._connect() as con:
+            con.execute("UPDATE notes SET status = ? WHERE path = ?", [status, path])
+    except Exception as e:
+        print(f"[second-brain] warning: DB status update failed for {path}: {e}", file=sys.stderr)
+
+    return f"Status updated to '{status}': {path}"
+
+
+@mcp.tool()
 def sync_index() -> str:
     """Rebuild the DuckDB index by scanning all vault markdown files.
     Run this after adding notes manually, or when setting up on a new machine.
     """
-    count = vault_db.sync_all(VAULT)
+    result = vault_db.sync_all(VAULT)
     emb = vault_db.sync_embeddings(vault=VAULT)
     stats = vault_db.db_stats()
+    embed_warn = f" ⚠️ {result['embed_failed']} notes missing embedding" if result["embed_failed"] else ""
     return (
-        f"Synced {count} files → {stats['total_notes']} notes in index.\n"
+        f"Synced {result['synced']} files → {stats['total_notes']} notes in index.{embed_warn}\n"
         f"Embeddings: +{emb['updated']} new (llama-server {'✓' if emb['updated'] or emb['failed'] == 0 else '✗ unavailable'})\n"
         f"DB: {stats['db_path']}\n"
         f"By type: {stats['by_type']}"
@@ -523,6 +743,147 @@ def extract_rules_tool(note_path: str = "") -> str:
     return "\n".join(lines)
 
 
+@mcp.tool()
+def expand_semantic_keywords_tool(note_path: str = "", force: bool = False) -> str:
+    """Batch-extract or refresh semantic_keywords for notes using Gemini CLI.
+
+    Writes extracted keywords into each note's frontmatter and rebuilds FTS index.
+    Skips notes that already have semantic_keywords unless force=True.
+
+    Args:
+        note_path: Specific vault-relative path to process (e.g. 'decisions/my-note.md').
+                   Leave empty to process all indexed notes missing keywords.
+        force:     If True, overwrite existing semantic_keywords (default False).
+
+    Returns:
+        Summary dict: {"processed": N, "skipped": M, "failed": K}
+    """
+    gemini_cli = shutil.which("gemini")
+    if not gemini_cli:
+        return "Gemini CLI not found — install with `npm install -g @google/generative-ai`"
+
+    if note_path:
+        paths = [note_path]
+    else:
+        with vault_db._connect() as con:
+            if force:
+                rows = con.execute("SELECT path FROM notes").fetchall()
+            else:
+                rows = con.execute(
+                    "SELECT path FROM notes WHERE semantic_keywords IS NULL"
+                ).fetchall()
+        paths = [r[0] for r in rows]
+
+    processed, skipped, failed = 0, 0, 0
+    for rel in paths:
+        full = (VAULT / rel).resolve()
+        if not full.exists() or not full.is_relative_to(VAULT):
+            failed += 1
+            continue
+        try:
+            content = full.read_text(encoding="utf-8")
+            # In single note mode, also check frontmatter (DB may be stale) when force=False
+            if not force and note_path:
+                fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content, re.DOTALL)
+                if fm_match and "semantic_keywords:" in fm_match.group(1):
+                    skipped += 1
+                    continue
+            sk = _extract_semantic_keywords_via_gemini(content)
+            if sk:
+                _inject_semantic_keywords(full, sk)
+                with vault_db._connect() as con:
+                    vault_db.upsert_note(con, VAULT, full)
+                processed += 1
+            else:
+                skipped += 1
+        except Exception as e:
+            print(f"[second-brain] expand_semantic_keywords failed for {rel}: {e}", file=sys.stderr)
+            failed += 1
+
+    # Rebuild FTS index to incorporate new semantic_keywords
+    if processed > 0:
+        try:
+            with vault_db._connect() as con:
+                vault_db._ensure_fts(con)
+        except Exception as e:
+            print(f"[second-brain] FTS rebuild failed: {e}", file=sys.stderr)
+
+    return str({"processed": processed, "skipped": skipped, "failed": failed})
+
+
+@mcp.tool()
+def enrich_neighbor_keywords_tool(note_path: str = "", force: bool = False) -> str:
+    """Enrich notes with neighbor_keywords and cluster_topic derived from embedding similarity.
+
+    Computes cosine similarity between all notes' embeddings, finds top-5 neighbors per note,
+    and writes high-frequency words from neighbors back into each note's frontmatter.
+    No API or model calls — pure local computation from vault.db embeddings.
+
+    Args:
+        note_path: Relative path to a single note (e.g. "10-projects/foo.md").
+                   Empty string = process all notes without neighbor_keywords.
+        force:     If True, overwrite existing neighbor_keywords. Default: skip existing.
+    Returns:
+        JSON-like string with {"enriched": N, "skipped": M, "no_neighbors": K}.
+    """
+    enriched = skipped = no_neighbors = 0
+    try:
+        all_data = vault_db.compute_neighbor_keywords()
+    except Exception as e:
+        return str({"error": f"compute_neighbor_keywords failed: {e}"})
+
+    targets: list[str]
+    if note_path:
+        targets = [note_path]
+    else:
+        # Batch: only notes that have no neighbor_keywords yet (unless force)
+        with vault_db._connect() as con:
+            if force:
+                rows = con.execute("SELECT path FROM notes WHERE embedding IS NOT NULL").fetchall()
+            else:
+                rows = con.execute(
+                    "SELECT path FROM notes WHERE embedding IS NOT NULL AND neighbor_keywords IS NULL"
+                ).fetchall()
+        targets = [r[0] for r in rows]
+
+    for path in targets:
+        full = VAULT / path
+        if not full.exists():
+            skipped += 1
+            continue
+        data = all_data.get(path)
+        if not data:
+            no_neighbors += 1
+            continue
+        # In single-note mode, respect force flag via frontmatter check
+        if not force and note_path:
+            try:
+                content = full.read_text(encoding="utf-8")
+                fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content, re.DOTALL)
+                if fm_match and "neighbor_keywords:" in fm_match.group(1):
+                    skipped += 1
+                    continue
+            except Exception:
+                pass
+        try:
+            _inject_neighbor_keywords(full, data)
+            with vault_db._connect() as con:
+                vault_db.upsert_note(con, VAULT, full)
+            enriched += 1
+        except Exception as e:
+            print(f"[second-brain] enrich_neighbor_keywords failed for {path}: {e}", file=sys.stderr)
+            skipped += 1
+
+    if enriched > 0:
+        try:
+            with vault_db._connect() as con:
+                vault_db._ensure_fts(con)
+        except Exception as e:
+            print(f"[second-brain] FTS rebuild failed: {e}", file=sys.stderr)
+
+    return str({"enriched": enriched, "skipped": skipped, "no_neighbors": no_neighbors})
+
+
 _md_converter = MarkItDown()
 
 
@@ -588,12 +949,14 @@ def save_article(source: str, title: str = "", tags: str = "") -> str:
     rel = f"30-resources/{slug}.md"
     _append_to_index(rel, title, today)
 
-    # Sync new note into DuckDB (includes embedding computation)
+    # Index immediately, then enrich keywords in background (avoids blocking on Gemini CLI)
     try:
         with vault_db._connect() as con:
             vault_db.upsert_note(con, VAULT, dest)
     except Exception as e:
         print(f"[second-brain] warning: index failed for {rel}: {e}", file=sys.stderr)
+
+    _run_keyword_enrichment_async(dest, body)
 
     # Auto-link: find related notes and write into frontmatter
     n_links = _inject_related_links(dest, rel)
@@ -698,7 +1061,7 @@ def snapshot_note_tool(note_path: str, tier: str = "base") -> str:
 
     result = _fig.snapshot_note(note_path, VAULT, tier)
     if not result["success"]:
-        return f"Rendering failed for: {note_path}"
+        return result.get("error") or f"Rendering failed for: {note_path}"
 
     text_tokens = full.stat().st_size // 4
     saved = text_tokens - result["token_est"]
@@ -831,7 +1194,7 @@ def find_related_notes(path: str, limit: int = 5, threshold: float = 0.7) -> str
             title = row[0] if row else stem.split("/")[-1]
             ntype = row[1] if row else ""
             tag = f" `{ntype}`" if ntype else ""
-            lines.append(f"- [[{stem}]] — {title}{tag}")
+            lines.append(f"- [[{stem.removesuffix('.md')}]] — {title}{tag}")
     return "\n".join(lines)
 
 
@@ -1011,6 +1374,11 @@ if __name__ == "__main__":
     if bootstrap_log:
         print("[second-brain] Bootstrap:", ", ".join(bootstrap_log), file=sys.stderr)
 
+    try:
+        threading.Thread(target=_maybe_sync, args=(VAULT,), daemon=True).start()
+    except Exception as _e:
+        print(f"[second-brain] _maybe_sync failed (non-fatal): {_e}", file=sys.stderr)
+
     if args.transport == "stdio":
         mcp.run()
     else:
@@ -1018,6 +1386,19 @@ if __name__ == "__main__":
         mcp.settings.port = args.port
         if args.host:
             mcp.settings.host = args.host
+            if mcp.settings.transport_security:
+                hosts = [args.host, f"{args.host}:*"]
+                try:
+                    import socket
+                    hostname, _, _ = socket.gethostbyaddr(args.host)
+                    if hostname:
+                        hosts.extend([hostname, f"{hostname}:*"])
+                except Exception:
+                    pass
+                mcp.settings.transport_security.allowed_hosts.extend(hosts)
+                mcp.settings.transport_security.allowed_origins.extend(
+                    [f"http://{h}" for h in hosts] + [f"https://{h}" for h in hosts]
+                )
         print(
             f"[second-brain] Starting {args.transport} on "
             f"{mcp.settings.host}:{mcp.settings.port}",

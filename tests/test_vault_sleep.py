@@ -381,3 +381,52 @@ class TestPruneArchive:
         result = vault_sleep.prune_archive(tmp_path, min_age_days=365, dry_run=False)
         assert result["deleted"] == 0
         assert "No archive" in result["message"]
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.1 — Archive status correctness
+# ---------------------------------------------------------------------------
+
+class TestArchiveStatusOnOriginalNote:
+    """Phase 6.1: run_sleep must mark the *original* note as 'archived' and
+    the archive copy as 'archive_backup', not the other way around."""
+
+    def test_original_note_marked_archived(self, vault):
+        with patch.object(vault_sleep, "_compress_with_gemini", return_value=None), \
+             patch.object(vault_sleep, "_compress_with_claude", return_value=None), \
+             patch.object(vault_sleep, "_fig") as mock_fig:
+            mock_fig.render_note_to_png.return_value = None
+            vault_sleep.run_sleep(vault, min_age_days=1, dry_run=False)
+
+        with vault_db._connect() as con:
+            row = con.execute(
+                "SELECT status FROM notes WHERE path = ?",
+                ["30-resources/old-note.md"],
+            ).fetchone()
+
+        assert row is not None, "Original note not found in DB after sleep"
+        assert row[0] == "archived", (
+            f"Expected original note status='archived', got {row[0]!r}"
+        )
+
+    def test_archive_copy_marked_archive_backup(self, vault):
+        with patch.object(vault_sleep, "_compress_with_gemini", return_value=None), \
+             patch.object(vault_sleep, "_compress_with_claude", return_value=None), \
+             patch.object(vault_sleep, "_fig") as mock_fig:
+            mock_fig.render_note_to_png.return_value = None
+            vault_sleep.run_sleep(vault, min_age_days=1, dry_run=False)
+
+        archive_files = list((vault / "40-archive").rglob("*.md"))
+        assert archive_files, "No archive copy was created"
+        archive_rel = str(archive_files[0].relative_to(vault))
+
+        with vault_db._connect() as con:
+            row = con.execute(
+                "SELECT status FROM notes WHERE path = ?",
+                [archive_rel],
+            ).fetchone()
+
+        assert row is not None, f"Archive copy {archive_rel!r} not found in DB"
+        assert row[0] == "archive_backup", (
+            f"Expected archive copy status='archive_backup', got {row[0]!r}"
+        )

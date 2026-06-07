@@ -8,6 +8,7 @@ Rebuild anytime with sync_all(vault_path).
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -31,6 +32,8 @@ import os as _os
 EMBED_PORT = int(_os.environ.get("EMBED_PORT", "11435"))
 EMBED_URL = _os.environ.get("EMBED_URL", f"http://localhost:{EMBED_PORT}/v1/embeddings")
 EMBED_MODEL = _os.environ.get("EMBED_MODEL", "nomic-embed-text")
+EMBED_DIM: int = int(_os.environ.get("EMBED_DIM", "768"))
+DISABLE_EMBEDDING: bool = _os.environ.get("DISABLE_EMBEDDING", "false").lower() in ("true", "1", "yes")
 del _os  # keep namespace clean
 
 # Note-type exclusion lists (centralised to avoid scattered magic strings)
@@ -64,7 +67,8 @@ CREATE TABLE IF NOT EXISTS notes (
     body_snippet      TEXT,
     snapshot_path     TEXT,
     snapshot_tier     TEXT,
-    snapshot_token_est INTEGER
+    snapshot_token_est INTEGER,
+    semantic_keywords TEXT
 );
 
 CREATE TABLE IF NOT EXISTS figures (
@@ -94,6 +98,9 @@ _MIGRATIONS = [
     "ALTER TABLE notes ADD COLUMN IF NOT EXISTS embedding BLOB",           # Phase 6
     "ALTER TABLE notes ADD COLUMN IF NOT EXISTS rules_extracted_at TIMESTAMP",  # Phase 7
     "ALTER TABLE notes ADD COLUMN IF NOT EXISTS violations TEXT",               # Phase 10 schema
+    "ALTER TABLE notes ADD COLUMN IF NOT EXISTS semantic_keywords TEXT",       # Phase 12
+    "ALTER TABLE notes ADD COLUMN IF NOT EXISTS neighbor_keywords TEXT",      # Phase 13
+    "ALTER TABLE notes ADD COLUMN IF NOT EXISTS cluster_topic TEXT",          # Phase 13
 ]
 
 # ---------------------------------------------------------------------------
@@ -104,27 +111,69 @@ _schema_applied = False
 _schema_lock = threading.Lock()
 
 
-def _connect() -> duckdb.DuckDBPyConnection:
-    global _schema_applied
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    con = duckdb.connect(str(DB_PATH))
-    with _schema_lock:
-        if not _schema_applied:
-            con.execute(SCHEMA)
-            for migration in _MIGRATIONS:
+def _connect():
+    from contextlib import contextmanager as _contextmanager
+
+    @_contextmanager
+    def _inner_connect():
+        global _schema_applied
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            con = duckdb.connect(str(DB_PATH))
+        except Exception as e:
+            print(f"[vault_db] Database connection failed ({e}). Attempting to reset database...", file=sys.stderr)
+            db_bak = DB_PATH.with_suffix(".db.bak")
+            wal_path = DB_PATH.with_name(DB_PATH.name + ".wal")
+            wal_bak = wal_path.with_name(wal_path.name + ".bak")
+            try:
+                if DB_PATH.exists():
+                    if db_bak.exists():
+                        db_bak.unlink()
+                    DB_PATH.rename(db_bak)
+                if wal_path.exists():
+                    if wal_bak.exists():
+                        wal_bak.unlink()
+                    wal_path.rename(wal_bak)
+            except Exception as rename_err:
+                print(f"[vault_db] Failed to rename database files: {rename_err}", file=sys.stderr)
                 try:
-                    con.execute(migration)
-                except Exception as e:
-                    print(f"[vault_db] migration skipped: {migration!r} → {e}", file=sys.stderr)
-            _schema_applied = True
-    return con
+                    if DB_PATH.exists():
+                        DB_PATH.unlink()
+                    if wal_path.exists():
+                        wal_path.unlink()
+                except Exception as del_err:
+                    print(f"[vault_db] Failed to delete database files: {del_err}", file=sys.stderr)
+                    raise e
+            con = duckdb.connect(str(DB_PATH))
+
+        with _schema_lock:
+            if not _schema_applied:
+                con.execute(SCHEMA)
+                for migration in _MIGRATIONS:
+                    try:
+                        con.execute(migration)
+                    except Exception as e:
+                        print(f"[vault_db] migration skipped: {migration!r} → {e}", file=sys.stderr)
+                _schema_applied = True
+        
+        try:
+            with con:
+                yield con
+        finally:
+            try:
+                con.close()
+            except Exception:
+                pass
+
+    return _inner_connect()
 
 
 def _ensure_fts(con: duckdb.DuckDBPyConnection) -> None:
     try:
         con.execute("INSTALL fts; LOAD fts;")
         con.execute(
-            "PRAGMA create_fts_index('notes','path','title','tags','body_snippet', overwrite=1);"
+            "PRAGMA create_fts_index('notes','path','title','tags','body_snippet',"
+            "'semantic_keywords','neighbor_keywords','cluster_topic', overwrite=1);"
         )
     except Exception:
         pass  # FTS index already exists or extension unavailable
@@ -302,17 +351,56 @@ def upsert_note(con: duckdb.DuckDBPyConnection, vault: Path, md_file: Path) -> N
     prose = _embed_text_for(text)          # 1600 chars, code stripped
     tags_for_embed = fm.get("tags", "")
     embed_input = f"{fm.get('title', md_file.stem)} {tags_for_embed} {prose}".strip()
-    vec = embed_text(embed_input)
+    try:
+        vec = embed_text(embed_input)
+        if vec is None:
+            print(f"[vault_db] embedding failed: {rel}", file=sys.stderr)
+    except ValueError as e:
+        print(f"[vault_db] embedding dim error: {rel} — {e}", file=sys.stderr)
+        vec = None
     blob = _vec_to_blob(vec) if vec else None
 
     violations = validate_note(fm, rel)
     violations_json = json.dumps(violations) if violations else None
 
+    # Parse semantic_keywords from frontmatter (Phase 12)
+    sk_raw = fm.get("semantic_keywords", "").strip()
+    if not sk_raw:
+        sk_json = None
+    elif sk_raw.startswith("["):
+        try:
+            sk_list = json.loads(sk_raw)
+            sk_json = json.dumps(sk_list, ensure_ascii=False)
+        except (json.JSONDecodeError, ValueError):
+            inner = sk_raw.strip("[]")
+            sk_list = [s.strip().strip('"').strip("'") for s in inner.split(",") if s.strip()]
+            sk_json = json.dumps(sk_list, ensure_ascii=False) if sk_list else None
+    else:
+        sk_list = [s.strip() for s in sk_raw.split(",") if s.strip()]
+        sk_json = json.dumps(sk_list, ensure_ascii=False) if sk_list else None
+
+    # Parse neighbor_keywords / cluster_topic from frontmatter (Phase 13)
+    nk_raw = fm.get("neighbor_keywords", "")
+    if isinstance(nk_raw, list):
+        nk_json = json.dumps(nk_raw, ensure_ascii=False) if nk_raw else None
+    else:
+        nk_raw = str(nk_raw).strip()
+        if nk_raw.startswith("["):
+            try:
+                nk_json = json.dumps(json.loads(nk_raw), ensure_ascii=False)
+            except (json.JSONDecodeError, ValueError):
+                nk_json = None
+        else:
+            nk_list = [s.strip() for s in nk_raw.split(",") if s.strip()]
+            nk_json = json.dumps(nk_list, ensure_ascii=False) if nk_list else None
+    cluster_topic = fm.get("cluster_topic", None) or None
+
     con.execute(
         """
         INSERT INTO notes (path, title, note_type, status, tags, note_date,
-                           content_hash, body_snippet, embedding, violations)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           content_hash, body_snippet, embedding, violations,
+                           semantic_keywords, neighbor_keywords, cluster_topic)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (path) DO UPDATE SET
             title              = excluded.title,
             note_type          = excluded.note_type,
@@ -322,7 +410,10 @@ def upsert_note(con: duckdb.DuckDBPyConnection, vault: Path, md_file: Path) -> N
             content_hash       = excluded.content_hash,
             body_snippet       = excluded.body_snippet,
             embedding          = COALESCE(excluded.embedding, notes.embedding),
-            violations         = excluded.violations
+            violations         = excluded.violations,
+            semantic_keywords  = COALESCE(excluded.semantic_keywords, notes.semantic_keywords),
+            neighbor_keywords  = COALESCE(excluded.neighbor_keywords, notes.neighbor_keywords),
+            cluster_topic      = COALESCE(excluded.cluster_topic, notes.cluster_topic)
             -- snapshot fields managed by update_snapshot(), not here
         """,
         [
@@ -336,6 +427,9 @@ def upsert_note(con: duckdb.DuckDBPyConnection, vault: Path, md_file: Path) -> N
             snippet,
             blob,
             violations_json,
+            sk_json,
+            nk_json,
+            cluster_topic,
         ],  # last_accessed intentionally omitted; set only by record_access()
     )
 
@@ -379,7 +473,11 @@ def sync_embeddings(vault: Path | None = None) -> dict:
                 text = f"{title or ''} {snippet or ''}".strip()
         else:
             text = f"{title or ''} {snippet or ''}".strip()
-        vec = embed_text(text)
+        try:
+            vec = embed_text(text)
+        except ValueError as e:
+            print(f"[vault_db] embedding dim error: {path} — {e}", file=sys.stderr)
+            vec = None
         if vec:
             updates.append((_vec_to_blob(vec), path))
             updated += 1
@@ -393,9 +491,11 @@ def sync_embeddings(vault: Path | None = None) -> dict:
     return {"updated": updated, "failed": failed, "skipped": len(rows) - updated - failed}
 
 
-def sync_all(vault: Path) -> int:
-    """Scan all .md files in vault and upsert into DB. Returns count synced.
+def sync_all(vault: Path) -> dict:
+    """Scan all .md files in vault and upsert into DB.
 
+    Returns {"synced": N, "embed_failed": M} where embed_failed counts notes
+    that could not get an embedding (server offline, etc.).
     Also removes DB rows for notes/figures whose markdown files no longer exist.
     """
     seen: set[str] = set()
@@ -417,7 +517,112 @@ def sync_all(vault: Path) -> int:
                 f"DELETE FROM notes WHERE path NOT IN ({placeholders})", list(seen)
             )
         _ensure_fts(con)
-    return count
+        embed_failed: int = con.execute(
+            "SELECT COUNT(*) FROM notes WHERE embedding IS NULL"
+        ).fetchone()[0]
+    _clean_orphan_snapshots(vault, seen)
+    return {"synced": count, "embed_failed": embed_failed}
+
+
+def sync_incremental(vault: Path) -> dict:
+    """Upsert only .md files whose mtime is newer than the DB file.
+
+    Faster than sync_all for daily incremental updates; does not remove orphan
+    rows (that is handled by the nightly sync_all in vault_janitor).
+    Returns {"updated": N} or {"updated": 0, "skipped": "all fresh"}.
+    """
+    db_path = DB_PATH
+    db_mtime = db_path.stat().st_mtime if db_path.exists() else 0
+    changed = [
+        f for f in vault.rglob("*.md")
+        if not any(p in f.parts for p in (".obsidian", ".claude", "templates"))
+        and f.stat().st_mtime > db_mtime
+    ]
+    if not changed:
+        return {"updated": 0, "skipped": "all fresh"}
+    with _connect() as con:
+        for f in changed:
+            upsert_note(con, vault, f)
+        _ensure_fts(con)
+    return {"updated": len(changed)}
+
+
+def compute_neighbor_keywords(threshold: float = 0.75, top_n: int = 5) -> dict[str, dict]:
+    """Compute neighbor_keywords and cluster_topic for all notes with embeddings.
+
+    For each note, finds top-5 semantically similar notes (cosine >= threshold),
+    then collects high-frequency words from their title/tags/semantic_keywords.
+    Returns {path: {"neighbor_keywords": [...], "cluster_topic": str}}.
+    """
+    cache = load_embedding_cache()
+    if not cache:
+        return {}
+
+    # Pre-fetch metadata for all cached paths in one query
+    paths = list(cache.keys())
+    with _connect() as con:
+        rows = con.execute(
+            f"SELECT path, title, tags, semantic_keywords FROM notes WHERE path IN "
+            f"({','.join('?' * len(paths))})",
+            paths,
+        ).fetchall()
+    meta = {r[0]: {"title": r[1] or "", "tags": r[2] or "", "sk": r[3] or ""} for r in rows}
+
+    results: dict[str, dict] = {}
+    for path, vec in cache.items():
+        # Find top-5 neighbors above threshold
+        sims = sorted(
+            ((p, _cosine(vec, v)) for p, v in cache.items() if p != path),
+            key=lambda x: -x[1],
+        )
+        neighbors = [p for p, s in sims if s >= threshold][:5]
+        if not neighbors:
+            continue
+
+        # Collect words from neighbor metadata
+        word_freq: dict[str, int] = {}
+        for nb in neighbors:
+            m = meta.get(nb, {})
+            for field in (m.get("title", ""), m.get("tags", ""), m.get("sk", "")):
+                for w in re.split(r'[\s,\[\]"\'/\\]+', field):
+                    w = w.strip()
+                    if len(w) >= 2:
+                        word_freq[w] = word_freq.get(w, 0) + 1
+
+        # Exclude words already in this note's own semantic_keywords
+        self_sk: set[str] = set()
+        if path in meta and meta[path]["sk"]:
+            try:
+                self_sk = set(json.loads(meta[path]["sk"]))
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        top_words = [
+            w for w, _ in sorted(word_freq.items(), key=lambda x: -x[1])
+            if w not in self_sk
+        ][:top_n]
+
+        if top_words:
+            results[path] = {
+                "neighbor_keywords": top_words,
+                "cluster_topic": top_words[0],
+            }
+
+    return results
+
+
+def _clean_orphan_snapshots(vault: Path, seen_paths: set[str]) -> int:
+    """Remove .snapshots/ dirs for notes that no longer exist. Returns count removed."""
+    snap_root = vault / ".snapshots"
+    if not snap_root.exists():
+        return 0
+    seen_stems = {Path(p).stem for p in seen_paths}
+    removed = 0
+    for snap_dir in snap_root.iterdir():
+        if snap_dir.is_dir() and snap_dir.name not in seen_stems:
+            shutil.rmtree(snap_dir)
+            removed += 1
+    return removed
 
 
 # ---------------------------------------------------------------------------
@@ -438,11 +643,15 @@ def _blob_to_vec(blob: bytes) -> list[float]:
 
 _embed_proc: subprocess.Popen | None = None  # lazy-started server process
 EMBED_AUTO_START: bool = True  # set False in tests to skip lazy-start
+_embed_offline_until: float = 0.0  # cooldown timestamp when server is offline
 
 
 def _call_embed_api(text: str) -> list[float] | None:
-    """Call embedding endpoint, retrying with shorter text on 500 (model context limit)."""
-    for max_chars in (2048, 1024, 512):
+    """Call embedding endpoint, retrying with shorter text on 500 (model context limit).
+
+    Exponential backoff between retries (1s, 2s) avoids hammering an overloaded server.
+    """
+    for i, max_chars in enumerate((2048, 1024, 512)):
         payload = json.dumps({"input": text[:max_chars], "model": EMBED_MODEL}).encode()
         req = urllib.request.Request(
             EMBED_URL, data=payload,
@@ -453,6 +662,8 @@ def _call_embed_api(text: str) -> list[float] | None:
                 return json.loads(resp.read())["data"][0]["embedding"]
         except urllib.error.HTTPError as e:
             if e.code == 500:
+                if i < 2:
+                    time.sleep(2 ** i)  # 1s then 2s before next shorter attempt
                 continue  # text too long for model context — retry shorter
             return None
         except Exception:
@@ -478,6 +689,8 @@ def _ensure_embed_server() -> bool:
         return False  # Ollama or custom server — user manages it
 
     llama = Path.home() / "llama.cpp" / "build" / "bin" / "llama-server"
+    if sys.platform == "win32":
+        llama = llama.with_suffix(".exe")
     model = Path.home() / "nomic-embed-text-v1.5.Q8_0.gguf"
     if not llama.exists() or not model.exists():
         return False
@@ -503,15 +716,28 @@ def embed_text(text: str) -> list[float] | None:
 
     Returns None only if model files are missing or server fails to start.
     Server stays running for the lifetime of this process (stopped by OS on exit).
+    Raises ValueError if the returned embedding dimension doesn't match EMBED_DIM.
     """
-    result = _call_embed_api(text)
-    if result is not None:
-        return result
+    global _embed_offline_until
+    if DISABLE_EMBEDDING or time.time() < _embed_offline_until:
+        return None
 
-    # Server not running — try to auto-start (disabled in tests via EMBED_AUTO_START=False)
-    if EMBED_AUTO_START and _ensure_embed_server():
-        return _call_embed_api(text)
-    return None
+    result = _call_embed_api(text)
+    if result is None:
+        # Server not running — try to auto-start (disabled in tests via EMBED_AUTO_START=False)
+        if EMBED_AUTO_START and _ensure_embed_server():
+            result = _call_embed_api(text)
+        
+        # If it still failed, set a 60-second cooldown to fail fast next time
+        if result is None:
+            _embed_offline_until = time.time() + 60.0
+
+    if result is not None and len(result) != EMBED_DIM:
+        raise ValueError(
+            f"Embedding dim mismatch: got {len(result)}, expected {EMBED_DIM}. "
+            f"Set EMBED_DIM env var to match your model."
+        )
+    return result
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -553,10 +779,13 @@ def fts_search(query: str, limit: int = 20) -> list[dict]:
                 WHERE lower(title) LIKE ?
                    OR lower(tags)  LIKE ?
                    OR lower(body_snippet) LIKE ?
+                   OR lower(COALESCE(semantic_keywords, '')) LIKE ?
+                   OR lower(COALESCE(neighbor_keywords, '')) LIKE ?
+                   OR lower(COALESCE(cluster_topic, '')) LIKE ?
                 ORDER BY last_accessed DESC
                 LIMIT ?
                 """,
-                [q, q, q, limit],
+                [q, q, q, q, q, q, limit],
             ).fetchall()
             return [{"path": r[0], "title": r[1], "score": r[2]} for r in rows]
 
@@ -578,28 +807,48 @@ def semantic_search(query: str, limit: int = 20) -> list[dict]:
     return [{"path": p, "title": t, "score": s} for p, t, s in scored[:limit]]
 
 
+_PENALTY_PATHS: tuple[str, ...] = ("fixes/", "patches/", "fix-", "patch-")
+
+
+def _rrf(rank: int, k: int = 60) -> float:
+    """Reciprocal Rank Fusion score. Higher rank (lower index) → higher score."""
+    return 1.0 / (rank + k)
+
+
+def _path_penalty(path: str) -> float:
+    """Penalise fix/patch notes (debug noise) by 50% in ranking."""
+    if any(p in path for p in _PENALTY_PATHS):
+        return 0.5
+    return 1.0
+
+
 def hybrid_search(
     query: str,
     limit: int = 20,
-    alpha: float = 0.5,
+    alpha: float = 0.5,  # kept for API compatibility; ignored when fusion="rrf"
     exclude_types: list[str] | None = None,
+    fusion: str = "rrf",
+    apply_path_penalty: bool = True,
 ) -> list[dict]:
-    """Hybrid BM25 + cosine search. alpha=0.5 weights both equally.
+    """Hybrid BM25 + cosine search with Reciprocal Rank Fusion (Phase 6.3).
 
-    Falls back to fts_search if embedding server unavailable.
-    exclude_types: list of note_type values to exclude (e.g. ['cnyes_archive']).
+    fusion="rrf"   — rank-based fusion (default); immune to BM25 unboundedness.
+    fusion="alpha" — legacy normalised score mixing (kept for backward compat).
+    apply_path_penalty — demote fixes/patches paths by 50% (Phase 3.2-A).
+    exclude_types  — note_type values to exclude (e.g. ['cnyes_archive']).
     """
     bm25 = fts_search(query, limit=limit * 2)
     sem = semantic_search(query, limit=limit * 2)
 
     if exclude_types and (bm25 or sem):
         excluded = set(exclude_types)
+        candidate_paths = list({r["path"] for r in bm25 + sem})
         with _connect() as con:
             rows = con.execute(
                 "SELECT path, note_type FROM notes WHERE path IN ({})".format(
-                    ",".join("?" * (len(bm25) + len(sem)))
+                    ",".join("?" * len(candidate_paths))
                 ),
-                [r["path"] for r in bm25 + sem],
+                candidate_paths,
             ).fetchall()
         excluded_paths = {path for path, ntype in rows if ntype in excluded}
         bm25 = [r for r in bm25 if r["path"] not in excluded_paths]
@@ -608,22 +857,69 @@ def hybrid_search(
     if not sem:
         return bm25[:limit]
 
-    # Normalise scores to [0,1] then combine
-    def _norm(results: list[dict]) -> dict[str, float]:
-        if not results:
-            return {}
-        max_s = max(r["score"] for r in results) or 1.0
-        return {r["path"]: r["score"] / max_s for r in results}
-
-    bm25_scores = _norm(bm25)
-    sem_scores = _norm(sem)
-    all_paths = set(bm25_scores) | set(sem_scores)
-
-    combined = []
     titles = {r["path"]: r["title"] for r in bm25 + sem}
-    for path in all_paths:
-        score = (1 - alpha) * bm25_scores.get(path, 0.0) + alpha * sem_scores.get(path, 0.0)
-        combined.append({"path": path, "title": titles[path], "score": score})
+
+    if fusion == "alpha":
+        # Legacy: normalise scores to [0,1] then alpha-blend
+        def _norm(results: list[dict]) -> dict[str, float]:
+            if not results:
+                return {}
+            max_s = max(r["score"] for r in results) or 1.0
+            return {r["path"]: r["score"] / max_s for r in results}
+
+        bm25_scores = _norm(bm25)
+        sem_scores = _norm(sem)
+        all_paths = set(bm25_scores) | set(sem_scores)
+        combined = [
+            {
+                "path": p,
+                "title": titles[p],
+                "score": (1 - alpha) * bm25_scores.get(p, 0.0) + alpha * sem_scores.get(p, 0.0),
+            }
+            for p in all_paths
+        ]
+    else:
+        # RRF: rank-based fusion; BM25 and semantic lists already sorted by score
+        rrf_scores: dict[str, float] = {}
+        for rank, r in enumerate(bm25):
+            rrf_scores[r["path"]] = rrf_scores.get(r["path"], 0.0) + _rrf(rank)
+        for rank, r in enumerate(sem):
+            rrf_scores[r["path"]] = rrf_scores.get(r["path"], 0.0) + _rrf(rank)
+
+        # Phase 3.2-B: title exact-match boost (bounded: same scale as RRF scores ~0.01-0.03)
+        q_lower = query.lower()
+        title_boost = _rrf(0) * 0.3  # 30% of best possible RRF score
+        for path, title in titles.items():
+            if q_lower in (title or "").lower():
+                rrf_scores[path] = rrf_scores.get(path, 0.0) + title_boost
+
+        # Phase 3.2-C: ebbinghaus importance fusion (normalised to [0,1] first)
+        paths_list = list(rrf_scores)
+        if paths_list:
+            with _connect() as con:
+                score_rows = con.execute(
+                    f"SELECT path, {_SCORE_SQL} AS eb FROM notes WHERE path IN ({','.join('?' * len(paths_list))})",
+                    paths_list,
+                ).fetchall()
+            eb_raw = {row[0]: row[1] for row in score_rows if row[1] is not None}
+            if eb_raw:
+                eb_min = min(eb_raw.values())
+                eb_max = max(eb_raw.values())
+                eb_range = (eb_max - eb_min) or 1.0
+                rrf_min = min(rrf_scores.values())
+                rrf_max = max(rrf_scores.values())
+                rrf_range = (rrf_max - rrf_min) or 1.0
+                for path in paths_list:
+                    rrf_norm = (rrf_scores[path] - rrf_min) / rrf_range
+                    eb_norm = (eb_raw.get(path, eb_min) - eb_min) / eb_range
+                    rrf_scores[path] = rrf_norm * 0.85 + eb_norm * 0.15
+
+        combined = [{"path": p, "title": titles[p], "score": rrf_scores[p]} for p in paths_list]
+
+    # Phase 3.2-A: path-based penalty for fix/patch notes
+    if apply_path_penalty:
+        for r in combined:
+            r["score"] *= _path_penalty(r["path"])
 
     combined.sort(key=lambda x: x["score"], reverse=True)
     return combined[:limit]
@@ -741,32 +1037,56 @@ def hybrid_search_grouped(query: str, limit: int = 10) -> dict[str, list[dict]]:
     return {"knowledge": knowledge, "news": news}
 
 
-def find_related(path: str, limit: int = 5, threshold: float = 0.7) -> list[str]:
+def find_related(
+    path: str,
+    limit: int = 5,
+    threshold: float = 0.7,
+    _embedding_cache: dict[str, list[float]] | None = None,
+) -> list[str]:
     """Find semantically related notes for a given note path.
 
-    Returns list of vault-relative paths (wikilink format, no extension).
+    Returns list of vault-relative paths with .md extension preserved.
+    Callers that need wikilink format should call .removesuffix(".md") themselves.
     Returns [] if the note has no embedding or server is unavailable.
+
+    _embedding_cache: optional pre-loaded {path: vec} dict. Pass when calling in
+    a loop (e.g. get_context) to avoid reloading the full embedding table each time.
     """
-    with _connect() as con:
-        row = con.execute(
-            "SELECT embedding FROM notes WHERE path = ?", [path]
-        ).fetchone()
-        if not row or not row[0]:
+    if _embedding_cache is not None:
+        q_vec = _embedding_cache.get(path)
+        if not q_vec:
             return []
-        q_vec = _blob_to_vec(row[0])
-        rows = con.execute(
-            "SELECT path, embedding FROM notes WHERE embedding IS NOT NULL AND path != ?",
-            [path],
-        ).fetchall()
+        scored = [
+            (other_path, _cosine(q_vec, vec))
+            for other_path, vec in _embedding_cache.items()
+            if other_path != path
+        ]
+    else:
+        with _connect() as con:
+            row = con.execute(
+                "SELECT embedding FROM notes WHERE path = ?", [path]
+            ).fetchone()
+            if not row or not row[0]:
+                return []
+            q_vec = _blob_to_vec(row[0])
+            rows = con.execute(
+                "SELECT path, embedding FROM notes WHERE embedding IS NOT NULL AND path != ?",
+                [path],
+            ).fetchall()
+        scored = [(other_path, _cosine(q_vec, _blob_to_vec(blob))) for other_path, blob in rows]
 
-    scored = []
-    for other_path, blob in rows:
-        sim = _cosine(q_vec, _blob_to_vec(blob))
-        if sim >= threshold:
-            scored.append((other_path, sim))
-
+    scored = [(p, s) for p, s in scored if s >= threshold]
     scored.sort(key=lambda x: x[1], reverse=True)
-    return [p.removesuffix(".md") for p, _ in scored[:limit]]
+    return [p for p, _ in scored[:limit]]
+
+
+def load_embedding_cache() -> dict[str, list[float]]:
+    """Load all embeddings from DB into memory as {path: vec}. Use for batch operations."""
+    with _connect() as con:
+        rows = con.execute(
+            "SELECT path, embedding FROM notes WHERE embedding IS NOT NULL"
+        ).fetchall()
+    return {path: _blob_to_vec(blob) for path, blob in rows}
 
 
 def top_by_recency(limit: int = 20, exclude_types: list[str] | None = None) -> list[dict]:
@@ -897,14 +1217,14 @@ def upsert_figure(
 
 
 def search_figures(query: str, limit: int = 10) -> list[dict]:
-    """Search figures by OCR text or description (all query words must match)."""
+    """Search figures by OCR text or description (any query word match suffices)."""
     words = query.lower().split()
     if not words:
         return []
 
-    # Each word must appear in description OR ocr_text
-    clauses = " AND ".join(
-        f"(lower(coalesce(ocr_text,'')) LIKE ? OR lower(coalesce(description,'')) LIKE ?)"
+    # Any word appearing in description OR ocr_text is a hit (OR across words)
+    clauses = " OR ".join(
+        "(lower(coalesce(ocr_text,'')) LIKE ? OR lower(coalesce(description,'')) LIKE ?)"
         for _ in words
     )
     params: list = [p for w in words for p in (f"%{w}%", f"%{w}%")]

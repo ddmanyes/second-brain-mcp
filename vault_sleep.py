@@ -13,6 +13,7 @@ Resolution tiers (Phase 9: score × age dual-axis, from Experience Compression S
 """
 
 import json
+import os
 import re
 import subprocess
 from datetime import date
@@ -103,9 +104,12 @@ _MAX_COMPRESS_CHARS = 12_000
 def _compress_with_gemini(content: str) -> str | None:
     """Primary: Gemini CLI (free tier covers ~100k tokens/month)."""
     try:
+        env = os.environ.copy()
+        env["GEMINI_CLI_TRUST_WORKSPACE"] = "false"
         result = subprocess.run(
             ["gemini", "-p", f"{COMPRESS_PROMPT}\n\n---\n\n{content[:_MAX_COMPRESS_CHARS]}"],
-            capture_output=True, text=True, timeout=180,
+            capture_output=True, text=True, timeout=180, env=env,
+            cwd=str(Path.home()),
         )
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
@@ -290,9 +294,17 @@ def run_sleep(
 
         try:
             with vault_db._connect() as con:
+                # upsert compressed original (now active, with consolidation frontmatter)
                 vault_db.upsert_note(con, vault, note_path)
+                # mark original as archived
                 con.execute(
                     "UPDATE notes SET status = 'archived' WHERE path = ?",
+                    [str(rel)],
+                )
+                # upsert archive copy and mark it as archive_backup
+                vault_db.upsert_note(con, vault, archive)
+                con.execute(
+                    "UPDATE notes SET status = 'archive_backup' WHERE path = ?",
                     [str(archive.relative_to(vault))],
                 )
         except Exception:
@@ -314,6 +326,13 @@ def run_sleep(
             "age": age,
             "snapshot": snapshot_path,
         })
+
+    # Backfill embeddings once after all compressions (avoids N full-table scans in loop)
+    if processed > 0:
+        try:
+            vault_db.sync_embeddings(vault=vault)
+        except Exception:
+            pass
 
     return {
         "processed": processed,
@@ -417,9 +436,12 @@ def _sanitize_rule(rule: str) -> str | None:
 def _extract_rules_with_gemini(content: str) -> list[str]:
     """Call Gemini CLI to extract declarative rules from note content."""
     try:
+        env = os.environ.copy()
+        env["GEMINI_CLI_TRUST_WORKSPACE"] = "false"
         result = subprocess.run(
             ["gemini", "-p", f"{_RULES_PROMPT}\n\n---\n\n{content[:8000]}"],
-            capture_output=True, text=True, timeout=90,
+            capture_output=True, text=True, timeout=90, env=env,
+            cwd=str(Path.home()),
         )
         if result.returncode != 0 or not result.stdout.strip():
             return []
@@ -586,9 +608,12 @@ def consolidate_cluster(cluster: list[str], vault: Path) -> str | None:
 
     combined = "\n\n".join(contents)
     try:
+        env = os.environ.copy()
+        env["GEMINI_CLI_TRUST_WORKSPACE"] = "false"
         result = subprocess.run(
             ["gemini", "-p", f"{_CONSOLIDATION_PROMPT}\n\n---\n\n{combined}"],
-            capture_output=True, text=True, timeout=180,
+            capture_output=True, text=True, timeout=180, env=env,
+            cwd=str(Path.home()),
         )
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()

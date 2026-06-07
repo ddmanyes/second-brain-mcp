@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.user.vault-janitor</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>{{UV_BIN}}</string>
+		<string>run</string>
+		<string>--project</string>
+		<string>{{SERVER_DIR}}</string>
+		<string>python</string>
+		<string>{{SERVER_DIR}}/vault_janitor.py</string>
+		<string>--push</string>
+	</array>
+
+	<key>WorkingDirectory</key>
+	<string>{{SERVER_DIR}}</string>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>SECOND_BRAIN_PATH</key>
+		<string>{{VAULT_PATH}}</string>
+	</dict>
+
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>7</integer>
+		<key>Minute</key>
+		<integer>30</integer>
+	</dict>
+
+	<key>RunAtLoad</key>
+	<false/>
+
+	<key>StandardOutPath</key>
+	<string>/tmp/vault-janitor.log</string>
+	<key>StandardErrorPath</key>
+	<string>/tmp/vault-janitor.err</string>
+</dict>
+</plist>

@@ -25,3 +25,13 @@ mcp_config.json
 execution_trace.md
 dist/
 .pytest_cache/
+
+# Generated launchd plists (personal paths — use launchd/install.sh to create)
+launchd/*.plist
+
+# Coverage
+.coverage
+htmlcov/
+
+# Virtualenvs
+.venv*

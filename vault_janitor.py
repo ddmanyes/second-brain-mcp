@@ -230,6 +230,17 @@ def build_report(dry_run: bool = True) -> str:
     else:
         lines.append("\n💤 Sleep 候選：無")
 
+    # Task 6: Sync vault index (Phase 12)
+    try:
+        import vault_db
+        sync_result = vault_db.sync_all(VAULT)
+        lines.append(
+            f"\n🗂 <b>Vault 索引同步</b> — {sync_result['synced']} 筆"
+            + (f"（⚠️ {sync_result['embed_failed']} 筆缺 embedding）" if sync_result['embed_failed'] else "")
+        )
+    except Exception as e:
+        lines.append(f"\n🗂 Vault 索引同步失敗：{e}")
+
     return "\n".join(lines)
 
 

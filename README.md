@@ -630,6 +630,65 @@ uv run python benchmark.py --quick --markdown   # search latency + accuracy repo
 
 ---
 
+## Known Issues & Fixes
+
+### WAL corruption (`Failure while replaying WAL file`)
+
+**Cause:** DuckDB write was interrupted mid-transaction (IDE restart, `pkill -9`, or machine sleep).  
+**Symptom:** MCP server crashes on startup; every DB operation fails.  
+**Fix:**
+
+```bash
+rm -f ~/.second-brain/vault.db ~/.second-brain/vault.db.wal
+```
+
+Restart the server — it will rebuild a clean DB. Run `sync_index` to re-index your vault.
+
+> **Note:** If running inside a sandboxed IDE (e.g. Antigravity), the agent cannot delete `~/.second-brain/`. Run the command in your local Terminal, or ask Claude Code (VSCode extension) which has full shell access.
+
+---
+
+### vault.db created in the wrong directory
+
+**Cause:** `server.py` was launched with a non-home working directory; DuckDB created `vault.db` relative to cwd.  
+**Symptom:** `~/.second-brain/vault.db` is tiny (< 1 MB) but a large `vault.db` exists elsewhere.  
+**Fix:**
+
+```bash
+# Find the real vault.db
+find ~ -name "vault.db" -size +1M 2>/dev/null
+
+# Move it to the correct location
+cp /path/to/found/vault.db ~/.second-brain/vault.db
+```
+
+---
+
+### IDE reports `no such file or directory` for `.venv/bin/python`
+
+**Root cause:** The venv was created inside the Google Drive folder. Google Drive sync breaks symlinks — `bin/python` points to an absolute path on another machine, which doesn't exist locally.
+
+**Permanent fix — use a local venv (macOS):**
+
+```bash
+# Create venv on local machine (once per machine)
+python3 -m venv ~/.venvs/second-brain
+~/.venvs/second-brain/bin/pip install -r /path/to/second-brain/requirements.txt
+
+# Register MCP with Claude Code using the local venv
+claude mcp add --scope user second-brain \
+  ~/.venvs/second-brain/bin/python \
+  /path/to/second-brain/server.py \
+  -e PYTHONPATH=/path/to/second-brain \
+  -e SECOND_BRAIN_PATH=/path/to/vault
+```
+
+Source code (`server.py`, etc.) stays on Google Drive and syncs normally. Only the venv lives on the local machine.
+
+> **Do not** create the venv inside the Google Drive folder — it will break on every other machine that syncs it.
+
+---
+
 ## Contributing
 
 PRs and Issues welcome. Please open an issue first to discuss significant changes.

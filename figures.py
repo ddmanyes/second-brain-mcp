@@ -15,6 +15,7 @@ import ipaddress
 import os
 import re
 import socket
+import sys
 import subprocess
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -372,6 +373,12 @@ def render_note_to_png(
             page.wait_for_timeout(500)
             page.screenshot(path=str(out_path), full_page=True)
             browser.close()
+    except ImportError:
+        print(
+            "[figures] playwright not installed — run: pip install playwright && playwright install chromium",
+            file=sys.stderr,
+        )
+        return None
     except Exception:
         return None
     finally:
@@ -387,7 +394,11 @@ def snapshot_note(note_path: str, vault: Path, tier: str = "base") -> dict:
     """Render note to PNG and return info dict."""
     out = render_note_to_png(note_path, vault, tier)
     if not out:
-        return {"success": False, "path": None}
+        return {
+            "success": False,
+            "path": None,
+            "error": "Rendering failed — playwright may not be installed. Run: pip install playwright && playwright install chromium",
+        }
     size_kb = out.stat().st_size // 1024
     return {
         "success": True,
