@@ -44,10 +44,7 @@ KNOWLEDGE_EXCLUDE: list[str] = NEWS_TYPES + FINANCE_DAILY_TYPES
 DB_PATH = Path.home() / ".second-brain" / "vault.db"
 
 _DEFAULT_VAULT_PATH = Path(
-    __import__("os").environ.get(
-        "SECOND_BRAIN_PATH",
-        "~/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/second-brain",
-    )
+    __import__("os").environ.get("SECOND_BRAIN_PATH", "~/second-brain")
 ).expanduser()
 
 SCHEMA = """
