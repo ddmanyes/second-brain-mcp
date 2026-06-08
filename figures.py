@@ -92,6 +92,9 @@ def _slug(note_path: str) -> str:
     return hashlib.md5(note_path.encode(), usedforsecurity=False).hexdigest()[:12]
 
 
+_MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 20 MB
+
+
 def _download_image(url: str, dest: Path) -> bool:
     """Download image to dest. Returns True on success."""
     if dest.exists():
@@ -99,12 +102,22 @@ def _download_image(url: str, dest: Path) -> bool:
     if not _is_ssrf_safe(url):
         return False
     try:
-        r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
-        if r.status_code == 200 and r.content:
+        with requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"}, stream=True) as r:
+            if r.status_code != 200:
+                return False
             if not r.headers.get("Content-Type", "").startswith("image/"):
                 return False
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in r.iter_content(8192):
+                total += len(chunk)
+                if total > _MAX_IMAGE_BYTES:
+                    return False
+                chunks.append(chunk)
+            if not chunks:
+                return False
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(r.content)
+            dest.write_bytes(b"".join(chunks))
             return True
     except Exception:
         pass

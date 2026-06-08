@@ -514,9 +514,8 @@ def sync_all(vault: Path) -> dict:
                 f"DELETE FROM notes WHERE path NOT IN ({placeholders})", list(seen)
             )
         _ensure_fts(con)
-        embed_failed: int = con.execute(
-            "SELECT COUNT(*) FROM notes WHERE embedding IS NULL"
-        ).fetchone()[0]
+        _row = con.execute("SELECT COUNT(*) FROM notes WHERE embedding IS NULL").fetchone()
+        embed_failed: int = _row[0] if _row else 0
     _clean_orphan_snapshots(vault, seen)
     return {"synced": count, "embed_failed": embed_failed}
 
@@ -544,6 +543,9 @@ def sync_incremental(vault: Path) -> dict:
     return {"updated": len(changed)}
 
 
+_NEIGHBOR_KEYWORDS_MAX_NOTES = 2000  # O(N²) guard — skip if vault is too large
+
+
 def compute_neighbor_keywords(threshold: float = 0.75, top_n: int = 5) -> dict[str, dict]:
     """Compute neighbor_keywords and cluster_topic for all notes with embeddings.
 
@@ -553,6 +555,8 @@ def compute_neighbor_keywords(threshold: float = 0.75, top_n: int = 5) -> dict[s
     """
     cache = load_embedding_cache()
     if not cache:
+        return {}
+    if len(cache) > _NEIGHBOR_KEYWORDS_MAX_NOTES:
         return {}
 
     # Pre-fetch metadata for all cached paths in one query
@@ -608,15 +612,20 @@ def compute_neighbor_keywords(threshold: float = 0.75, top_n: int = 5) -> dict[s
     return results
 
 
+def _note_slug(path: str) -> str:
+    """MD5-based slug matching figures._slug — used to identify snapshot dirs."""
+    return hashlib.md5(path.encode(), usedforsecurity=False).hexdigest()[:12]
+
+
 def _clean_orphan_snapshots(vault: Path, seen_paths: set[str]) -> int:
     """Remove .snapshots/ dirs for notes that no longer exist. Returns count removed."""
     snap_root = vault / ".snapshots"
     if not snap_root.exists():
         return 0
-    seen_stems = {Path(p).stem for p in seen_paths}
+    seen_slugs = {_note_slug(p) for p in seen_paths}
     removed = 0
     for snap_dir in snap_root.iterdir():
-        if snap_dir.is_dir() and snap_dir.name not in seen_stems:
+        if snap_dir.is_dir() and snap_dir.name not in seen_slugs:
             shutil.rmtree(snap_dir)
             removed += 1
     return removed
@@ -626,6 +635,8 @@ def _clean_orphan_snapshots(vault: Path, seen_paths: set[str]) -> int:
 # Embedding (Phase 6) — llama.cpp nomic-embed-text via REST
 # ---------------------------------------------------------------------------
 
+# Embeddings stored as raw little-endian float32 bytes (array typecode "f", 4 bytes/dim).
+# To deserialise: array.array("f"); a.frombytes(blob); list(a)
 def _vec_to_blob(vec: list[float]) -> bytes:
     import array as _array
     return _array.array("f", vec).tobytes()
@@ -990,7 +1001,9 @@ def get_note_snippet(path: str, query: str, max_per_line: int = 250, max_lines: 
     Skips YAML frontmatter and lines that are purely metadata (tickers/tags lists).
     Returns matched lines joined by ' | ', or empty string if nothing found.
     """
-    full_path = _DEFAULT_VAULT_PATH / path
+    full_path = (_DEFAULT_VAULT_PATH / path).resolve()
+    if not full_path.is_relative_to(_DEFAULT_VAULT_PATH.resolve()):
+        return ""
     if not full_path.exists():
         return ""
     try:
@@ -1243,7 +1256,8 @@ def search_figures(query: str, limit: int = 10) -> list[dict]:
 def db_stats() -> dict:
     """Return summary statistics about the vault index."""
     with _connect() as con:
-        total = con.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
+        _row = con.execute("SELECT COUNT(*) FROM notes").fetchone()
+        total = _row[0] if _row else 0
         by_type = con.execute(
             "SELECT note_type, COUNT(*) FROM notes GROUP BY note_type ORDER BY 2 DESC"
         ).fetchall()

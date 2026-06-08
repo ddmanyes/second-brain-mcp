@@ -33,10 +33,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 # ---------------------------------------------------------------------------
 
 VAULT = Path(
-    os.environ.get(
-        "SECOND_BRAIN_PATH",
-        "~/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/second-brain",
-    )
+    os.environ.get("SECOND_BRAIN_PATH", "~/second-brain")
 ).expanduser()
 
 STOCK_ANALYSIS_DIR = VAULT / "20-areas" / "personal" / "finance"

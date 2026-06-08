@@ -100,13 +100,17 @@ def _slugify(text: str) -> str:
     return text
 
 
+_index_lock = threading.Lock()
+
+
 def _append_to_index(rel: str, label: str, today: str) -> None:
     index_path = VAULT / "memory" / "index.md"
     index_path.parent.mkdir(parents=True, exist_ok=True)
-    index_text = index_path.read_text(encoding="utf-8") if index_path.exists() else ""
-    if f"]({rel})" not in index_text:
-        with index_path.open("a", encoding="utf-8") as f:
-            f.write(f"\n- [{label}]({rel}) — {today}")
+    with _index_lock:
+        index_text = index_path.read_text(encoding="utf-8") if index_path.exists() else ""
+        if f"]({rel})" not in index_text:
+            with index_path.open("a", encoding="utf-8") as f:
+                f.write(f"\n- [{label}]({rel}) — {today}")
 
 
 def _safe_yaml(value: str) -> str:
@@ -114,14 +118,31 @@ def _safe_yaml(value: str) -> str:
     return _json.dumps(value.strip())[1:-1]  # JSON-escaped without outer quotes
 
 
+_TAG_UNSAFE_RE = re.compile(r'[\[\]:{}"\'|>&!*,\n\r]')
+
+
+def _safe_tag(tag: str) -> str:
+    """Strip YAML-unsafe characters from a single tag."""
+    return _TAG_UNSAFE_RE.sub("", tag).strip()
+
+
 _ALLOWED_LOCAL_EXTENSIONS = {".pdf", ".docx", ".pptx", ".txt", ".md"}
 
 
+_ALLOWED_LOCAL_ROOTS = [
+    VAULT,
+    Path.home() / "Downloads",
+    Path.home() / "Desktop",
+]
+
+# NOTE: _is_ssrf_safe() resolves DNS once here, but MarkItDown resolves DNS again
+# on the actual HTTP request — DNS rebinding can bypass this check. This is an
+# architectural limitation of using MarkItDown as a black-box converter.
 def _validate_source(source: str) -> str | None:
     """Return source if safe to pass to MarkItDown, else None.
 
     - http/https: allowed only when the resolved IP is not private/loopback (SSRF guard).
-    - Local paths: allowed only for document extensions (.pdf/.docx/.pptx/.txt/.md).
+    - Local paths: allowed only for document extensions and within approved directories.
     - Everything else (file://, ftp://, bare /etc/passwd, etc.): rejected.
     """
     parsed = urlparse(source)
@@ -129,9 +150,13 @@ def _validate_source(source: str) -> str | None:
         return source if _fig._is_ssrf_safe(source) else None
     if parsed.scheme in ("", "file") or not parsed.scheme:
         p = Path(source).resolve()
-        if p.suffix.lower() in _ALLOWED_LOCAL_EXTENSIONS and p.exists():
-            return str(p)
-        return None
+        if p.suffix.lower() not in _ALLOWED_LOCAL_EXTENSIONS:
+            return None
+        if not p.exists():
+            return None
+        if not any(p.is_relative_to(root) for root in _ALLOWED_LOCAL_ROOTS):
+            return None
+        return str(p)
     return None
 
 
@@ -152,7 +177,8 @@ def _extract_semantic_keywords_via_gemini(content: str) -> list[str]:
         env = os.environ.copy()
         env["GEMINI_CLI_TRUST_WORKSPACE"] = "false"
         result = subprocess.run(
-            [gemini_cli, "-p", prompt],
+            [gemini_cli, "-"],
+            input=prompt,
             capture_output=True, text=True, timeout=60, env=env,
             cwd=str(Path.home()),
         )
@@ -365,7 +391,7 @@ def new_note(note_type: str, title: str, content: str = "", tags: str = "") -> s
     today = date.today().isoformat()
     filled = tmpl_path.read_text(encoding="utf-8").replace("{{title}}", title).replace("{{date}}", today)
     if tags:
-        tag_list = f"[{', '.join(t.strip() for t in tags.split(',') if t.strip())}]"
+        tag_list = f"[{', '.join(_safe_tag(t) for t in tags.split(',') if _safe_tag(t))}]"
         filled = filled.replace("tags: []", f"tags: {tag_list}", 1)
     if content:
         filled += f"\n{content}\n"
@@ -939,7 +965,7 @@ def save_article(source: str, title: str = "", tags: str = "") -> str:
     if dest.exists():
         return f"Already saved: 30-resources/{slug}.md"
 
-    tag_list = f"[{', '.join(t.strip() for t in tags.split(',') if t.strip())}]" if tags else "[]"
+    tag_list = f"[{', '.join(_safe_tag(t) for t in tags.split(',') if _safe_tag(t))}]" if tags else "[]"
     frontmatter = (
         f'---\ntitle: "{_safe_yaml(title)}"\ndate: {today}\ntype: resource\n'
         f'status: active\ntags: {tag_list}\nsource: "{_safe_yaml(source)}"\n---\n\n'
@@ -1147,8 +1173,9 @@ def read_note_as_image(path: str):
         ).fetchone()
 
     if row and row[0]:
-        snap_path = Path(row[0])
-        if snap_path.exists():
+        snap_path = Path(row[0]).resolve()
+        snap_root = (VAULT / ".snapshots").resolve()
+        if snap_path.exists() and snap_path.is_relative_to(snap_root):
             vault_db.record_access(path)
             return Image(path=snap_path, format="png")
 

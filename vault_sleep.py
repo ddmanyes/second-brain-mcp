@@ -107,7 +107,8 @@ def _compress_with_gemini(content: str) -> str | None:
         env = os.environ.copy()
         env["GEMINI_CLI_TRUST_WORKSPACE"] = "false"
         result = subprocess.run(
-            ["gemini", "-p", f"{COMPRESS_PROMPT}\n\n---\n\n{content[:_MAX_COMPRESS_CHARS]}"],
+            ["gemini", "-"],
+            input=f"{COMPRESS_PROMPT}\n\n---\n\n{content[:_MAX_COMPRESS_CHARS]}",
             capture_output=True, text=True, timeout=180, env=env,
             cwd=str(Path.home()),
         )
@@ -122,7 +123,8 @@ def _compress_with_claude(content: str) -> str | None:
     """Fallback: Claude API via claude CLI."""
     try:
         result = subprocess.run(
-            ["claude", "-p", f"{COMPRESS_PROMPT}\n\n---\n\n{content[:_MAX_COMPRESS_CHARS]}"],
+            ["claude", "-"],
+            input=f"{COMPRESS_PROMPT}\n\n---\n\n{content[:_MAX_COMPRESS_CHARS]}",
             capture_output=True, text=True, timeout=180,
         )
         if result.returncode == 0 and result.stdout.strip():
@@ -179,19 +181,29 @@ def _archive_path(vault: Path, rel: str) -> Path:
     return vault / "40-archive" / f"{today.year}-{today.month:02d}" / Path(rel).name
 
 
+def _yaml_val(val: str) -> str:
+    """Quote a YAML scalar value if it contains special characters."""
+    import json as _json
+    _YAML_SAFE = re.compile(r'^[A-Za-z0-9_\-\.]+$')
+    if _YAML_SAFE.match(val):
+        return val
+    return '"' + _json.dumps(val)[1:-1] + '"'
+
+
 def _update_frontmatter(content: str, updates: dict) -> str:
     fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content, re.DOTALL)
     if not fm_match:
-        header = "---\n" + "\n".join(f"{k}: {v}" for k, v in updates.items()) + "\n---\n\n"
+        header = "---\n" + "\n".join(f"{k}: {_yaml_val(str(v))}" for k, v in updates.items()) + "\n---\n\n"
         return header + content
 
     fm_text = fm_match.group(1)
     for key, val in updates.items():
+        safe_val = _yaml_val(str(val))
         if re.search(rf"^{re.escape(key)}:", fm_text, re.MULTILINE):
-            replacement = f"{key}: {val}"
+            replacement = f"{key}: {safe_val}"
             fm_text = re.sub(rf"^{re.escape(key)}:.*$", lambda _: replacement, fm_text, flags=re.MULTILINE)
         else:
-            fm_text += f"\n{key}: {val}"
+            fm_text += f"\n{key}: {safe_val}"
 
     return f"---\n{fm_text}\n---\n\n" + content[fm_match.end():]
 
