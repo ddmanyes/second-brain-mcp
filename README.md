@@ -319,11 +319,11 @@ Every Sunday 02:00 (launchd, no interaction needed)
 
 ```text
 tests/test_figures.py      19 passed   (OCR, snapshots, VLM)
-tests/test_server.py       13 passed   (MCP tools, path safety)
-tests/test_vault_db.py     39 passed   (FTS, semantic search, embeddings)
-tests/test_vault_sleep.py  44 passed   (compression, consolidation, rules, prune)
+tests/test_server.py       25 passed   (MCP tools, path safety)
+tests/test_vault_db.py     73 passed   (FTS, semantic search, embeddings)
+tests/test_vault_sleep.py  46 passed   (compression, consolidation, rules, prune)
 ────────────────────────────────────────
-115 passed in 3.37s
+163 passed in 7.51s
 ```
 
 ---
