@@ -157,6 +157,39 @@ These rules live in `memory/rules.md` and are injected at every `get_context()` 
 
 ---
 
+## Consistent Filing — The Operating Manual
+
+Tools alone don't keep a vault tidy — the *agent* has to know **where** each note belongs, **how** to name it, and **what not to touch**. second-brain ships a single operating manual (`AGENTS.md`) that encodes those decisions, so any agent files things the same way every time — no re-explaining your conventions each session.
+
+```text
+Agent receives a request
+        │
+        ▼
+get_agent_instructions()   ← returns the full AGENTS.md operating manual
+        │
+        ▼
+Agent now knows, without being told:
+  • Filing decision tree   — paper (DOI/author) → 20-areas/research/
+                             reference doc      → 30-resources/
+                             stock analysis     → finance/  · unsure → 00-inbox/
+  • Naming convention      — papers: {YYYY}_{Author}_{ShortTitle}.md
+  • Figure rules           — figures/{slug}/fig-NN.png, embedded as ![[…]]
+  • Editing discipline     — local edits only, never reorder frontmatter,
+                             new notes go through new_note (templated)
+```
+
+**Why it matters for efficiency:**
+
+| Without the manual | With `AGENTS.md` |
+| :----------------- | :--------------- |
+| You re-explain "papers go here, name them like this" every session | The agent reads it once per session and just does it |
+| Notes drift into inconsistent folders/names; search degrades | Stable structure → semantic + figure search stays reliable |
+| Each agent (local Claude Code, remote MCP, Gemini) behaves differently | One manual, one behaviour — served locally via `CLAUDE.md`, remotely via `get_agent_instructions()` |
+
+> **Single source of truth:** keep all conventions in the one `AGENTS.md` the server serves. Forks in a second copy silently diverge — remote agents then act on stale rules. Edit the canonical file only.
+
+---
+
 ## Example Queries
 
 ```python
