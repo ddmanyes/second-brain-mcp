@@ -159,6 +159,29 @@ class TestNormaliseSourceUrl:
         assert server._normalise_source_url(url) == url
 
 
+class TestSlugify:
+    def test_punctuation_becomes_separator_not_merge(self):
+        import server
+        # Parens/tilde/slash/dot must not glue adjacent words together.
+        assert server._slugify("SOP（~/.claude 設定）") == "sop-claude-設定"
+
+    def test_basic_kebab(self):
+        import server
+        assert server._slugify("Finance Kit Overview") == "finance-kit-overview"
+
+    def test_cjk_preserved(self):
+        import server
+        assert server._slugify("台股日報補強") == "台股日報補強"
+
+    def test_no_leading_or_trailing_dash(self):
+        import server
+        assert server._slugify("（前綴符號）標題") == "前綴符號-標題"
+
+    def test_underscores_and_spaces_collapse(self):
+        import server
+        assert server._slugify("a__b  c") == "a-b-c"
+
+
 # ---------------------------------------------------------------------------
 # Project-aware routing — _load_project_registry / _detect_project_slug / new_note
 # ---------------------------------------------------------------------------
