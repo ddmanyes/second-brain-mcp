@@ -141,6 +141,7 @@ def _connect():
                 except Exception as del_err:
                     print(f"[vault_db] Failed to delete database files: {del_err}", file=sys.stderr)
                     raise e
+            _schema_applied = False  # force re-apply schema on freshly-rebuilt DB
             con = duckdb.connect(str(DB_PATH))
 
         with _schema_lock:
@@ -157,6 +158,11 @@ def _connect():
             with con:
                 yield con
         finally:
+            # checkpoint before close — runs on both success and error paths
+            try:
+                con.execute("PRAGMA wal_checkpoint(FULL)")
+            except Exception:
+                pass
             try:
                 con.close()
             except Exception:
@@ -318,12 +324,21 @@ def _parse_date(val: str) -> date | None:
 # Core operations
 # ---------------------------------------------------------------------------
 
+_LARGE_FILE_READ_LIMIT = 16 * 1024  # read only first 16KB for files > 32KB (Drive I/O opt)
+_LARGE_FILE_THRESHOLD = 32 * 1024
+
+
 def upsert_note(con: duckdb.DuckDBPyConnection, vault: Path, md_file: Path) -> None:
     """Insert or update a note row from its markdown file."""
-    text = md_file.read_text(encoding="utf-8", errors="ignore")
+    if md_file.stat().st_size > _LARGE_FILE_THRESHOLD:
+        raw = md_file.read_bytes()
+        chash = _content_hash(raw.decode("utf-8", errors="ignore"))
+        text = raw[:_LARGE_FILE_READ_LIMIT].decode("utf-8", errors="ignore")
+    else:
+        text = md_file.read_text(encoding="utf-8", errors="ignore")
+        chash = _content_hash(text)
     fm = _parse_frontmatter(text)
     rel = str(md_file.relative_to(vault))
-    chash = _content_hash(text)
 
     # Skip if unchanged
     row = con.execute("SELECT content_hash FROM notes WHERE path = ?", [rel]).fetchone()
@@ -488,34 +503,53 @@ def sync_embeddings(vault: Path | None = None) -> dict:
     return {"updated": updated, "failed": failed, "skipped": len(rows) - updated - failed}
 
 
+_SYNC_BATCH_SIZE = 50  # commit every N notes to avoid huge single-transaction hangs
+
 def sync_all(vault: Path) -> dict:
     """Scan all .md files in vault and upsert into DB.
 
     Returns {"synced": N, "embed_failed": M} where embed_failed counts notes
     that could not get an embedding (server offline, etc.).
     Also removes DB rows for notes/figures whose markdown files no longer exist.
+    Commits in batches of _SYNC_BATCH_SIZE to avoid long-running transactions on
+    Google Drive (large files can take seconds each; one giant tx would take minutes).
     """
     seen: set[str] = set()
+    count = 0
+    batch: list[Path] = []
+
+    all_files = [
+        f for f in vault.rglob("*.md")
+        if not any(p in f.parts for p in (".obsidian", ".claude", "templates"))
+    ]
+
+    for i, md_file in enumerate(all_files):
+        batch.append(md_file)
+        if len(batch) >= _SYNC_BATCH_SIZE or i == len(all_files) - 1:
+            with _connect() as con:
+                for f in batch:
+                    upsert_note(con, vault, f)
+                    seen.add(str(f.relative_to(vault)))
+                    count += 1
+            batch = []
+
+    # Reconcile: remove stale rows that no longer have a backing file.
+    # Use a temp table to avoid unbounded NOT IN (?, ?, ...) for large vaults.
     with _connect() as con:
-        count = 0
-        for md_file in vault.rglob("*.md"):
-            if any(p in md_file.parts for p in (".obsidian", ".claude", "templates")):
-                continue
-            upsert_note(con, vault, md_file)
-            seen.add(str(md_file.relative_to(vault)))
-            count += 1
-        # Reconcile: remove stale rows that no longer have a backing file
         if seen:
-            placeholders = ",".join("?" * len(seen))
-            con.execute(
-                f"DELETE FROM figures WHERE note_path NOT IN ({placeholders})", list(seen)
-            )
-            con.execute(
-                f"DELETE FROM notes WHERE path NOT IN ({placeholders})", list(seen)
-            )
-        _ensure_fts(con)
+            con.execute("CREATE TEMP TABLE IF NOT EXISTS _seen_paths (path TEXT)")
+            con.execute("DELETE FROM _seen_paths")
+            con.executemany("INSERT INTO _seen_paths VALUES (?)", [[p] for p in seen])
+            con.execute("DELETE FROM figures WHERE note_path NOT IN (SELECT path FROM _seen_paths)")
+            con.execute("DELETE FROM notes WHERE path NOT IN (SELECT path FROM _seen_paths)")
+            con.execute("DROP TABLE IF EXISTS _seen_paths")
         _row = con.execute("SELECT COUNT(*) FROM notes WHERE embedding IS NULL").fetchone()
         embed_failed: int = _row[0] if _row else 0
+
+    # FTS 在獨立連線執行：PRAGMA create_fts_index 若在 transaction 中失敗會
+    # abort 整個 tx，導致所有 upsert rollback。
+    with _connect() as fts_con:
+        _ensure_fts(fts_con)
     _clean_orphan_snapshots(vault, seen)
     return {"synced": count, "embed_failed": embed_failed}
 
@@ -539,7 +573,8 @@ def sync_incremental(vault: Path) -> dict:
     with _connect() as con:
         for f in changed:
             upsert_note(con, vault, f)
-        _ensure_fts(con)
+    with _connect() as fts_con:
+        _ensure_fts(fts_con)
     return {"updated": len(changed)}
 
 

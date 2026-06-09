@@ -157,6 +157,39 @@ These rules live in `memory/rules.md` and are injected at every `get_context()` 
 
 ---
 
+## Consistent Filing — The Operating Manual
+
+Tools alone don't keep a vault tidy — the *agent* has to know **where** each note belongs, **how** to name it, and **what not to touch**. second-brain ships a single operating manual (`AGENTS.md`) that encodes those decisions, so any agent files things the same way every time — no re-explaining your conventions each session.
+
+```text
+Agent receives a request
+        │
+        ▼
+get_agent_instructions()   ← returns the full AGENTS.md operating manual
+        │
+        ▼
+Agent now knows, without being told:
+  • Filing decision tree   — paper (DOI/author) → 20-areas/research/
+                             reference doc      → 30-resources/
+                             stock analysis     → finance/  · unsure → 00-inbox/
+  • Naming convention      — papers: {YYYY}_{Author}_{ShortTitle}.md
+  • Figure rules           — figures/{slug}/fig-NN.png, embedded as ![[…]]
+  • Editing discipline     — local edits only, never reorder frontmatter,
+                             new notes go through new_note (templated)
+```
+
+**Why it matters for efficiency:**
+
+| Without the manual | With `AGENTS.md` |
+| :----------------- | :--------------- |
+| You re-explain "papers go here, name them like this" every session | The agent reads it once per session and just does it |
+| Notes drift into inconsistent folders/names; search degrades | Stable structure → semantic + figure search stays reliable |
+| Each agent (local Claude Code, remote MCP, Gemini) behaves differently | One manual, one behaviour — served locally via `CLAUDE.md`, remotely via `get_agent_instructions()` |
+
+> **Single source of truth:** keep all conventions in the one `AGENTS.md` the server serves. Forks in a second copy silently diverge — remote agents then act on stale rules. Edit the canonical file only.
+
+---
+
 ## Example Queries
 
 ```python
@@ -630,6 +663,156 @@ uv run python benchmark.py --quick --markdown   # search latency + accuracy repo
 
 ---
 
+## 新機器安裝教學（個人設定）
+
+> 適用於已有 Google Drive 同步 vault 的情境。Vault 程式碼在 Drive 上，只需在本機建立 venv 和 MCP 設定。
+
+### 前置條件
+
+| 項目 | 說明 |
+| :--- | :--- |
+| Python 3.11+ | `python3 --version` 確認 |
+| Google Drive 桌面版 | Vault 同步到本機 |
+| Claude Code（CLI 或 VSCode extension） | MCP client |
+| uv（選用） | 加速套件安裝 |
+
+### Step 1 — 確認 vault 路徑
+
+```bash
+# Google Drive vault 同步位置
+ls ~/Library/CloudStorage/GoogleDrive-*/我的雲端硬碟/PJ_save/second-brain
+# 程式碼位置
+ls ~/Library/CloudStorage/GoogleDrive-*/我的雲端硬碟/PJ_save/mcp-tools/second-brain/server.py
+```
+
+以下指令假設路徑為：
+
+- `SB_CODE` = `~/Library/CloudStorage/GoogleDrive-.../PJ_save/mcp-tools/second-brain`
+- `SB_VAULT` = `~/Library/CloudStorage/GoogleDrive-.../PJ_save/second-brain`
+
+### Step 2 — 建立本機 venv
+
+> **重要**：venv 必須建在本機（`~/.venvs/`），不要放在 Google Drive 上。
+> Drive 會破壞 symlinks，導致 `bin/python` 指向不存在的路徑。
+
+```bash
+# 建立 venv（一次性）
+python3 -m venv ~/.venvs/second-brain
+
+# 安裝依賴
+~/.venvs/second-brain/bin/pip install -r \
+  ~/Library/CloudStorage/GoogleDrive-*/我的雲端硬碟/PJ_save/mcp-tools/second-brain/requirements.txt
+
+# 安裝 Playwright（PNG snapshot 功能需要）
+~/.venvs/second-brain/bin/playwright install chromium
+```
+
+### Step 3 — 設定 MCP
+
+**Gemini CLI / Antigravity IDE** — 編輯 `~/.gemini/antigravity-ide/mcp_config.json`（或 `~/.gemini/config/mcp_config.json`）：
+
+```json
+{
+  "mcpServers": {
+    "second-brain": {
+      "command": "/Users/wangchiayi/.venvs/second-brain/bin/python",
+      "args": [
+        "/Users/wangchiayi/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/mcp-tools/second-brain/server.py"
+      ],
+      "env": {
+        "SECOND_BRAIN_PATH": "/Users/wangchiayi/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/second-brain",
+        "PYTHONPATH": "/Users/wangchiayi/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/mcp-tools/second-brain"
+      }
+    }
+  }
+}
+```
+
+**Claude Code（CLI）** — user scope で登錄：
+
+```bash
+# 先刪除舊設定（如果有）
+claude mcp remove second-brain --scope user 2>/dev/null
+
+# 重新加入（用本機 venv 的 python）
+SB_CODE="$HOME/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/mcp-tools/second-brain"
+SB_VAULT="$HOME/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/second-brain"
+
+claude mcp add --scope user second-brain \
+  ~/.venvs/second-brain/bin/python \
+  "$SB_CODE/server.py" \
+  -e SECOND_BRAIN_PATH="$SB_VAULT" \
+  -e PYTHONPATH="$SB_CODE"
+```
+
+確認設定：
+
+```bash
+claude mcp list --scope user | grep second-brain
+```
+
+### Step 4 — 語義搜尋（選用）
+
+新機器需要本機的 embedding server。最簡單的方式是 Ollama：
+
+```bash
+brew install ollama
+ollama pull nomic-embed-text
+ollama serve &   # 或設為 background service
+```
+
+然後在 MCP 設定加入環境變數：
+
+```bash
+# 使用 Ollama（port 11434）
+claude mcp add --scope user second-brain \
+  ~/.venvs/second-brain/bin/python \
+  .../server.py \
+  -e SECOND_BRAIN_PATH=... \
+  -e EMBED_URL=http://localhost:11434/v1/embeddings \
+  -e EMBED_PORT=11434
+```
+
+或使用 llama-server（需自行編譯 llama.cpp + 下載 nomic-embed-text-v1.5.Q8_0.gguf）：
+
+```bash
+~/llama.cpp/build/bin/llama-server \
+  -m ~/nomic-embed-text-v1.5.Q8_0.gguf \
+  --port 11435 --embedding --pooling mean -np 4 -c 2048 --log-disable &
+```
+
+### Step 5 — 重建索引
+
+```bash
+# 在 Claude Code 中呼叫（讓 server 自己跑，不要用外部 python script）
+# 說：sync_index
+```
+
+> **注意**：不要用外部 `python -c "vault_db.sync_all(...)"` 直接跑，會與 Claude Code 的 MCP server 競爭 DuckDB 排他鎖，導致 `CatalogException: Table does not exist`。
+> 應透過 MCP 工具讓 server 內部執行。
+
+### Step 6 — 確認
+
+```bash
+# 在 AI agent 中呼叫：
+# index_stats
+# 應看到當前 vault 筆記數量（每台機器重建後會反映實際筆記數）
+```
+
+---
+
+### 備忘：每台機器各自的本機資料
+
+| 資料 | 位置 | 是否同步 |
+| :--- | :--- | :------: |
+| Vault markdown 筆記 | Google Drive | ✅ 所有機器共享 |
+| 程式碼（server.py 等） | Google Drive | ✅ 所有機器共享 |
+| Python venv | `~/.venvs/second-brain/` | ❌ 每台機器各自建立 |
+| DuckDB index | `~/.second-brain/vault.db` | ❌ 每台機器各自重建（`sync_index`） |
+| MCP 設定 | `~/.gemini/antigravity-ide/mcp_config.json`（Gemini CLI）または Claude Code user scope | ❌ 每台機器各自設定 |
+
+---
+
 ## Known Issues & Fixes
 
 ### WAL corruption (`Failure while replaying WAL file`)
@@ -673,14 +856,21 @@ cp /path/to/found/vault.db ~/.second-brain/vault.db
 ```bash
 # Create venv on local machine (once per machine)
 python3 -m venv ~/.venvs/second-brain
-~/.venvs/second-brain/bin/pip install -r /path/to/second-brain/requirements.txt
 
-# Register MCP with Claude Code using the local venv
+SB_CODE="$HOME/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/mcp-tools/second-brain"
+SB_VAULT="$HOME/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/second-brain"
+
+~/.venvs/second-brain/bin/pip install -r "$SB_CODE/requirements.txt"
+
+# For Gemini CLI / Antigravity — edit ~/.gemini/antigravity-ide/mcp_config.json:
+# "command": "/Users/<you>/.venvs/second-brain/bin/python"
+
+# For Claude Code — register with user scope:
 claude mcp add --scope user second-brain \
   ~/.venvs/second-brain/bin/python \
-  /path/to/second-brain/server.py \
-  -e PYTHONPATH=/path/to/second-brain \
-  -e SECOND_BRAIN_PATH=/path/to/vault
+  "$SB_CODE/server.py" \
+  -e PYTHONPATH="$SB_CODE" \
+  -e SECOND_BRAIN_PATH="$SB_VAULT"
 ```
 
 Source code (`server.py`, etc.) stays on Google Drive and syncs normally. Only the venv lives on the local machine.

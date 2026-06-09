@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -26,6 +27,35 @@ VAULT = Path(os.environ.get(
     "SECOND_BRAIN_PATH",
     Path.home() / "second-brain"
 )).expanduser().resolve()
+
+# ── 防止多 server 並存：kill 同腳本的舊進程 ──────────────────────────────────
+_PID_FILE = Path.home() / ".second-brain" / "server.pid"
+
+def _kill_old_server() -> None:
+    _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if _PID_FILE.exists():
+        try:
+            old_pid = int(_PID_FILE.read_text().strip())
+            if old_pid != os.getpid():
+                os.kill(old_pid, signal.SIGTERM)
+                # Wait up to 3s for graceful exit before force-killing
+                for _ in range(6):
+                    time.sleep(0.5)
+                    try:
+                        os.kill(old_pid, 0)  # check still alive
+                    except ProcessLookupError:
+                        break  # exited cleanly
+                else:
+                    try:
+                        os.kill(old_pid, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+        except (ValueError, ProcessLookupError, PermissionError):
+            pass
+    _PID_FILE.write_text(str(os.getpid()))
+
+_kill_old_server()
+# ─────────────────────────────────────────────────────────────────────────────
 
 mcp = FastMCP("second-brain")
 
@@ -1376,6 +1406,85 @@ def get_agent_instructions() -> str:
         return path.read_text(encoding="utf-8")
 
     return _read("AGENTS.md")
+
+
+@mcp.tool()
+def health_check() -> str:
+    """Diagnose second-brain system health.
+
+    Checks: DB connectivity, note count vs vault files, WAL file size,
+    duplicate server processes, embedding server, and vault accessibility.
+    Returns a plain-text report with OK / WARN / ERROR per item.
+    """
+    import urllib.request
+    lines: list[str] = ["## second-brain health check\n"]
+    ok = "OK  "
+    warn = "WARN"
+    err = "ERR "
+
+    # 1. Vault accessible
+    try:
+        md_count = sum(
+            1 for f in VAULT.rglob("*.md")
+            if not any(p in f.parts for p in (".obsidian", ".claude", "templates"))
+        )
+        lines.append(f"[{ok}] Vault accessible — {md_count} .md files found")
+    except Exception as e:
+        lines.append(f"[{err}] Vault not accessible: {e}")
+        md_count = 0
+
+    # 2. DB connectivity + note count
+    db_path = Path.home() / ".second-brain" / "vault.db"
+    try:
+        import vault_db
+        stats = vault_db.db_stats()
+        db_count = stats.get("total_notes", 0)
+        gap = md_count - db_count
+        if gap > 20:
+            lines.append(f"[{warn}] DB has {db_count} notes, vault has {md_count} — gap {gap} (run sync_index)")
+        else:
+            lines.append(f"[{ok}] DB has {db_count} notes (vault {md_count}, gap {gap})")
+    except Exception as e:
+        lines.append(f"[{err}] DB not connectable: {e}")
+
+    # 3. WAL file size
+    wal = db_path.with_name(db_path.name + ".wal")
+    if wal.exists():
+        size_mb = wal.stat().st_size / 1024 / 1024
+        if size_mb > 10:
+            lines.append(f"[{warn}] WAL file is {size_mb:.1f} MB (large — possible checkpoint lag)")
+        else:
+            lines.append(f"[{ok}] WAL file {size_mb:.1f} MB")
+    else:
+        lines.append(f"[{ok}] No WAL file (clean)")
+
+    # 4. Duplicate server processes
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "second-brain/server.py"],
+            capture_output=True, text=True
+        )
+        pids = [p for p in result.stdout.strip().splitlines() if p]
+        if len(pids) == 0:
+            lines.append(f"[{warn}] No server process found via pgrep (process may be mis-named)")
+        elif len(pids) > 1:
+            lines.append(f"[{warn}] {len(pids)} server processes running (PIDs: {', '.join(pids)}) — PID file may not have cleaned up")
+        else:
+            lines.append(f"[{ok}] 1 server process running (PID {pids[0]})")
+    except Exception as e:
+        lines.append(f"[{warn}] Cannot check server process count: {e}")
+
+    # 5. Embedding server
+    try:
+        import vault_db as _vdb
+        url = _vdb.EMBED_URL.replace("/v1/embeddings", "/health")
+        with urllib.request.urlopen(url, timeout=2) as resp:
+            lines.append(f"[{ok}] Embedding server reachable ({url})")
+    except Exception:
+        lines.append(f"[{warn}] Embedding server offline — semantic search falls back to BM25")
+
+    lines.append("\nRun `sync_index` to rebuild index. Run `rm ~/.second-brain/vault.db*` in Terminal to reset DB.")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":
