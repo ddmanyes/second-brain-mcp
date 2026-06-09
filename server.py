@@ -125,9 +125,11 @@ def _detect_project_slug(title: str, tags: str, registry: dict[str, str]) -> str
 
 def _slugify(text: str) -> str:
     text = text.lower().strip()
-    text = re.sub(r"[^\w\s-]", "", text)
+    # Replace punctuation with a space (not "") so adjacent words don't merge:
+    # "SOP（~/.claude 設定）" → "sop-claude-設定", not "sopclaude-設定".
+    text = re.sub(r"[^\w\s-]", " ", text)
     text = re.sub(r"[\s_]+", "-", text)
-    return text
+    return text.strip("-")
 
 
 _index_lock = threading.Lock()
