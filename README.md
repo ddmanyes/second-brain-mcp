@@ -270,7 +270,7 @@ Vault    BM25-only p50          Hybrid BM25+semantic p50
                        │ MCP Protocol (27 tools)
 ┌──────────────────────▼──────────────────────────────┐
 │               Layer 2 — MCP Server                   │
-│                    server.py                         │
+│              mcp_second_brain/server.py              │
 │  get_context · search_notes · save_article · … (27)  │
 └──────┬───────────────┬────────────────┬─────────────┘
        │               │                │
@@ -351,23 +351,23 @@ Every Sunday 02:00 (launchd, no interaction needed)
 ## Test Results
 
 ```text
-tests/test_figures.py      19 passed   (OCR, snapshots, VLM)
-tests/test_server.py       25 passed   (MCP tools, path safety)
+tests/test_figures.py      24 passed   (OCR, snapshots, VLM)
+tests/test_server.py       30 passed   (MCP tools, path safety)
 tests/test_vault_db.py     73 passed   (FTS, semantic search, embeddings)
 tests/test_vault_sleep.py  46 passed   (compression, consolidation, rules, prune)
 ────────────────────────────────────────
-163 passed in 7.51s
+173 passed in 7.51s
 ```
 
 ---
 
 ## Installation
 
-> ⚠️ **Install from source for now.** The published PyPI package (`mcp-second-brain` 0.1.0)
-> lags the current source, and the `python -m mcp_second_brain` entry point in the Quick
-> Start below is **not yet packaged** — those `pip install` snippets will land an outdated
-> build. Until a fresh release ships, use the **[Development Install (clone)](#development-install-clone)**
-> path. Self-hosting across your own machines from a synced source tree? See
+> ⚠️ **Install from source for now.** The source tree is packaged (v0.2.0, with a working
+> `python -m mcp_second_brain` entry point), but the PyPI release is still catching up — the
+> published `mcp-second-brain` is `0.1.0`, so `pip install` lands an outdated build. Until the
+> fresh release ships, use the **[Development Install (clone)](#development-install-clone)** path.
+> Self-hosting across your own machines from a synced source tree? See
 > [`NEW_MACHINE_SETUP.md`](NEW_MACHINE_SETUP.md).
 
 ### Prerequisites
@@ -538,7 +538,7 @@ Register-ScheduledTask -TaskName "llama-embed" -Action $action -Trigger $trigger
 ```powershell
 # Run vault_sleep every Sunday at 02:00
 $pythonExe = "C:\Users\$env:USERNAME\.venvs\mcp-second-brain\Scripts\python.exe"
-$serverPy  = "C:\path\to\second-brain-mcp\run_sleep.py"
+$serverPy  = "C:\path\to\second-brain-mcp\launchd\run_sleep.py"
 $vaultPath = "C:\Users\$env:USERNAME\second-brain"
 
 $action  = New-ScheduledTaskAction -Execute $pythonExe -Argument "`"$serverPy`"" `
@@ -566,12 +566,12 @@ Register with Claude Code:
 # macOS / Linux
 claude mcp add --scope user second-brain \
   --env SECOND_BRAIN_PATH=~/second-brain \
-  -- uv run --project /path/to/second-brain-mcp python server.py
+  -- uv run --project /path/to/second-brain-mcp python -m mcp_second_brain
 
 # Windows (PowerShell)
 claude mcp add --scope user second-brain `
   --env SECOND_BRAIN_PATH="C:\Users\$env:USERNAME\second-brain" `
-  -- uv run --project C:\path\to\second-brain-mcp python server.py
+  -- uv run --project C:\path\to\second-brain-mcp python -m mcp_second_brain
 ```
 
 ### Environment Variables
@@ -585,15 +585,19 @@ claude mcp add --scope user second-brain `
 
 ### Auto-start (macOS, optional)
 
+Weekly vault maintenance (Sunday 02:00) is wired up by the bundled installer — it generates
+the launchd plists from templates and loads them, using your local venv:
+
 ```bash
-# Embedding server — always on, restarts on crash
+SECOND_BRAIN_PATH=~/second-brain bash launchd/install.sh
+```
+
+For an always-on embedding server, adapt the reference plist:
+
+```bash
 cp examples/launchd/com.yourname.llama-embed.plist ~/Library/LaunchAgents/
 # Edit paths inside the file, then:
 launchctl load ~/Library/LaunchAgents/com.yourname.llama-embed.plist
-
-# Weekly vault maintenance — every Sunday 02:00
-cp examples/launchd/com.yourname.vault-sleep.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.yourname.vault-sleep.plist
 ```
 
 ---
@@ -670,156 +674,6 @@ uv run python benchmark.py --quick --markdown   # search latency + accuracy repo
 
 ---
 
-## 新機器安裝教學（個人設定）
-
-> 適用於已有 Google Drive 同步 vault 的情境。Vault 程式碼在 Drive 上，只需在本機建立 venv 和 MCP 設定。
-
-### 前置條件
-
-| 項目 | 說明 |
-| :--- | :--- |
-| Python 3.11+ | `python3 --version` 確認 |
-| Google Drive 桌面版 | Vault 同步到本機 |
-| Claude Code（CLI 或 VSCode extension） | MCP client |
-| uv（選用） | 加速套件安裝 |
-
-### Step 1 — 確認 vault 路徑
-
-```bash
-# Google Drive vault 同步位置
-ls ~/Library/CloudStorage/GoogleDrive-*/我的雲端硬碟/PJ_save/second-brain
-# 程式碼位置
-ls ~/Library/CloudStorage/GoogleDrive-*/我的雲端硬碟/PJ_save/mcp-tools/second-brain/server.py
-```
-
-以下指令假設路徑為：
-
-- `SB_CODE` = `~/Library/CloudStorage/GoogleDrive-.../PJ_save/mcp-tools/second-brain`
-- `SB_VAULT` = `~/Library/CloudStorage/GoogleDrive-.../PJ_save/second-brain`
-
-### Step 2 — 建立本機 venv
-
-> **重要**：venv 必須建在本機（`~/.venvs/`），不要放在 Google Drive 上。
-> Drive 會破壞 symlinks，導致 `bin/python` 指向不存在的路徑。
-
-```bash
-# 建立 venv（一次性）
-python3 -m venv ~/.venvs/second-brain
-
-# 安裝依賴
-~/.venvs/second-brain/bin/pip install -r \
-  ~/Library/CloudStorage/GoogleDrive-*/我的雲端硬碟/PJ_save/mcp-tools/second-brain/requirements.txt
-
-# 安裝 Playwright（PNG snapshot 功能需要）
-~/.venvs/second-brain/bin/playwright install chromium
-```
-
-### Step 3 — 設定 MCP
-
-**Gemini CLI / Antigravity IDE** — 編輯 `~/.gemini/antigravity-ide/mcp_config.json`（或 `~/.gemini/config/mcp_config.json`）：
-
-```json
-{
-  "mcpServers": {
-    "second-brain": {
-      "command": "/Users/wangchiayi/.venvs/second-brain/bin/python",
-      "args": [
-        "/Users/wangchiayi/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/mcp-tools/second-brain/server.py"
-      ],
-      "env": {
-        "SECOND_BRAIN_PATH": "/Users/wangchiayi/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/second-brain",
-        "PYTHONPATH": "/Users/wangchiayi/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/mcp-tools/second-brain"
-      }
-    }
-  }
-}
-```
-
-**Claude Code（CLI）** — user scope で登錄：
-
-```bash
-# 先刪除舊設定（如果有）
-claude mcp remove second-brain --scope user 2>/dev/null
-
-# 重新加入（用本機 venv 的 python）
-SB_CODE="$HOME/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/mcp-tools/second-brain"
-SB_VAULT="$HOME/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/second-brain"
-
-claude mcp add --scope user second-brain \
-  ~/.venvs/second-brain/bin/python \
-  "$SB_CODE/server.py" \
-  -e SECOND_BRAIN_PATH="$SB_VAULT" \
-  -e PYTHONPATH="$SB_CODE"
-```
-
-確認設定：
-
-```bash
-claude mcp list --scope user | grep second-brain
-```
-
-### Step 4 — 語義搜尋（選用）
-
-新機器需要本機的 embedding server。最簡單的方式是 Ollama：
-
-```bash
-brew install ollama
-ollama pull nomic-embed-text
-ollama serve &   # 或設為 background service
-```
-
-然後在 MCP 設定加入環境變數：
-
-```bash
-# 使用 Ollama（port 11434）
-claude mcp add --scope user second-brain \
-  ~/.venvs/second-brain/bin/python \
-  .../server.py \
-  -e SECOND_BRAIN_PATH=... \
-  -e EMBED_URL=http://localhost:11434/v1/embeddings \
-  -e EMBED_PORT=11434
-```
-
-或使用 llama-server（需自行編譯 llama.cpp + 下載 nomic-embed-text-v1.5.Q8_0.gguf）：
-
-```bash
-~/llama.cpp/build/bin/llama-server \
-  -m ~/nomic-embed-text-v1.5.Q8_0.gguf \
-  --port 11435 --embedding --pooling mean -np 4 -c 2048 --log-disable &
-```
-
-### Step 5 — 重建索引
-
-```bash
-# 在 Claude Code 中呼叫（讓 server 自己跑，不要用外部 python script）
-# 說：sync_index
-```
-
-> **注意**：不要用外部 `python -c "vault_db.sync_all(...)"` 直接跑，會與 Claude Code 的 MCP server 競爭 DuckDB 排他鎖，導致 `CatalogException: Table does not exist`。
-> 應透過 MCP 工具讓 server 內部執行。
-
-### Step 6 — 確認
-
-```bash
-# 在 AI agent 中呼叫：
-# index_stats
-# 應看到當前 vault 筆記數量（每台機器重建後會反映實際筆記數）
-```
-
----
-
-### 備忘：每台機器各自的本機資料
-
-| 資料 | 位置 | 是否同步 |
-| :--- | :--- | :------: |
-| Vault markdown 筆記 | Google Drive | ✅ 所有機器共享 |
-| 程式碼（server.py 等） | Google Drive | ✅ 所有機器共享 |
-| Python venv | `~/.venvs/second-brain/` | ❌ 每台機器各自建立 |
-| DuckDB index | `~/.second-brain/vault.db` | ❌ 每台機器各自重建（`sync_index`） |
-| MCP 設定 | `~/.gemini/antigravity-ide/mcp_config.json`（Gemini CLI）または Claude Code user scope | ❌ 每台機器各自設定 |
-
----
-
 ## Known Issues & Fixes
 
 ### WAL corruption (`Failure while replaying WAL file`)
@@ -840,7 +694,7 @@ Restart the server — it will rebuild a clean DB. Run `sync_index` to re-index 
 
 ### vault.db created in the wrong directory
 
-**Cause:** `server.py` was launched with a non-home working directory; DuckDB created `vault.db` relative to cwd.  
+**Cause:** the server was launched with a non-home working directory; DuckDB created `vault.db` relative to cwd.  
 **Symptom:** `~/.second-brain/vault.db` is tiny (< 1 MB) but a large `vault.db` exists elsewhere.  
 **Fix:**
 
@@ -852,37 +706,10 @@ find ~ -name "vault.db" -size +1M 2>/dev/null
 cp /path/to/found/vault.db ~/.second-brain/vault.db
 ```
 
----
-
-### IDE reports `no such file or directory` for `.venv/bin/python`
-
-**Root cause:** The venv was created inside the Google Drive folder. Google Drive sync breaks symlinks — `bin/python` points to an absolute path on another machine, which doesn't exist locally.
-
-**Permanent fix — use a local venv (macOS):**
-
-```bash
-# Create venv on local machine (once per machine)
-python3 -m venv ~/.venvs/second-brain
-
-SB_CODE="$HOME/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/mcp-tools/second-brain"
-SB_VAULT="$HOME/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/second-brain"
-
-~/.venvs/second-brain/bin/pip install -r "$SB_CODE/requirements.txt"
-
-# For Gemini CLI / Antigravity — edit ~/.gemini/antigravity-ide/mcp_config.json:
-# "command": "/Users/<you>/.venvs/second-brain/bin/python"
-
-# For Claude Code — register with user scope:
-claude mcp add --scope user second-brain \
-  ~/.venvs/second-brain/bin/python \
-  "$SB_CODE/server.py" \
-  -e PYTHONPATH="$SB_CODE" \
-  -e SECOND_BRAIN_PATH="$SB_VAULT"
-```
-
-Source code (`server.py`, etc.) stays on Google Drive and syncs normally. Only the venv lives on the local machine.
-
-> **Do not** create the venv inside the Google Drive folder — it will break on every other machine that syncs it.
+> **Running from a cloud-synced source tree** (Google Drive / iCloud / OneDrive) across several
+> of your own machines? Keep the venv on **local disk** (`~/.venvs/`), never inside the synced
+> folder — sync breaks venv symlinks. That self-hosting model is documented in
+> [`NEW_MACHINE_SETUP.md`](NEW_MACHINE_SETUP.md).
 
 ---
 
