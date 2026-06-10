@@ -19,8 +19,8 @@ import subprocess
 from datetime import date
 from pathlib import Path
 
-import vault_db
-import figures as _fig
+from . import vault_db
+from . import figures as _fig
 
 # Resolution tiers: token estimates imported from figures to avoid duplication
 TIERS = _fig.SNAPSHOT_TIERS

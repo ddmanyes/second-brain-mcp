@@ -35,7 +35,8 @@ VAULT="$PJ/second-brain"
 ```
 
 ### Step 1 — 取得程式碼
-新機登入同一 Google Drive 即自動同步；確認 `$SB/server.py` 存在。
+
+新機登入同一 Google Drive 即自動同步；確認 `$SB/mcp_second_brain/server.py` 存在。
 
 ### Step 2 — 建立本機 venv（**不要建在 Drive 目錄裡**）
 
@@ -55,7 +56,7 @@ python3 -m venv ~/.venvs/second-brain
   "mcpServers": {
     "second-brain": {
       "command": "/Users/<你>/.venvs/second-brain/bin/python",
-      "args": ["<PJ>/mcp-tools/second-brain/server.py"],
+      "args": ["<PJ>/mcp-tools/second-brain/mcp_second_brain/server.py"],
       "env": {
         "PYTHONPATH": "<PJ>/mcp-tools/second-brain",
         "SECOND_BRAIN_PATH": "<PJ>/second-brain"

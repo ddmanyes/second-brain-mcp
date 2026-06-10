@@ -6,7 +6,7 @@
 
 ## 執行
 
-`uv run --with "mcp[cli]" --with "markitdown[all]" python server.py`
+`uv run --with "mcp[cli]" --with "markitdown[all]" python -m mcp_second_brain`
 
 ## 安全
 

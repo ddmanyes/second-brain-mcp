@@ -7,10 +7,10 @@ from unittest.mock import patch
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import vault_db
-import vault_sleep
+
+from mcp_second_brain import vault_db
+from mcp_second_brain import vault_sleep
 
 
 @pytest.fixture(autouse=True)

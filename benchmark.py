@@ -25,7 +25,7 @@ from statistics import median, quantiles
 # Add parent dir to path so we can import vault_db directly
 sys.path.insert(0, str(Path(__file__).parent))
 
-import vault_db
+from mcp_second_brain import vault_db
 
 # ---------------------------------------------------------------------------
 # Ground truth queries — verified against the author's vault.

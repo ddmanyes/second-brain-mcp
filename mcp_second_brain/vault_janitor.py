@@ -167,7 +167,7 @@ def check_schema_violations(top_n: int = 10) -> list[dict]:
 def get_sleep_candidates(top_n: int = 5) -> list[dict]:
     """Return top sleep candidates from vault_db (read-only, never compresses)."""
     try:
-        import vault_db
+        from . import vault_db
         return vault_db.sleep_candidates(min_age_days=90, max_score=0.5)[:top_n]
     except Exception as e:
         return [{"error": str(e)}]
@@ -229,7 +229,7 @@ def build_report(dry_run: bool = True) -> str:
 
     # Task 6: Sync vault index (Phase 12)
     try:
-        import vault_db
+        from . import vault_db
         sync_result = vault_db.sync_all(VAULT)
         lines.append(
             f"\n🗂 <b>Vault 索引同步</b> — {sync_result['synced']} 筆"

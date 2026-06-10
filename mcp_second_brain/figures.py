@@ -23,7 +23,7 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 
-import vault_db
+from . import vault_db
 
 # RFC-1918, loopback, link-local, AWS metadata — all off-limits for outbound fetches
 _BLOCKED_NETS = [

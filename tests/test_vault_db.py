@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import vault_db
+
+from mcp_second_brain import vault_db
 
 
 @pytest.fixture(autouse=True)
@@ -737,7 +737,7 @@ class TestServerHelpers:
 
     def test_inject_semantic_keywords_writes_to_frontmatter(self, tmp_path: Path):
         import sys
-        sys.path.insert(0, str(Path(__file__).parent.parent))
+        
         from server import _inject_semantic_keywords
         note = self._make_note(tmp_path)
         _inject_semantic_keywords(note, ["關鍵字A", "關鍵字B"])
@@ -747,7 +747,7 @@ class TestServerHelpers:
 
     def test_inject_semantic_keywords_overwrites_existing(self, tmp_path: Path):
         import sys
-        sys.path.insert(0, str(Path(__file__).parent.parent))
+        
         from server import _inject_semantic_keywords
         note = self._make_note(tmp_path, fm_extra='semantic_keywords: ["舊的"]\n')
         _inject_semantic_keywords(note, ["新的"])
@@ -757,7 +757,7 @@ class TestServerHelpers:
 
     def test_inject_semantic_keywords_idempotent(self, tmp_path: Path):
         import sys
-        sys.path.insert(0, str(Path(__file__).parent.parent))
+        
         from server import _inject_semantic_keywords
         note = self._make_note(tmp_path)
         _inject_semantic_keywords(note, ["詞A"])
@@ -768,7 +768,7 @@ class TestServerHelpers:
     def test_extract_semantic_keywords_no_gemini(self, monkeypatch):
         """When gemini CLI is absent, extraction returns empty list without raising."""
         import sys
-        sys.path.insert(0, str(Path(__file__).parent.parent))
+        
         import server
         monkeypatch.setattr(server.shutil, "which", lambda _: None)
         result = server._extract_semantic_keywords_via_gemini("some content")
@@ -777,7 +777,7 @@ class TestServerHelpers:
     def test_extract_semantic_keywords_gemini_mock(self, monkeypatch, tmp_path):
         """Mock subprocess to return fixed JSON; verify correct parse."""
         import sys
-        sys.path.insert(0, str(Path(__file__).parent.parent))
+        
         import server
         monkeypatch.setattr(server.shutil, "which", lambda _: "/usr/bin/gemini")
 
@@ -792,7 +792,7 @@ class TestServerHelpers:
     def test_extract_semantic_keywords_gemini_fallback(self, monkeypatch):
         """When Gemini returns comma-separated plain text, fallback parsing still works."""
         import sys
-        sys.path.insert(0, str(Path(__file__).parent.parent))
+        
         import server
 
         monkeypatch.setattr(server.shutil, "which", lambda _: "/usr/bin/gemini")
@@ -809,7 +809,7 @@ class TestServerHelpers:
     def test_extract_semantic_keywords_gemini_failure_graceful(self, monkeypatch):
         """subprocess raising exception returns empty list, never raises."""
         import sys
-        sys.path.insert(0, str(Path(__file__).parent.parent))
+        
         import server
 
         monkeypatch.setattr(server.shutil, "which", lambda _: "/usr/bin/gemini")
@@ -820,7 +820,7 @@ class TestServerHelpers:
     def test_maybe_sync_triggers_incremental(self, tmp_path: Path, monkeypatch):
         """_maybe_sync calls sync_incremental (not sync_all) when DB is stale and vault has newer .md."""
         import sys
-        sys.path.insert(0, str(Path(__file__).parent.parent))
+        
         import server
 
         db_file = tmp_path / "vault.db"
@@ -845,7 +845,7 @@ class TestServerHelpers:
     def test_maybe_sync_first_install(self, tmp_path: Path, monkeypatch):
         """_maybe_sync calls sync_all (full build) when DB does not exist yet."""
         import sys
-        sys.path.insert(0, str(Path(__file__).parent.parent))
+        
         import server
 
         db_file = tmp_path / "nonexistent.db"
@@ -862,7 +862,7 @@ class TestServerHelpers:
     def test_expand_tool_skip_existing_single_note(self, tmp_path: Path, monkeypatch):
         """Single note with existing keywords is skipped when force=False."""
         import sys
-        sys.path.insert(0, str(Path(__file__).parent.parent))
+        
         import server
 
         monkeypatch.setattr(server, "VAULT", tmp_path)
@@ -883,9 +883,9 @@ class TestServerHelpers:
     def test_expand_tool_batch_processes_notes_without_keywords(self, tmp_path: Path, monkeypatch):
         """Batch mode (note_path='') should process notes that have no keywords in DB."""
         import sys
-        sys.path.insert(0, str(Path(__file__).parent.parent))
+        
         import server
-        import vault_db as _vdb
+        from mcp_second_brain import vault_db as _vdb
         from unittest.mock import patch
 
         monkeypatch.setattr(server, "VAULT", tmp_path)
@@ -917,7 +917,7 @@ class TestServerHelpers:
     def test_maybe_sync_skips_when_fresh(self, tmp_path: Path, monkeypatch):
         """_maybe_sync skips all sync when DB was just updated (within 30 min)."""
         import sys
-        sys.path.insert(0, str(Path(__file__).parent.parent))
+        
         import server
 
         db_file = tmp_path / "vault.db"
@@ -941,8 +941,8 @@ class TestSyncIncremental:
     def test_sync_incremental_only_changed(self, tmp_path: Path, monkeypatch):
         """sync_incremental upserts only md files newer than DB mtime."""
         import sys
-        sys.path.insert(0, str(Path(__file__).parent.parent))
-        import vault_db
+        
+        from mcp_second_brain import vault_db
         import os
         from unittest.mock import MagicMock, patch
 
@@ -978,8 +978,8 @@ class TestSyncIncremental:
     def test_sync_incremental_no_changes(self, tmp_path: Path, monkeypatch):
         """sync_incremental returns skipped when no md files are newer than DB."""
         import sys
-        sys.path.insert(0, str(Path(__file__).parent.parent))
-        import vault_db
+        
+        from mcp_second_brain import vault_db
         import os
 
         db_file = tmp_path / "vault.db"

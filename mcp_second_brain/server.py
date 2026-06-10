@@ -18,10 +18,10 @@ from urllib.parse import urlparse
 from markitdown import MarkItDown
 from mcp.server.fastmcp import FastMCP, Image
 
-import vault_db
-from vault_db import KNOWLEDGE_EXCLUDE
-import vault_sleep as _vs
-import figures as _fig
+from . import vault_db
+from .vault_db import KNOWLEDGE_EXCLUDE
+from . import vault_sleep as _vs
+from . import figures as _fig
 
 VAULT = Path(os.environ.get(
     "SECOND_BRAIN_PATH",
@@ -1240,7 +1240,7 @@ def find_related_notes(path: str, limit: int = 5, threshold: float = 0.7) -> str
     Returns:
         Markdown list of related note paths and titles, or a message if no embeddings found.
     """
-    from vault_db import find_related, _connect
+    from .vault_db import find_related, _connect
     related = find_related(path, limit=limit, threshold=threshold)
     if not related:
         return (
@@ -1277,7 +1277,7 @@ def search_grouped(query: str, limit: int = 10) -> str:
     Returns:
         Markdown with two sections: Knowledge and News.
     """
-    from vault_db import hybrid_search_grouped
+    from .vault_db import hybrid_search_grouped
     groups = hybrid_search_grouped(query, limit=limit)
     lines = [f"## Search: `{query}`\n"]
 
@@ -1323,7 +1323,7 @@ def top_notes(by: str = "score", limit: int = 20) -> str:
     Returns:
         Ranked Markdown table of notes.
     """
-    from vault_db import top_by_score, top_by_recency
+    from .vault_db import top_by_score, top_by_recency
     by_lower = by.strip().lower()
     if by_lower not in ("score", "recency"):
         return "❌ `by` must be 'score' or 'recency'"
@@ -1450,7 +1450,7 @@ def health_check() -> str:
     # 2. DB connectivity + note count
     db_path = Path.home() / ".second-brain" / "vault.db"
     try:
-        import vault_db
+        from . import vault_db
         stats = vault_db.db_stats()
         db_count = stats.get("total_notes", 0)
         gap = md_count - db_count
@@ -1490,7 +1490,7 @@ def health_check() -> str:
 
     # 5. Embedding server
     try:
-        import vault_db as _vdb
+        from . import vault_db as _vdb
         url = _vdb.EMBED_URL.replace("/v1/embeddings", "/health")
         with urllib.request.urlopen(url, timeout=2) as resp:
             lines.append(f"[{ok}] Embedding server reachable ({url})")
@@ -1501,7 +1501,8 @@ def health_check() -> str:
     return "\n".join(lines)
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """CLI entry point for `python -m mcp_second_brain` and `second-brain` script."""
     import argparse
 
     parser = argparse.ArgumentParser(description="Second Brain MCP server")
@@ -1558,3 +1559,7 @@ if __name__ == "__main__":
             file=sys.stderr,
         )
         mcp.run(transport=args.transport)
+
+
+if __name__ == "__main__":
+    main()

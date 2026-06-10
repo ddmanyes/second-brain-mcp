@@ -17,8 +17,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import vault_db
-import vault_sleep as _vs
+from mcp_second_brain import vault_db
+from mcp_second_brain import vault_sleep as _vs
 
 VAULT = Path(os.environ.get(
     "SECOND_BRAIN_PATH",

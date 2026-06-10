@@ -1,6 +1,6 @@
 [project]
 name = "mcp-second-brain"
-version = "0.1.0"
+version = "0.2.0"
 description = "Self-maintaining personal knowledge database — MCP server with figure-level search, auto-wikilinks, and Ebbinghaus-based memory compression"
 readme = "README.md"
 license = { text = "MIT" }
@@ -43,9 +43,11 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[project.scripts]
+second-brain = "mcp_second_brain.server:main"
+
 [tool.hatch.build.targets.wheel]
-packages = ["."]
-include = ["server.py", "vault_db.py", "vault_sleep.py", "figures.py", "templates/*.md"]
+packages = ["mcp_second_brain"]
 
 [tool.uv]
 override-dependencies = ["magika>=1.0.0"]
