@@ -124,7 +124,7 @@ SECOND_BRAIN_PATH="$VAULT" bash "$SB/launchd/install.sh"
 - **不要兩台同時編輯同一筆 vault 筆記** → Google Drive 會生 `xxx (1).md` 衝突檔。等同步完再換機操作。
 - **索引 DB 不跨機共享**（各機 `~/.second-brain/vault.db` 各自從同步的 markdown 重建）——這是刻意設計，不要把 DB 放進 Drive。
 - **不需要 HTTP 遠端 server**。自己有同步 Drive + venv 的 Mac 用本機 server 即可。
-  「不想裝環境的裝置零安裝連入」那套（Tailscale）已停用，細節留存於 [REMOTE_SETUP.md](REMOTE_SETUP.md)。
+  「不想裝環境的裝置零安裝連入」那套（Tailscale）已停用。
 
 ---
 
