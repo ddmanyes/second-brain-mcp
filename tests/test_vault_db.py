@@ -738,7 +738,7 @@ class TestServerHelpers:
     def test_inject_semantic_keywords_writes_to_frontmatter(self, tmp_path: Path):
         import sys
         
-        from server import _inject_semantic_keywords
+        from mcp_second_brain.server import _inject_semantic_keywords
         note = self._make_note(tmp_path)
         _inject_semantic_keywords(note, ["關鍵字A", "關鍵字B"])
         text = note.read_text(encoding="utf-8")
@@ -748,7 +748,7 @@ class TestServerHelpers:
     def test_inject_semantic_keywords_overwrites_existing(self, tmp_path: Path):
         import sys
         
-        from server import _inject_semantic_keywords
+        from mcp_second_brain.server import _inject_semantic_keywords
         note = self._make_note(tmp_path, fm_extra='semantic_keywords: ["舊的"]\n')
         _inject_semantic_keywords(note, ["新的"])
         text = note.read_text(encoding="utf-8")
@@ -758,7 +758,7 @@ class TestServerHelpers:
     def test_inject_semantic_keywords_idempotent(self, tmp_path: Path):
         import sys
         
-        from server import _inject_semantic_keywords
+        from mcp_second_brain.server import _inject_semantic_keywords
         note = self._make_note(tmp_path)
         _inject_semantic_keywords(note, ["詞A"])
         _inject_semantic_keywords(note, ["詞A"])
@@ -769,7 +769,7 @@ class TestServerHelpers:
         """When gemini CLI is absent, extraction returns empty list without raising."""
         import sys
         
-        import server
+        from mcp_second_brain import server
         monkeypatch.setattr(server.shutil, "which", lambda _: None)
         result = server._extract_semantic_keywords_via_gemini("some content")
         assert result == []
@@ -778,7 +778,7 @@ class TestServerHelpers:
         """Mock subprocess to return fixed JSON; verify correct parse."""
         import sys
         
-        import server
+        from mcp_second_brain import server
         monkeypatch.setattr(server.shutil, "which", lambda _: "/usr/bin/gemini")
 
         class _Result:
@@ -793,7 +793,7 @@ class TestServerHelpers:
         """When Gemini returns comma-separated plain text, fallback parsing still works."""
         import sys
         
-        import server
+        from mcp_second_brain import server
 
         monkeypatch.setattr(server.shutil, "which", lambda _: "/usr/bin/gemini")
 
@@ -810,7 +810,7 @@ class TestServerHelpers:
         """subprocess raising exception returns empty list, never raises."""
         import sys
         
-        import server
+        from mcp_second_brain import server
 
         monkeypatch.setattr(server.shutil, "which", lambda _: "/usr/bin/gemini")
         monkeypatch.setattr(server.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("timeout")))
@@ -821,7 +821,7 @@ class TestServerHelpers:
         """_maybe_sync calls sync_incremental (not sync_all) when DB is stale and vault has newer .md."""
         import sys
         
-        import server
+        from mcp_second_brain import server
 
         db_file = tmp_path / "vault.db"
         db_file.write_bytes(b"")
@@ -846,7 +846,7 @@ class TestServerHelpers:
         """_maybe_sync calls sync_all (full build) when DB does not exist yet."""
         import sys
         
-        import server
+        from mcp_second_brain import server
 
         db_file = tmp_path / "nonexistent.db"
         monkeypatch.setattr(server.vault_db, "DB_PATH", db_file)
@@ -863,7 +863,7 @@ class TestServerHelpers:
         """Single note with existing keywords is skipped when force=False."""
         import sys
         
-        import server
+        from mcp_second_brain import server
 
         monkeypatch.setattr(server, "VAULT", tmp_path)
         monkeypatch.setattr(server.shutil, "which", lambda _: "/usr/bin/gemini")
@@ -884,7 +884,7 @@ class TestServerHelpers:
         """Batch mode (note_path='') should process notes that have no keywords in DB."""
         import sys
         
-        import server
+        from mcp_second_brain import server
         from mcp_second_brain import vault_db as _vdb
         from unittest.mock import patch
 
@@ -918,7 +918,7 @@ class TestServerHelpers:
         """_maybe_sync skips all sync when DB was just updated (within 30 min)."""
         import sys
         
-        import server
+        from mcp_second_brain import server
 
         db_file = tmp_path / "vault.db"
         db_file.write_bytes(b"")

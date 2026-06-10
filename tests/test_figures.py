@@ -97,7 +97,7 @@ class TestReadSnapshotWithGemini:
         snap = tmp_path / "snap.png"
         snap.write_bytes(b"\x89PNG")
 
-        with patch("figures.subprocess.run") as mock_run:
+        with patch("mcp_second_brain.figures.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="error")
             result = figures.read_snapshot_with_gemini(snap, tmp_path)
 
@@ -107,7 +107,7 @@ class TestReadSnapshotWithGemini:
         snap = tmp_path / "snap.png"
         snap.write_bytes(b"\x89PNG")
 
-        with patch("figures.subprocess.run") as mock_run:
+        with patch("mcp_second_brain.figures.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="   \n")
             result = figures.read_snapshot_with_gemini(snap, tmp_path)
 
@@ -117,7 +117,7 @@ class TestReadSnapshotWithGemini:
         snap = tmp_path / "snap.png"
         snap.write_bytes(b"\x89PNG")
 
-        with patch("figures.subprocess.run") as mock_run:
+        with patch("mcp_second_brain.figures.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="Title: ADR\n\nPhase 1: DuckDB indexing."
@@ -132,7 +132,7 @@ class TestReadSnapshotWithGemini:
         snap.parent.mkdir(parents=True)
         snap.write_bytes(b"\x89PNG")
 
-        with patch("figures.subprocess.run") as mock_run:
+        with patch("mcp_second_brain.figures.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="some content")
             figures.read_snapshot_with_gemini(snap, tmp_path)
 
@@ -146,7 +146,7 @@ class TestReadSnapshotWithGemini:
         snap = tmp_path / "snap.png"
         snap.write_bytes(b"\x89PNG")
 
-        with patch("figures.subprocess.run") as mock_run:
+        with patch("mcp_second_brain.figures.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="Warning: something\nYOLO mode is enabled\nActual content here."

@@ -270,7 +270,7 @@ class TestNewNoteProjectRouting:
         monkeypatch.setattr(server, "VAULT", registry_vault)
         with patch.object(server, "_extract_semantic_keywords_via_gemini", return_value=[]), \
              patch.object(server, "_inject_related_links", return_value=0), \
-             patch("vault_db._connect"):
+             patch("mcp_second_brain.vault_db._connect"):
             result = server.new_note("resource", "my-project 架構圖", tags="my-project")
         assert "10-projects/my-project/docs" in result
 
@@ -279,7 +279,7 @@ class TestNewNoteProjectRouting:
         monkeypatch.setattr(server, "VAULT", registry_vault)
         with patch.object(server, "_extract_semantic_keywords_via_gemini", return_value=[]), \
              patch.object(server, "_inject_related_links", return_value=0), \
-             patch("vault_db._connect"):
+             patch("mcp_second_brain.vault_db._connect"):
             result = server.new_note("coding", "my-project phase-1", tags="my-project")
         assert "10-projects/my-project/phases" in result
 
@@ -288,7 +288,7 @@ class TestNewNoteProjectRouting:
         monkeypatch.setattr(server, "VAULT", registry_vault)
         with patch.object(server, "_extract_semantic_keywords_via_gemini", return_value=[]), \
              patch.object(server, "_inject_related_links", return_value=0), \
-             patch("vault_db._connect"):
+             patch("mcp_second_brain.vault_db._connect"):
             result = server.new_note("research", "my-project 競品分析", tags="my-project")
         assert "10-projects/my-project/research" in result
 
@@ -300,7 +300,7 @@ class TestNewNoteProjectRouting:
         tmpl.write_text(TEMPLATE_CONTENT, encoding="utf-8")
         with patch.object(server, "_extract_semantic_keywords_via_gemini", return_value=[]), \
              patch.object(server, "_inject_related_links", return_value=0), \
-             patch("vault_db._connect"):
+             patch("mcp_second_brain.vault_db._connect"):
             result = server.new_note("decision", "my-project 技術選型")
         assert result.startswith("Created: decisions/")
 
@@ -309,6 +309,6 @@ class TestNewNoteProjectRouting:
         monkeypatch.setattr(server, "VAULT", registry_vault)
         with patch.object(server, "_extract_semantic_keywords_via_gemini", return_value=[]), \
              patch.object(server, "_inject_related_links", return_value=0), \
-             patch("vault_db._connect"):
+             patch("mcp_second_brain.vault_db._connect"):
             result = server.new_note("resource", "一般參考資料")
         assert result.startswith("Created: 30-resources/") or "30-resources" in result
