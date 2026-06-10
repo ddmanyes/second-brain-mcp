@@ -363,6 +363,13 @@ tests/test_vault_sleep.py  46 passed   (compression, consolidation, rules, prune
 
 ## Installation
 
+> ⚠️ **Install from source for now.** The published PyPI package (`mcp-second-brain` 0.1.0)
+> lags the current source, and the `python -m mcp_second_brain` entry point in the Quick
+> Start below is **not yet packaged** — those `pip install` snippets will land an outdated
+> build. Until a fresh release ships, use the **[Development Install (clone)](#development-install-clone)**
+> path. Self-hosting across your own machines from a synced source tree? See
+> [`NEW_MACHINE_SETUP.md`](NEW_MACHINE_SETUP.md).
+
 ### Prerequisites
 
 | Dependency | Required | Notes |
