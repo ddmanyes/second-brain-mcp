@@ -15,7 +15,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from mcp_second_brain import vault_db
 from mcp_second_brain import vault_sleep as _vs
@@ -60,7 +60,8 @@ def main() -> None:
     # Step 1: index
     log.info("[1/4] Syncing index...")
     n = vault_db.sync_all(VAULT)
-    log.info("      %d files indexed", n)
+    synced = n["synced"] if isinstance(n, dict) else n
+    log.info("      %d files indexed", synced)
 
     # Step 2: embeddings (llama-server expected to be up via launchd)
     log.info("[2/4] Syncing embeddings...")

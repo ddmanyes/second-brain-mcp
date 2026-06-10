@@ -7,8 +7,8 @@
 
 	<key>ProgramArguments</key>
 	<array>
-		<string>/bin/bash</string>
-		<string>{{SERVER_DIR}}/run_vault_sleep.sh</string>
+		<string>{{VENV_PYTHON}}</string>
+		<string>{{SERVER_DIR}}/launchd/run_sleep.py</string>
 	</array>
 
 	<key>WorkingDirectory</key>

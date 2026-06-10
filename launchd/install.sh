@@ -28,11 +28,13 @@ fi
 
 UV_DIR="$(dirname "$UV_BIN")"
 PATH_VAR="/usr/local/bin:/usr/bin:/bin:${UV_DIR}"
+VENV_PYTHON="${HOME}/.venvs/second-brain/bin/python"
 
 echo "second-brain launchd install"
-echo "  SERVER_DIR : $SERVER_DIR"
-echo "  VAULT_PATH : $VAULT_PATH"
-echo "  UV_BIN     : $UV_BIN"
+echo "  SERVER_DIR  : $SERVER_DIR"
+echo "  VAULT_PATH  : $VAULT_PATH"
+echo "  UV_BIN      : $UV_BIN"
+echo "  VENV_PYTHON : $VENV_PYTHON"
 echo ""
 
 AGENTS_DIR="${HOME}/Library/LaunchAgents"
@@ -48,6 +50,7 @@ for tmpl in "$SCRIPT_DIR"/*.plist.template; do
         -e "s|{{UV_BIN}}|${UV_BIN}|g" \
         -e "s|{{HOME}}|${HOME}|g" \
         -e "s|{{PATH_VAR}}|${PATH_VAR}|g" \
+        -e "s|{{VENV_PYTHON}}|${VENV_PYTHON}|g" \
         "$tmpl" > "$dest"
 
     launchctl unload "$dest" 2>/dev/null || true
