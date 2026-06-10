@@ -33,5 +33,6 @@ launchd/*.plist
 .coverage
 htmlcov/
 
-# Virtualenvs
+# Virtualenvs (use ~/.venvs/second-brain/ on each machine, never inside Drive)
 .venv*
+.uv_env/
