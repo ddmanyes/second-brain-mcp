@@ -7,12 +7,8 @@
 
 	<key>ProgramArguments</key>
 	<array>
-		<string>{{UV_BIN}}</string>
-		<string>run</string>
-		<string>--project</string>
-		<string>{{SERVER_DIR}}</string>
-		<string>python</string>
-		<string>{{SERVER_DIR}}/vault_janitor.py</string>
+		<string>{{VENV_PYTHON}}</string>
+		<string>{{SERVER_DIR}}/mcp_second_brain/vault_janitor.py</string>
 		<string>--push</string>
 	</array>
 
