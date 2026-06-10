@@ -1405,13 +1405,21 @@ def get_agent_instructions() -> str:
     Returns:
         str: Full contents of AGENTS.md
     """
-    def _read(filename: str) -> str:
-        path = Path(__file__).parent / filename
-        if not path.exists():
-            return f"⚠️ 找不到 {filename}"
+    def _read(path: Path) -> str:
         return path.read_text(encoding="utf-8")
 
-    return _read("AGENTS.md")
+    base = Path(__file__).parent / "AGENTS.md"
+    result = _read(base) if base.exists() else "⚠️ 找不到 AGENTS.md"
+
+    # Append personal rules from vault AGENTS.md if present.
+    # The vault file is intentionally not in the public repo — it stays on Drive
+    # and is only visible to the vault owner's own agents.
+    vault_agents = VAULT / "AGENTS.md"
+    if vault_agents.exists():
+        personal = _read(vault_agents).strip()
+        result = result.rstrip() + "\n\n---\n\n" + personal
+
+    return result
 
 
 @mcp.tool()
