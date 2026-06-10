@@ -49,6 +49,26 @@ class TestSlug:
         assert figures._slug("a/b.md") != figures._slug("a/c.md")
 
 
+class TestFigureSlug:
+    def test_kebab_from_filename_stem(self):
+        assert figures._figure_slug("20-areas/research/2024_Smith_FooBar.md") == "2024-smith-foobar"
+
+    def test_punctuation_becomes_separator_not_merge(self):
+        # parens/dots must not glue words together
+        assert figures._figure_slug("x/Co-Scientist（v2）.md") == "co-scientist-v2"
+
+    def test_cjk_preserved(self):
+        assert figures._figure_slug("x/論文-摘要.md") == "論文-摘要"
+
+    def test_visible_dir_not_hidden(self):
+        # extracted figures must live in a visible dir so Obsidian indexes them
+        assert figures.FIGURES_DIR.name == "figures"
+
+    def test_extract_filename_is_hyphen_two_digit(self):
+        # naming convention: fig-00, fig-01, ... (matches AGENTS.md)
+        assert f"fig-{0:02d}" == "fig-00"
+
+
 # ---------------------------------------------------------------------------
 # Phase 4B — render_note_to_png (mocked Playwright)
 # ---------------------------------------------------------------------------

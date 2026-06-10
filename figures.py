@@ -4,7 +4,8 @@ figures.py — Phase 4A: Extract and analyse figures from saved articles.
 Flow per article:
   1. Parse saved .md for image references
   2. Resolve relative URLs using frontmatter source:
-  3. Download images → ~/.second-brain/figures/{slug}/fig_{n}.png
+  3. Download images → {vault}/figures/{note-kebab}/fig-{NN}.png
+     (visible dir so Obsidian indexes them; kebab slug from the note filename)
   4. Analyse with Claude vision API (OCR + semantic description)
   5. Store in DuckDB figures table
 """
@@ -54,10 +55,12 @@ def _is_ssrf_safe(url: str) -> bool:
     except Exception:
         return False
 
+# Visible (non-hidden) so Obsidian indexes extracted figures. snapshots stay
+# hidden (.snapshots) since they are an internal vision-read cache, not content.
 FIGURES_DIR = Path(os.environ.get(
     "SECOND_BRAIN_PATH",
     Path.home() / "second-brain"
-)).expanduser().resolve() / ".figures"
+)).expanduser().resolve() / "figures"
 IMG_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
@@ -89,7 +92,23 @@ def _resolve_url(img_path: str, source_url: str) -> str | None:
 
 
 def _slug(note_path: str) -> str:
+    # MD5 slug — used for .snapshots/ dirs (internal cache, matches vault_db._note_slug).
     return hashlib.md5(note_path.encode(), usedforsecurity=False).hexdigest()[:12]
+
+
+def _figure_slug(note_path: str) -> str:
+    """Human-readable kebab slug for a figure folder, derived from the note filename.
+
+    e.g. "20-areas/research/2024_Smith_FooBar.md" -> "2024-smith-foobar".
+    Visible figures/ + readable slug means Obsidian shows them and the folder
+    name maps back to the source note. Mirrors server._slugify (punctuation
+    becomes a separator, not removed). Falls back to the MD5 slug if the stem
+    slugifies to empty (e.g. an all-punctuation filename).
+    """
+    stem = Path(note_path).stem.lower().strip()
+    stem = re.sub(r"[^\w\s-]", " ", stem)       # punctuation -> space (don't glue words)
+    stem = re.sub(r"[\s_]+", "-", stem).strip("-")
+    return stem or _slug(note_path)
 
 
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 20 MB
@@ -255,7 +274,7 @@ def extract_figures(note_path: str, vault: Path) -> list[dict]:
         if _is_content_image(alt, url)
     ]
 
-    fig_dir = FIGURES_DIR / _slug(note_path)
+    fig_dir = FIGURES_DIR / _figure_slug(note_path)
     fig_dir.mkdir(parents=True, exist_ok=True)
 
     results = []
@@ -265,7 +284,7 @@ def extract_figures(note_path: str, vault: Path) -> list[dict]:
             continue
 
         ext = Path(urlparse(abs_url).path).suffix or ".png"
-        local = fig_dir / f"fig_{i:03d}{ext}"
+        local = fig_dir / f"fig-{i:02d}{ext}"
 
         if not _download_image(abs_url, local):
             continue
