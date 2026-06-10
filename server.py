@@ -28,7 +28,11 @@ VAULT = Path(os.environ.get(
     Path.home() / "second-brain"
 )).expanduser().resolve()
 
-# ── 防止多 server 並存：kill 同腳本的舊進程 ──────────────────────────────────
+# ── 防止兩個 HTTP server 搶同一個 port：kill 舊的 HTTP 進程 ──────────────────
+# 注意：只有長駐的 HTTP transport（遠端 Tailscale server）才需要這個單例保護。
+# stdio server（桌面版 Claude、Claude Code）是 per-client、短命、不綁 port，
+# 必須能彼此並存，也能與 HTTP server 並存 —— 它們絕不呼叫 _kill_old_server()。
+# 因此本函式只在 __main__ 的 HTTP 分支被呼叫，不在 import 時無條件執行。
 _PID_FILE = Path.home() / ".second-brain" / "server.pid"
 
 def _kill_old_server() -> None:
@@ -54,7 +58,7 @@ def _kill_old_server() -> None:
             pass
     _PID_FILE.write_text(str(os.getpid()))
 
-_kill_old_server()
+# （刻意不在此處呼叫 _kill_old_server()；見上方說明，改在 HTTP 分支才呼叫）
 # ─────────────────────────────────────────────────────────────────────────────
 
 mcp = FastMCP("second-brain")
@@ -1518,8 +1522,11 @@ if __name__ == "__main__":
         print(f"[second-brain] _maybe_sync failed (non-fatal): {_e}", file=sys.stderr)
 
     if args.transport == "stdio":
+        # stdio：per-client 短命程序，不殺任何人、不寫 PID，與其他 server 並存
         mcp.run()
     else:
+        # HTTP：長駐單例，先殺掉舊的 HTTP server 以釋放 port，再啟動
+        _kill_old_server()
         # host/port are FastMCP constructor settings; update before run
         mcp.settings.port = args.port
         if args.host:

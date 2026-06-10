@@ -107,17 +107,46 @@ _MIGRATIONS = [
 _schema_applied = False
 _schema_lock = threading.Lock()
 
+# 同機可同時跑多個 second-brain server（遠端 HTTP + 桌面版/Claude Code 的 stdio），
+# 全部共用本機這一個 DuckDB 檔。DuckDB 是 single-writer，瞬間並發開檔會短暫撞鎖。
+# 對策：撞鎖時退避重試（DB 還在，等一下就好）；只有「真正損毀」才走破壞性重建。
+# 等待上限（秒）。可用環境變數覆寫，預設 8 秒足以涵蓋對方一次 per-op 連線的壽命。
+_DB_LOCK_WAIT_SECONDS = float(__import__("os").environ.get("SECOND_BRAIN_DB_LOCK_WAIT", "8"))
 
-def _connect():
-    from contextlib import contextmanager as _contextmanager
 
-    @_contextmanager
-    def _inner_connect():
-        global _schema_applied
-        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+def _is_lock_conflict(err: Exception) -> bool:
+    """判斷例外是否為 DuckDB 跨進程鎖衝突（而非資料損毀）。"""
+    msg = str(err).lower()
+    return (
+        "conflicting lock" in msg
+        or "could not set lock" in msg
+        or "set lock on file" in msg
+        or ("lock" in msg and "held" in msg)
+    )
+
+
+def _open_db_with_retry() -> "duckdb.DuckDBPyConnection":
+    """開啟 DuckDB；撞鎖則退避重試，僅在真正損毀時才重建（破壞性）。"""
+    global _schema_applied
+    deadline = time.monotonic() + _DB_LOCK_WAIT_SECONDS
+    delay = 0.05
+    while True:
         try:
-            con = duckdb.connect(str(DB_PATH))
+            return duckdb.connect(str(DB_PATH))
         except Exception as e:
+            if _is_lock_conflict(e):
+                # 另一個 server 正持有寫鎖——DB 沒壞，等一下重試，絕不重建。
+                if time.monotonic() < deadline:
+                    time.sleep(delay)
+                    delay = min(delay * 1.6, 0.5)
+                    continue
+                print(
+                    f"[vault_db] DB locked by another process for "
+                    f">{_DB_LOCK_WAIT_SECONDS}s; giving up this op (DB intact).",
+                    file=sys.stderr,
+                )
+                raise
+            # 非鎖衝突 → 視為資料損毀，最後手段：改名備份 + 重建。
             print(f"[vault_db] Database connection failed ({e}). Attempting to reset database...", file=sys.stderr)
             db_bak = DB_PATH.with_suffix(".db.bak")
             wal_path = DB_PATH.with_name(DB_PATH.name + ".wal")
@@ -142,7 +171,17 @@ def _connect():
                     print(f"[vault_db] Failed to delete database files: {del_err}", file=sys.stderr)
                     raise e
             _schema_applied = False  # force re-apply schema on freshly-rebuilt DB
-            con = duckdb.connect(str(DB_PATH))
+            return duckdb.connect(str(DB_PATH))
+
+
+def _connect():
+    from contextlib import contextmanager as _contextmanager
+
+    @_contextmanager
+    def _inner_connect():
+        global _schema_applied
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        con = _open_db_with_retry()
 
         with _schema_lock:
             if not _schema_applied:
