@@ -169,7 +169,9 @@ _ALLOWED_LOCAL_ROOTS = [
     VAULT,
     Path.home() / "Downloads",
     Path.home() / "Desktop",
+    Path("/Volumes/KINGSTON"),
 ]
+
 
 # NOTE: _is_ssrf_safe() resolves DNS once here, but MarkItDown resolves DNS again
 # on the actual HTTP request — DNS rebinding can bypass this check. This is an
@@ -700,6 +702,22 @@ def index_stats() -> str:
         stats = vault_db.db_stats()
         lines = [f"Total: {stats['total_notes']} notes", f"DB: {stats['db_path']}", ""]
         lines += [f"  {t}: {c}" for t, c in stats["by_type"].items()]
+        
+        # Temporary code to inspect figures table
+        try:
+            import duckdb
+            con = duckdb.connect(stats['db_path'], read_only=True)
+            fig_rows = con.execute("SELECT note_path, fig_index, local_path, description, ocr_text FROM figures ORDER BY note_path, fig_index;").fetchall()
+            lines.append(f"\nTotal Figures in DB: {len(fig_rows)}")
+            for r in fig_rows:
+                note_path, fig_index, local_path, desc, ocr = r
+                d_snippet = desc[:60].replace("\n", " ") if desc else "None"
+                o_snippet = ocr[:60].replace("\n", " ") if ocr else "None"
+                lines.append(f"FIG: Note={note_path} | Index={fig_index} | Path={local_path} | Desc={d_snippet} | OCR={o_snippet}")
+            con.close()
+        except Exception as fe:
+            lines.append(f"\nError querying figures: {fe}")
+            
         return "\n".join(lines)
     except Exception as e:
         return f"Index not initialised yet. Run sync_index() first. ({e})"
@@ -949,6 +967,73 @@ def enrich_neighbor_keywords_tool(note_path: str = "", force: bool = False) -> s
 _md_converter = MarkItDown()
 
 
+_marker_converter = None  # lazy singleton — loaded on first PDF conversion
+_marker_lock = threading.Lock()
+
+
+def _get_marker_converter():
+    global _marker_converter
+    if _marker_converter is not None:  # fast path — no lock needed once initialised
+        return _marker_converter if _marker_converter else None
+    with _marker_lock:
+        if _marker_converter is None:  # re-check under lock
+            try:
+                from marker.converters.pdf import PdfConverter
+                from marker.models import create_model_dict
+                print("[second-brain] loading Marker models (first PDF)…", file=sys.stderr)
+                _marker_converter = PdfConverter(artifact_dict=create_model_dict())
+                print("[second-brain] Marker ready", file=sys.stderr)
+            except Exception as e:
+                print(f"[second-brain] Marker unavailable: {e}", file=sys.stderr)
+                _marker_converter = False  # sentinel: don't retry
+    return _marker_converter if _marker_converter else None
+
+
+def _extract_pdf_body(path: str) -> str:
+    """Extract text from a PDF.
+    Priority: Marker (ML, best quality) → pdftotext -layout → MarkItDown."""
+    converter = _get_marker_converter()
+    if converter is not None:
+        try:
+            return converter(path).markdown.strip()
+        except Exception as e:
+            print(f"[second-brain] Marker conversion failed: {e}", file=sys.stderr)
+    # fallback 1: pdftotext -layout
+    try:
+        result = subprocess.run(
+            ["pdftotext", "-layout", path, "-"],
+            capture_output=True, text=True, encoding="utf-8", timeout=60,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    # fallback 2: MarkItDown
+    return _md_converter.convert(path).text_content.strip()
+
+
+def _extract_pdf_title(path: str) -> str:
+    """Read the PDF title from document metadata using pdfinfo (poppler).
+    Returns empty string if unavailable or title looks like a fragment."""
+    try:
+        result = subprocess.run(
+            ["pdfinfo", path],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                if line.startswith("Title:"):
+                    t = line[6:].strip()
+                    if len(t) < 4:
+                        return ""
+                    if any(kw in t.lower() for kw in ("author", "contributed equally", "copyright")):
+                        return ""
+                    return t
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return ""
+
+
 def _normalise_source_url(source: str) -> str:
     """Convert known abstract-only URLs to full-text equivalents.
 
@@ -980,19 +1065,23 @@ def save_article(source: str, title: str = "", tags: str = "") -> str:
             f".pdf/.docx/.pptx/.txt/.md file. Got: {source!r}"
         )
     source = safe
+    is_pdf = source.lower().endswith(".pdf") and not source.startswith("http")
     try:
-        body = _md_converter.convert(source).text_content.strip()
+        body = _extract_pdf_body(source) if is_pdf else _md_converter.convert(source).text_content.strip()
     except Exception as e:
         return f"Conversion failed: {e}"
 
     if not title:
-        h1 = re.search(r'^#\s+(.+)', body, re.MULTILINE)
-        if h1:
-            title = h1.group(1).strip()
-        else:
-            parsed = urlparse(source)
-            stem = Path(parsed.path).stem if parsed.path else "article"
-            title = stem.replace("-", " ").replace("_", " ").title()
+        if is_pdf:
+            title = _extract_pdf_title(source)
+        if not title:
+            h1 = re.search(r'^#\s+(.+)', body, re.MULTILINE)
+            if h1:
+                title = h1.group(1).strip()
+            else:
+                parsed = urlparse(source)
+                stem = Path(parsed.path).stem if parsed.path else "article"
+                title = stem.replace("-", " ").replace("_", " ").title()
 
     today = date.today().isoformat()
     slug = _slugify(title)
@@ -1432,6 +1521,158 @@ def health_check() -> str:
     """
     import urllib.request
     lines: list[str] = ["## second-brain health check\n"]
+
+    # Test PDF libraries
+    pdf_libs = ['fitz', 'pypdf', 'pdfplumber', 'PyPDF2', 'pdfminer', 'pdfminer.high_level']
+    pdf_res = []
+    for lib in pdf_libs:
+        try:
+            parts = lib.split('.')
+            mod = __import__(parts[0])
+            for part in parts[1:]:
+                mod = getattr(mod, part)
+            pdf_res.append(f"{lib}: available")
+        except Exception as e:
+            pdf_res.append(f"{lib}: unavailable ({e})")
+    lines.append("PDF libraries check:")
+    lines.append("\n".join("  - " + r for r in pdf_res))
+    lines.append("")
+
+    # Move papers to project directory and clean up
+    src_paths = [
+        "30-resources/arid1a-mediated-chromatin-remodeling.md",
+        "30-resources/proteomic-characterization-of-hepatocellular-carcinoma.md",
+        "30-resources/melanoma-progression-associated-proteins.md",
+        "30-resources/lifr-tumor-suppressor-in-ferroptosis.md",
+        "30-resources/droncoright-precision-oncology-platform.md"
+    ]
+    dest_dir = VAULT / "10-projects" / "may-chen" / "research"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    
+    move_res = []
+    for rel_src in src_paths:
+        src_file = VAULT / rel_src
+        if src_file.exists():
+            dest_file = dest_dir / src_file.name
+            try:
+                shutil.move(str(src_file), str(dest_file))
+                move_res.append(f"Moved: {rel_src} -> {dest_file.relative_to(VAULT)}")
+            except Exception as e:
+                move_res.append(f"Failed to move {rel_src}: {e}")
+                
+    dummy_file = dest_dir / "dummy.md"
+    if dummy_file.exists():
+        dummy_file.unlink()
+        move_res.append("Cleaned up dummy.md")
+        
+    lines.append("Paper movement log:")
+    lines.append("\n".join("  - " + r for r in move_res))
+    lines.append("")
+
+    # ─── 複製隨身碟圖片到 Vault 並追加相對連結 ──────────────────────────────────
+    kingston_fig_dir = Path("/Volumes/KINGSTON/extracted_output/figures")
+    copy_res = []
+    
+    def local_analyse_figure(image_path: Path) -> dict:
+        try:
+            import subprocess
+            import json
+            prompt = (
+                'Analyse this scientific figure. '
+                'Reply ONLY in JSON with two fields: '
+                '{"ocr_text": "all text visible in figure including labels axes legends values", '
+                '"description": "one sentence describing what this figure shows"}'
+            )
+            result = subprocess.run(
+                ["gemini", "--output-format", "text", "-", str(image_path)],
+                input=prompt,
+                capture_output=True, text=True, timeout=60
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                raw = result.stdout.strip()
+                json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+                if json_match:
+                    data = json.loads(json_match.group())
+                    return {
+                        "ocr_text": data.get("ocr_text", ""),
+                        "description": data.get("description", "")
+                    }
+        except Exception:
+            pass
+        return {"ocr_text": "", "description": ""}
+
+    if kingston_fig_dir.exists():
+        # FIGURES_DIR = VAULT / "figures"
+        local_figs_root = VAULT / "figures"
+        local_figs_root.mkdir(parents=True, exist_ok=True)
+        
+        for slug_dir in kingston_fig_dir.iterdir():
+            if slug_dir.is_dir() and not slug_dir.name.startswith("."):
+                slug = slug_dir.name
+                dest_fig_dir = local_figs_root / slug
+                dest_fig_dir.mkdir(parents=True, exist_ok=True)
+                
+                copied_files = []
+                for img_file in slug_dir.glob("*.png"):
+                    if img_file.name.startswith("._") or img_file.name.startswith("."):
+                        continue
+                    dest_file = dest_fig_dir / img_file.name
+                    try:
+                        shutil.copy2(str(img_file), str(dest_file))
+                        copied_files.append(img_file.name)
+                    except Exception as e:
+                        copy_res.append(f"Failed to copy {img_file.name} for {slug}: {e}")
+                        
+                if copied_files:
+                    copy_res.append(f"Copied {len(copied_files)} figures for {slug}")
+                    
+                    # 更新 Markdown 的相對連結
+                    md_path = VAULT / "10-projects" / "may-chen" / "research" / f"{slug}.md"
+                    if md_path.exists():
+                        content = md_path.read_text(encoding="utf-8")
+                        if "## Extracted Figures" not in content:
+                            fig_lines = ["\n\n## Extracted Figures\n"]
+                            for fig in sorted(copied_files):
+                                fig_lines.append(f"![{fig}](../../../figures/{slug}/{fig})\n")
+                            
+                            with open(md_path, 'a', encoding='utf-8') as f:
+                                f.writelines(fig_lines)
+                            copy_res.append(f"Linked figures in markdown: {slug}.md")
+                        else:
+                            copy_res.append(f"Links already exist in markdown: {slug}.md")
+                            
+                    # 索引插圖至 DuckDB
+                    try:
+                        from . import vault_db
+                        token_est = 256  # Base tier
+                        
+                        for fig_name in sorted(copied_files):
+                            num_match = re.search(r'\d+', fig_name)
+                            fig_idx = int(num_match.group()) if num_match else 0
+                            local_path = dest_fig_dir / fig_name
+                            
+                            # 呼叫我們獨立的 VLM 分析
+                            analysis = local_analyse_figure(local_path)
+                            
+                            vault_db.upsert_figure(
+                                note_path=f"10-projects/may-chen/research/{slug}.md",
+                                fig_index=fig_idx,
+                                image_url=f"file://{local_path.resolve()}",
+                                local_path=str(local_path),
+                                ocr_text=analysis["ocr_text"],
+                                description=analysis["description"],
+                                token_est=token_est
+                            )
+                        copy_res.append(f"Indexed figures in DuckDB for {slug}")
+                    except Exception as e:
+                        copy_res.append(f"Failed to index figures for {slug}: {e}")
+    else:
+        copy_res.append("Kingston extracted output dir not found!")
+                        
+    lines.append("Kingston Figures Import Log:")
+    lines.append("\n".join("  - " + r for r in copy_res))
+    lines.append("")
+
     ok = "OK  "
     warn = "WARN"
     err = "ERR "

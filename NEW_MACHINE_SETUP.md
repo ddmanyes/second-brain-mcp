@@ -1,61 +1,67 @@
-# 在新電腦部署 second-brain（Drive 原始碼版）
+# Deploy second-brain on a New Machine (Drive source version)
 
-> 適用情境：把 second-brain 架到你自己的另一台 Mac，**直接跑 Google Drive 同步的原始碼**
-> （不是 `pip install mcp-second-brain`——那是給公開使用者）。
+> **Who this is for:** Setting up second-brain on your own additional Mac, running directly from Google Drive–synced source code (not `pip install mcp-second-brain` — that's for public users).
 >
-> 公開使用者的安裝走 [README.md](README.md)；你自己的多台機器走這份，永遠跑最新的 Drive 原始碼。
+> Public installation → [README.md](README.md). Your own multi-machine setup → this guide. Always runs the latest Drive source.
 
 ---
 
-## 心智模型：每台各跑自己的本機 server
+## Mental Model: Each machine runs its own local server
 
-多台電腦**不是連到同一個 server**，而是每台各自跑本機 server。四樣東西分工：
+Multiple machines do **not** share a single server. Each machine runs its own local server. Four components, clearly separated:
 
-| 元件 | 位置 | 原因 |
+| Component | Location | Why |
 | --- | --- | --- |
-| 程式碼 `mcp_second_brain/`（package） | **Google Drive 同步**（自動） | 改一次全機同步 |
-| venv | **本機 `~/.venvs/second-brain/`** | Drive 同步會壞 symlink；macOS 不允許執行雲端資料夾內的執行檔（`Operation not permitted`） |
-| 索引 DB `~/.second-brain/vault.db` | **本機自動建** | 從同步的 vault markdown 重建；DuckDB 單寫者，各機獨立 |
-| vault 筆記（markdown） | **Google Drive 同步** | 內容跨機共享 |
+| Source code `mcp_second_brain/` (package) | **Google Drive** (auto-sync) | Change once, synced everywhere |
+| venv | **Local `~/.venvs/second-brain/`** | Drive sync breaks symlinks; macOS blocks executing binaries from cloud folders (`Operation not permitted`) |
+| Index DB `~/.second-brain/vault.db` | **Local, auto-created** | Rebuilt from synced vault markdown; DuckDB is single-writer, independent per machine |
+| Vault notes (markdown) | **Google Drive** (auto-sync) | Content shared across machines |
 
-> 同機可並存多個 server（桌面版 stdio + Claude Code stdio），共用本機同一個
-> DuckDB，已設計為 **lock-aware 退避重試、不會互砸索引**；stdio server 也**不再互殺**。
+> Multiple servers can coexist on the same machine (Desktop stdio + Claude Code stdio), sharing the same local DuckDB. The server is designed with **lock-aware retry — no index corruption**; stdio servers no longer kill each other.
 
 ---
 
-## 新機 bootstrap
+## New Machine Bootstrap
 
-先設變數代表這台電腦的 Drive 路徑（`/Users/<你>` 每台可能不同）：
+Set variables for this machine's Drive path (`/Users/<you>` differs per machine):
 
 ```bash
-PJ="$HOME/Library/CloudStorage/GoogleDrive-<你的帳號>/我的雲端硬碟/PJ_save"
+PJ="$HOME/Library/CloudStorage/GoogleDrive-<your-account>/我的雲端硬碟/PJ_save"
 SB="$PJ/mcp-tools/second-brain"
 VAULT="$PJ/second-brain"
 ```
 
-### Step 1 — 取得程式碼
+### Step 1 — Get the code
 
-新機登入同一 Google Drive 即自動同步；確認 `$SB/mcp_second_brain/server.py` 存在。
+Sign in to the same Google Drive account — files sync automatically. Confirm `$SB/mcp_second_brain/server.py` exists.
 
-### Step 2 — 建立本機 venv（**不要建在 Drive 目錄裡**）
+### Step 2 — Create a local venv (**never inside the Drive folder**)
 
 ```bash
 python3 -m venv ~/.venvs/second-brain
 ~/.venvs/second-brain/bin/pip install -r "$SB/requirements.txt"
-~/.venvs/second-brain/bin/playwright install chromium   # PNG 快照渲染用
+~/.venvs/second-brain/bin/playwright install chromium   # for PNG snapshot rendering
 ```
 
-### Step 3 — 註冊 MCP 給本機 Claude
+> **PDF conversion dependencies** — `save_article` uses a three-tier pipeline:
+>
+> 1. **Marker** (ML, best quality) — installed via `requirements.txt` above; ~1.35 GB models auto-downloaded on first PDF save to `~/.cache/datalab/`
+> 2. **pdftotext / pdfinfo** (fallback) — install poppler: `brew install poppler`
+> 3. **MarkItDown** (last fallback) — already in requirements
+>
+> Marker models are machine-local and not synced. First PDF save on a new machine triggers automatic download (~1–2 min depending on network).
 
-**A. Claude 桌面版** — 編輯 `~/Library/Application Support/Claude/claude_desktop_config.json`，
-`command` 一定指向**本機 venv**，`args` 指向 Drive 同步的 `mcp_second_brain/server.py`：
+### Step 3 — Register MCP with Claude
+
+**A. Claude Desktop** — edit `~/Library/Application Support/Claude/claude_desktop_config.json`.
+`command` must point to the **local venv**; `args` must use `-m` to launch as a package (**never point directly to `server.py`** — relative imports will fail):
 
 ```json
 {
   "mcpServers": {
     "second-brain": {
-      "command": "/Users/<你>/.venvs/second-brain/bin/python",
-      "args": ["<PJ>/mcp-tools/second-brain/mcp_second_brain/server.py"],
+      "command": "/Users/<you>/.venvs/second-brain/bin/python",
+      "args": ["-m", "mcp_second_brain.server"],
       "env": {
         "PYTHONPATH": "<PJ>/mcp-tools/second-brain",
         "SECOND_BRAIN_PATH": "<PJ>/second-brain"
@@ -65,77 +71,89 @@ python3 -m venv ~/.venvs/second-brain
 }
 ```
 
-改完 **⌘Q 完全結束並重開桌面版**（MCP config 只在啟動時讀取）。
+After editing, **⌘Q to fully quit and relaunch** Claude Desktop (MCP config is only read at startup).
 
-**B. Claude Code（CLI）**：
+**B. Claude Code (CLI)**:
+
+`claude mcp add` does not support the `-m` flag, so edit `~/.claude.json` directly:
 
 ```bash
-claude mcp add --scope user second-brain \
-  ~/.venvs/second-brain/bin/python "$SB/mcp_second_brain/server.py" \
-  -e PYTHONPATH="$SB" \
-  -e SECOND_BRAIN_PATH="$VAULT"
+python3 -c "
+import json
+with open('/Users/<you>/.claude.json', 'r') as f:
+    d = json.load(f)
+d['mcpServers']['second-brain'] = {
+    'type': 'stdio',
+    'command': '$HOME/.venvs/second-brain/bin/python',
+    'args': ['-m', 'mcp_second_brain.server'],
+    'env': {
+        'PYTHONPATH': '$SB',
+        'SECOND_BRAIN_PATH': '$VAULT'
+    }
+}
+with open('/Users/<you>/.claude.json', 'w') as f:
+    json.dump(d, f, indent=2, ensure_ascii=False)
+print('Done')
+"
 ```
 
-### Step 4 — 首次建索引
+### Step 4 — Build the index for the first time
 
-啟動 agent 後說 `init_vault`（建/修目錄與模板），再跑 `sync_index` 建立本機索引 DB。
-之後每次大量改檔再 `sync_index` 一次即可。
+Start the agent and say `init_vault` (creates/repairs directories and templates), then run `sync_index` to build the local index DB. Re-run `sync_index` after bulk file changes.
 
-> **不要**用外部 `python -c "vault_db.sync_all(...)"` 直接跑 — 會與 Claude Code 的
-> MCP server 競爭 DuckDB 排他鎖，導致 `CatalogException: Table does not exist`。
-> 一律透過 MCP 工具（說 `sync_index`）讓 server 內部執行。
+> **Do not** run `python -c "vault_db.sync_all(...)"` directly — it competes with Claude Code's MCP server for DuckDB's exclusive write lock, causing `CatalogException: Table does not exist`.
+> Always sync via the MCP tool (`sync_index`) so the server executes it internally.
 
-### Step 5 —（選用）語意搜尋
+### Step 5 — (Optional) Semantic search
 
-不裝也能用（自動 fallback BM25）。要語意搜尋就跑 Ollama：
+Works without this (falls back to BM25 automatically). For semantic search, install Ollama:
 
 ```bash
 brew install ollama 2>/dev/null || true
 ollama pull nomic-embed-text
-# 然後在上面 MCP config 的 env 加：
+# Then add to the env block in your MCP config above:
 #   "EMBED_URL": "http://localhost:11434/v1/embeddings", "EMBED_PORT": "11434"
 ```
 
-### Step 6 —（選用）每週自動維護
+### Step 6 — (Optional) Weekly automated maintenance
 
 ```bash
 SECOND_BRAIN_PATH="$VAULT" bash "$SB/launchd/install.sh"
 ```
 
-`install.sh` 會用本機 `~/.venvs/second-brain/bin/python` 產生 plist 並載入，
-每週日 02:00 跑 `launchd/run_sleep.py`（索引 → embedding → 壓縮舊筆記 → 萃取規則）。
+`install.sh` generates and loads a plist using the local `~/.venvs/second-brain/bin/python`. Runs every Sunday at 02:00: index → embedding → compress old notes → extract rules.
 
 ---
 
-## 每台機器各自的本機資料
+## Per-machine Local Data
 
-| 資料 | 位置 | 是否同步 |
+| Data | Location | Synced? |
 | --- | --- | :---: |
-| Vault markdown 筆記 | Google Drive | ✅ 所有機器共享 |
-| 程式碼（`mcp_second_brain/`） | Google Drive | ✅ 所有機器共享 |
-| Python venv | `~/.venvs/second-brain/` | ❌ 每台各自建立 |
-| DuckDB index | `~/.second-brain/vault.db` | ❌ 每台各自重建（`sync_index`） |
-| MCP 設定 | 桌面版 config / Claude Code user scope | ❌ 每台各自設定 |
+| Vault markdown notes | Google Drive | ✅ Shared across all machines |
+| Source code (`mcp_second_brain/`) | Google Drive | ✅ Shared across all machines |
+| Python venv | `~/.venvs/second-brain/` | ❌ Created separately per machine |
+| DuckDB index | `~/.second-brain/vault.db` | ❌ Rebuilt per machine via `sync_index` |
+| MCP config | Desktop config / Claude Code user scope | ❌ Configured separately per machine |
 
 ---
 
-## 多機注意事項
+## Multi-machine Notes
 
-- **不要兩台同時編輯同一筆 vault 筆記** → Google Drive 會生 `xxx (1).md` 衝突檔。等同步完再換機操作。
-- **索引 DB 不跨機共享**（各機 `~/.second-brain/vault.db` 各自從同步的 markdown 重建）——這是刻意設計，不要把 DB 放進 Drive。
-- **不需要 HTTP 遠端 server**。自己有同步 Drive + venv 的 Mac 用本機 server 即可。
-  「不想裝環境的裝置零安裝連入」那套（Tailscale）已停用。
+- **Never edit the same vault note on two machines simultaneously** → Google Drive creates `xxx (1).md` conflict files. Wait for sync to complete before switching machines.
+- **The index DB is not shared across machines** (`~/.second-brain/vault.db` is rebuilt from synced markdown on each machine) — this is intentional. Do not put the DB in Drive.
+- **No HTTP remote server needed.** If you have Drive synced and a local venv, use the local server. The Tailscale remote access setup has been retired.
 
 ---
 
-## 疑難排解
+## Troubleshooting
 
-| 症狀 | 原因 | 解法 |
+| Symptom | Cause | Fix |
 | --- | --- | --- |
-| 桌面版 `Operation not permitted` / `Server disconnected` | `command` 還指向 Drive 內的 `.venv/bin/python` | 改成本機 `~/.venvs/second-brain/bin/python` |
-| 連上但 0.5 秒掉線 | 舊版互殺機制（已修正） | 確認跑的是含修正的 Drive 原始碼（`_kill_old_server` 只在 HTTP 分支） |
-| agent 看不到筆記 / 空結果 | 索引未建 | 跑一次 `sync_index` |
-| 語意搜尋默默退回 BM25 | embedding server 沒開 | 啟動 Ollama / llama-server |
-| 快照 `read_note_as_image` 失敗 | playwright chromium 沒裝 | `~/.venvs/second-brain/bin/playwright install chromium` |
-| `Failure while replaying WAL file`（DB 損毀） | DuckDB 寫入中途被打斷（IDE 重啟、`pkill -9`、機器睡眠） | `rm -f ~/.second-brain/vault.db ~/.second-brain/vault.db.wal` 後重啟，再 `sync_index` |
-| `~/.second-brain/vault.db` 很小但別處有大的 | server 啟動時 cwd 不是 home，DuckDB 把 DB 建在 cwd | `find ~ -name vault.db -size +1M`，把找到的搬回 `~/.second-brain/vault.db` |
+| Desktop `Operation not permitted` / `Server disconnected` | `command` still points to `.venv/bin/python` inside Drive | Change to local `~/.venvs/second-brain/bin/python` |
+| `ImportError: attempted relative import with no known parent package` | `args` points directly to `server.py` (script mode cannot resolve relative imports) | Use `["-m", "mcp_second_brain.server"]` — Desktop: edit JSON directly; Claude Code: use the Python script to edit `.claude.json` (`claude mcp add` does not support `-m`) |
+| Connected but drops after 0.5 s | Old mutual-kill mechanism (fixed in current code) | Confirm you're running the fixed Drive source (`_kill_old_server` only exists in the HTTP branch) |
+| Agent can't see notes / empty results | Index not built | Run `sync_index` once |
+| Semantic search silently falls back to BM25 | Embedding server not running | Start Ollama / llama-server |
+| `read_note_as_image` snapshot fails | playwright chromium not installed | `~/.venvs/second-brain/bin/playwright install chromium` |
+| `Failure while replaying WAL file` (DB corrupted) | DuckDB write interrupted (IDE restart, `pkill -9`, sleep) | `rm -f ~/.second-brain/vault.db ~/.second-brain/vault.db.wal`, restart server, then `sync_index` |
+| `~/.second-brain/vault.db` is tiny but a larger one exists elsewhere | Server started with cwd ≠ home; DuckDB created the DB in cwd | `find ~ -name vault.db -size +1M`, move the found file to `~/.second-brain/vault.db` |

@@ -76,7 +76,7 @@ def _parse_source_url(md_text: str) -> str | None:
     for line in m.group(1).splitlines():
         if line.startswith("source:"):
             val = line.split("source:", 1)[1].strip().strip('"').strip("'")
-            return val if val.startswith("http") else None
+            return val
     return None
 
 
@@ -267,6 +267,116 @@ def extract_figures(note_path: str, vault: Path) -> list[dict]:
 
     md_text = md_file.read_text(encoding="utf-8")
     source_url = _parse_source_url(md_text)
+    
+    # Check if source_url is a local PDF file
+    is_pdf = False
+    if source_url:
+        source_path = Path(source_url)
+        if source_path.suffix.lower() == ".pdf" and source_path.exists():
+            is_pdf = True
+
+    if is_pdf:
+        # PDF Figures Extraction Logic
+        import struct
+        import shutil
+        import glob
+        
+        pdf_path = Path(source_url)
+        fig_dir = FIGURES_DIR / _figure_slug(note_path)
+        fig_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Temp dir inside figures dir to avoid permission issues
+        temp_dir = fig_dir / "temp_extracted"
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Run pdfimages
+        pdfimages_path = "/opt/homebrew/bin/pdfimages"
+        cmd = [pdfimages_path, "-png", str(pdf_path), str(temp_dir / "img")]
+        try:
+            subprocess.run(cmd, check=True)
+        except Exception as e:
+            print(f"[figures] pdfimages failed: {e}", file=sys.stderr)
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return []
+            
+        def get_png_size(filepath):
+            try:
+                with open(filepath, 'rb') as f:
+                    data = f.read(24)
+                    if len(data) >= 24 and data[:8] == b'\x89PNG\r\n\x1a\n':
+                        w, h = struct.unpack('>II', data[16:24])
+                        return w, h
+            except Exception:
+                pass
+            return 0, 0
+            
+        extracted_pngs = sorted(glob.glob(str(temp_dir / "*.png")))
+        valid_count = 0
+        results = []
+        copied_figures = []
+        
+        for png in extracted_pngs:
+            w, h = get_png_size(png)
+            if w > 200 and h > 200:
+                dest_name = f"fig-{valid_count:02d}.png"
+                local = fig_dir / dest_name
+                shutil.copy2(png, local)
+                copied_figures.append(dest_name)
+                
+                # Analyze figure
+                analysis = analyse_figure(local)
+                token_est = SNAPSHOT_TIERS["base"]["token_est"]
+                
+                vault_db.upsert_figure(
+                    note_path=note_path,
+                    fig_index=valid_count,
+                    image_url=f"file://{local.resolve()}",
+                    local_path=str(local),
+                    ocr_text=analysis["ocr_text"],
+                    description=analysis["description"],
+                    token_est=token_est,
+                )
+                
+                results.append({
+                    "fig_index": valid_count,
+                    "local_path": str(local),
+                    "ocr_text": analysis["ocr_text"],
+                    "description": analysis["description"],
+                })
+                valid_count += 1
+                
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        
+        # Write (or replace) figure links section in the markdown file
+        if copied_figures and md_file.exists():
+            content = md_file.read_text(encoding="utf-8").replace("\r\n", "\n")
+            note_depth = len(Path(note_path).parent.parts)
+            rel_prefix = "../" * note_depth
+            fig_slug = _figure_slug(note_path)
+
+            new_section = "\n\n## Extracted Figures\n" + "".join(
+                f"![{fig}]({rel_prefix}figures/{fig_slug}/{fig})\n"
+                for fig in copied_figures
+            )
+
+            if "## Extracted Figures" in content:
+                # Replace existing section (handles note moves / re-runs)
+                content = re.sub(
+                    r"\n*## Extracted Figures\n[\s\S]*",
+                    new_section,
+                    content,
+                )
+                md_file.write_text(content, encoding="utf-8")
+                print(f"[figures] Updated {valid_count} figures in markdown: {md_file}", file=sys.stderr)
+            else:
+                with open(md_file, "a", encoding="utf-8") as f:
+                    f.write(new_section)
+                print(f"[figures] Appended {valid_count} figures to markdown: {md_file}", file=sys.stderr)
+                
+        return results
+
     matches = IMG_RE.findall(md_text)
 
     content_imgs = [

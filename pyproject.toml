@@ -25,6 +25,7 @@ dependencies = [
     "requests>=2.34.2",
     "anthropic>=0.109.1",
     "ollama>=0.6.2",
+    "marker-pdf>=1.6.0",
 ]
 
 [project.urls]

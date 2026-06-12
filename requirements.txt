@@ -7,6 +7,7 @@ markdown2>=2.5.5
 requests>=2.34.2
 anthropic>=0.109.1
 ollama>=0.6.2
+marker-pdf>=1.6.0
 # markitdown[all] pins magika~=0.6.1, but we override to >=1.0.0 for Python 3.14
 # support (matches pyproject [tool.uv] override-dependencies). markitdown works
 # with magika 1.0.3 in practice; the `pip check` warning is expected and benign.
