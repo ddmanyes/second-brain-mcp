@@ -2,7 +2,7 @@
 
 > **目標**：把 second-brain 從「多 stdio server 搶單一 DuckDB 檔」改造成「**中央 HTTP server + Postgres/pgvector 活腦**」，支援多台電腦同時讀寫。
 > **建立日期**：2026-06-16
-> **狀態**：執行中（P0–P3 程式碼/基建完成；P2.4 索引重建進行中）
+> **狀態**：執行中（P0–P2 完成並驗證；P3 核心 3.1–3.3 完成；剩 P3.4–3.5、P4–P6、D 待用戶決策）
 > **最後更新**：2026-06-16（接續執行：修復測試隔離 bug、確認 P0–P3、啟動 sb_personal 全量重建）
 > **決策來源**：[ADR 多機中央活腦架構](../../second-brain/decisions/multi-machine-central-brain-architecture.md)
 > **執行順序**：P0 → P1 → P2 → P3 → P4 → P5 → P6（可漸進、每階段可回退）
@@ -228,7 +228,7 @@ flowchart TD
 - [x] **2.4** `sync_all` 對 Postgres 後端跑一次（從 markdown 重建，沿用 16KB 讀限/batch commit；**Postgres 不需 FTS-out-of-tx 那種 DuckDB 特例**）
 - [x] **2.5** 平行比對：同一組 query 在 duckdb vs postgres 後端，前 10 命中重疊率 ≥ 可接受門檻；figure 搜尋一致
 - [x] **2.6** 測試 `tests/test_postgres_store.py`：upsert/search/向量/併發寫（開多 thread 同時 upsert，斷言無鎖錯、結果正確）
-- [ ] **2.7** git commit: `feat: PostgresStore (pgvector + pg_trgm) with sync_all rebuild from markdown`
+- [x] **2.7** git commit: `feat: PostgresStore (pgvector + pg_trgm) with sync_all rebuild from markdown`
 
 ---
 
@@ -237,9 +237,9 @@ flowchart TD
 ### 目標
 中央 server 以 streamable-http + Postgres 常駐；保留 stdio+DuckDB 當離線 fallback。
 
-- [ ] **3.1** 啟用 `com.user.second-brain-remote.plist`（移除 `.disabled`），環境設 `SB_DB_BACKEND=postgres`、`MCP_TRANSPORT=streamable-http`、PG 連線字串、`EMBED_URL`
-- [ ] **3.2** 確認 HTTP 分支單例（`_kill_old_server` PID）正常；KeepAlive 重啟可恢復
-- [ ] **3.3** 並發煙霧測試：兩個 client 同時呼叫 search + new_note，斷言皆成功、無鎖等待、延遲正常
+- [x] **3.1** 啟用 `com.user.second-brain-remote.plist`（移除 `.disabled`），環境設 `SB_DB_BACKEND=postgres`、`MCP_TRANSPORT=streamable-http`、PG 連線字串、`EMBED_URL`
+- [x] **3.2** 確認 HTTP 分支單例（`_kill_old_server` PID）正常；KeepAlive 重啟可恢復
+- [x] **3.3** 並發煙霧測試：兩個 client 同時呼叫 search + new_note，斷言皆成功、無鎖等待、延遲正常
 - [ ] **3.4** 離線 fallback 文件化：筆電離線時 `SB_DB_BACKEND=duckdb` + stdio 本地唯讀（可選）
 - [ ] **3.5** git commit: `feat: enable central streamable-http server backed by postgres (launchd KeepAlive)`
 
