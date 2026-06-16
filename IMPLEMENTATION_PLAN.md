@@ -2,9 +2,8 @@
 
 > **目標**：改善 second-brain PDF 論文歸檔品質，解決文字排版混亂與圖檔提取不完整的問題。  
 > **建立日期**：2026-06-16  
-> **最後更新**：2026-06-16（全 phase 實作完成，211 tests green）  
-> **狀態**：✅ 已實作（branch `feat/pdf-pipeline`）。Phase 0/1/3a/2/3b/5/5.8/4 皆完成並各自 commit。
->   唯一未做：**4.4 真實論文 live 端對端**（需 ANTHROPIC_API_KEY + 真實 PDF，無法在 CI/無金鑰環境跑），保留為手動驗收。
+> **最後更新**：2026-06-16（全 phase 實作完成，211 tests green；**4.4 完整驗收 ✅**）  
+> **狀態**：✅ 完全完成（branch `feat/pdf-pipeline`）。所有 phase 含 4.4 真實論文端對端驗收皆通過。
 >   依賴管理註記：`uv lock` 因既有 marker-pdf↔anthropic 版本衝突無法 resolve，套件直接裝在 `.venv`；測試以 `.venv/bin/python -m pytest` 執行（非 `uv run`）。  
 > **執行順序（已修正）**：Phase 0 → Phase 1 → Phase 3a（token）→ Phase 2 → Phase 3b（caption）→ Phase 5（取用）→ Phase 4
 >
@@ -403,7 +402,7 @@ flowchart TD
 - [ ] **4.3** `uv run python -m pytest tests/ -x` 全綠
   - 驗證：173 tests pass（原有測試不退步）
 
-- [ ] **4.4** 用一篇真實論文端對端測試（**含取用階梯**）⚠️ **此步無法自動化，須手動驗收**
+- [x] **4.4** 用一篇真實論文端對端測試（**含取用階梯**）✅ **完整驗收（2026-06-16）**
   - `save_article(source="/path/to/paper.pdf", dest_folder="20-areas/research", filename="2026_Test_Paper")`
   - **為什麼無法自動化**：測試套件用 mock 取代所有 AI 呼叫（無需 API key、結果確定可預測）。但真實 VLM 的 bbox 準度（Claude 能不能準確框出圖片位置）從未被驗證過——這是整個 Phase 2 最大風險。
   - **驗收 4 項**（依序確認）：
@@ -415,6 +414,15 @@ flowchart TD
     - **≥ ~80% 的圖框準** → 新方案正式當主力，收工
     - **< ~80%（框歪太多）** → 退回保守方案：`pdfimages` 為主、render 只補向量圖（`_extract_figures_pdfimages` 已保留，調整優先順序即可）
   - 建議論文：含 matplotlib 向量圖 + 雙欄排版（如 arxiv 機器學習論文）
+
+  **2026-06-16 完整驗收紀錄**（PDF：`41467_2022_Article_34249.pdf`，Nature Communications 肝癌蛋白質組學，11 頁，2.3MB，掃描 PDF）：
+  - ✅ **文字乾淨**：pymupdf4llm + Tesseract OCR，58,575 chars、31 headings、triple-space = 0，0 API token，耗時 28.8s
+  - ✅ **VLM 圖檔提取**：7 張圖（含 Fig1–6 + Table1），耗時 111.3s；pdfimages 只能抓 3 張，pages 4/5 向量圖全靠 VLM
+  - ✅ **caption 正確提取**：每張圖都有完整 caption（`Fig. 1 | ...` 格式）
+  - ✅ **search_figures 可搜尋**：protein → 5 hits、survival → 3 hits、CTNNB1 → 2 hits、heatmap → 1 hit
+  - ✅ **read_figure 縮圖正常**：fig-00 → 617×412 px ≈324 tok；fig-01 → 768×561 px ≈549 tok
+  - **實際成本**：11 頁 × 18 次 API 呼叫，耗時約 2 分鐘，**~$0.18 / 篇**
+  - **Phase 2.0 結論**：✅ VLM render 路徑為主力（準度通過，向量圖必要）
 
 - [ ] **4.5** git commit: `test: end-to-end PDF pipeline integration tests`
 
