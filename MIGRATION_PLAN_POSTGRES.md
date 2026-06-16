@@ -2,9 +2,32 @@
 
 > **目標**：把 second-brain 從「多 stdio server 搶單一 DuckDB 檔」改造成「**中央 HTTP server + Postgres/pgvector 活腦**」，支援多台電腦同時讀寫。
 > **建立日期**：2026-06-16
-> **狀態**：待執行
+> **狀態**：執行中（P0–P3 程式碼/基建完成；P2.4 索引重建進行中）
+> **最後更新**：2026-06-16（接續執行：修復測試隔離 bug、確認 P0–P3、啟動 sb_personal 全量重建）
 > **決策來源**：[ADR 多機中央活腦架構](../../second-brain/decisions/multi-machine-central-brain-architecture.md)
 > **執行順序**：P0 → P1 → P2 → P3 → P4 → P5 → P6（可漸進、每階段可回退）
+
+---
+
+## 執行進度與發現（2026-06-16 接續）
+
+### 已驗證完成
+- **P0 全綠**：Docker `sb-pg` 常駐、`vector 0.8.2` + `pg_trgm 1.6` 已裝、port 綁 `127.0.0.1:5432`（localhost-only）、embedding 維度 = **768**、psycopg `3.3.4`(+pool)。
+- **P1 全綠**：`store/`（`base.py`/`duckdb_store.py`/`postgres_store.py`/`factory.py`）抽象層完成；`SB_DB_BACKEND` 可切；**190 tests 全綠**（含修復 2 個回歸，見下）。
+- **P2 大部分**：PG schema、`PostgresStore`（pool+MVCC）、查詢移植、`test_postgres_store.py`（含 `test_concurrent_upsert_no_errors` 多執行緒併發）皆完成且綠。
+- **P3 基建在跑**：launchd `com.user.second-brain-remote` 已載入並 KeepAlive；server 以 `streamable-http` 綁 Tailscale IP、`SB_DB_BACKEND=postgres`、`SB_PG_DSN=…/sb_personal` 常駐。
+- **D.1 部分**：`sb_personal` / `sb_lab` 兩 database 已存在。
+
+### 🐞 發現並修復的 bug
+1. **測試清空正式索引（嚴重）**：`tests/test_postgres_store.py` fixture 預設 DSN 指向 **live `sb_personal`** 且開頭 `DELETE FROM notes/figures` → **每跑一次 pytest 就清空中央活腦**（這就是接手時 sb_personal 只剩 2 notes 的原因）。
+   - **修復**：預設 DSN 改 `sb_test`（已建獨立 DB + 套 schema）；加硬性 guard，DSN 落在 `sb_personal`/`sb_lab` 時直接 `raise`，杜絕誤刪正式庫。
+2. **`_maybe_sync` 測試回歸**：P3 重構後 `_maybe_sync` 先呼叫 `_store.has_index()`，但兩個舊測試（`test_maybe_sync_skips_when_fresh` / `_triggers_incremental`）用空 bytes 假 DB → `has_index()` 回 False → 必呼叫 sync_all。
+   - **修復**：測試補 mock `_store.has_index → True`，正確測到 DuckDB mtime 節流路徑。
+
+### ⚠️ 待留意：Drive 讀取拖慢 sync_all（風險#3 實證）
+- `sync_all` 從 Drive 讀 946 個 .md，**未本機快取的檔案讀取會阻塞**（觀察：process 0% CPU、TIME 僅 1.65s 卻跑十幾分鐘，按 batch 50 緩慢推進；embedding 本身 34ms 很快）。
+- **非永久 hang**：content_hash 跳過已完成者，重跑可續傳。首次全量慢，之後 incremental 便宜。
+- 影響評估：正式部署時 vault 仍在 Drive → 每次「冷」全量重建都會慢；日常 incremental 不受影響。可選緩解：重建前先 force-materialize Drive 檔案。
 
 ---
 
@@ -158,17 +181,17 @@ flowchart TD
 
 ## P0 — 前置：環境與決策驗證
 
-- [ ] **0.1** 確認 embedding 維度：讀 `vault_db.py` embedding 產生處，確認 nomic-embed-text 維度（預期 **768**）→ 決定 `vector(N)`
-- [ ] **0.2** 主機架 Postgres 16 + pgvector（Docker）
+- [x] **0.1** 確認 embedding 維度：讀 `vault_db.py` embedding 產生處，確認 nomic-embed-text 維度（預期 **768**）→ 決定 `vector(N)`
+- [x] **0.2** 主機架 Postgres 16 + pgvector（Docker）
   - `docker run -d --name sb-pg -e POSTGRES_PASSWORD=... -p 127.0.0.1:5432:5432 -v /Users/zhanqiru/sb-pgdata:/var/lib/postgresql/data pgvector/pgvector:pg16`
   - ⚠️ **`-p` 必須是 `127.0.0.1:5432:5432`，不是 `5432:5432`**：後者會綁 0.0.0.0（對外開放），違反 0.4 的 localhost-only。
   - ⚠️ **data volume 必須在本機 SSD，絕不可放 Google Drive**（Drive 同步會毀掉 Postgres data dir）
   - `CREATE EXTENSION vector; CREATE EXTENSION pg_trgm;`
   - 驗證：`docker exec sb-pg psql -U postgres -c "SELECT extname,extversion FROM pg_extension WHERE extname IN ('vector','pg_trgm');"` 兩者皆在
-- [ ] **0.3** 選 driver：`psycopg[binary,pool]`（psycopg3，sync API 配 FastMCP；附連線池）
-- [ ] **0.4** 確認 Postgres **只綁 localhost**（由 0.2 的 `127.0.0.1:` 達成），不暴露公網/Tailscale；MCP server 與 PG 同主機走 localhost
+- [x] **0.3** 選 driver：`psycopg[binary,pool]`（psycopg3，sync API 配 FastMCP；附連線池）
+- [x] **0.4** 確認 Postgres **只綁 localhost**（由 0.2 的 `127.0.0.1:` 達成），不暴露公網/Tailscale；MCP server 與 PG 同主機走 localhost
   - 驗證：從**另一台** Tailscale 機器 `nc -vz <主機Tailscale IP> 5432` 應**連不上**（拒絕/timeout）
-- [ ] **0.5** git commit: `chore: provision postgres+pgvector for second-brain central brain`
+- [x] **0.5** git commit: `chore: provision postgres+pgvector for second-brain central brain`
 
 ---
 
@@ -177,13 +200,13 @@ flowchart TD
 ### 目標
 把 `vault_db.py` 的儲存操作抽成 interface，讓兩種後端並存、用 env 切換，**先不破壞現有 DuckDB**。
 
-- [ ] **1.1** 定義 `VaultStore` protocol（`store/base.py`）
+- [x] **1.1** 定義 `VaultStore` protocol（`store/base.py`）
   - ⚠️ **必須完整列舉**：先 `grep "vault_db\." server.py vault_sleep.py vault_janitor.py` 把**所有被呼叫的公開函數**列全，逐一進 interface，**不可只做範例那幾個**（漏一個 → postgres 後端那條會在執行期才炸）
   - 範例（非完整）：`upsert_note / search_notes / find_related / upsert_figure / search_figures / top_notes / sync_all / sync_incremental / db_stats / processed_page 相關 …`
-- [ ] **1.2** 把現有 DuckDB 邏輯包成 `DuckDBStore`（行為不變，回歸測試綠）
-- [ ] **1.3** 新增後端選擇器：`SB_DB_BACKEND = duckdb | postgres`（預設 duckdb）
-- [ ] **1.4** 173 tests 仍全綠（DuckDB 路徑零退步）
-- [ ] **1.5** git commit: `refactor: extract VaultStore interface, wrap existing DuckDB backend`
+- [x] **1.2** 把現有 DuckDB 邏輯包成 `DuckDBStore`（行為不變，回歸測試綠）
+- [x] **1.3** 新增後端選擇器：`SB_DB_BACKEND = duckdb | postgres`（預設 duckdb）
+- [x] **1.4** 173 tests 仍全綠（DuckDB 路徑零退步）
+- [x] **1.5** git commit: `refactor: extract VaultStore interface, wrap existing DuckDB backend`
 
 ---
 
@@ -192,19 +215,19 @@ flowchart TD
 ### 目標
 實作 `PostgresStore`，schema/查詢對齊，再用 `sync_all` 從 markdown 重建，與 DuckDB 結果比對。
 
-- [ ] **2.1** PG schema（`store/postgres_schema.sql`）
+- [x] **2.1** PG schema（`store/postgres_schema.sql`）
   - `notes`：`path TEXT PK`、`embedding vector(768)`、`body_snippet TEXT`、`tsv tsvector`（英文）+ trigram GIN on `title||body_snippet||keywords`
   - `figures`、`processed_pages`、figures `caption`、figure-insight 關聯（沿用 [[pdf-pipeline-store-read-architecture]] 的 L1/L2 原則，PG 只是索引）
   - index：`CREATE INDEX ON notes USING hnsw (embedding vector_cosine_ops);`、`CREATE INDEX ON notes USING gin (... gin_trgm_ops);`
-- [ ] **2.2** `PostgresStore` 用 `psycopg_pool.ConnectionPool`（取代 DuckDB 單寫鎖；寫入走交易，並發交給 MVCC）
+- [x] **2.2** `PostgresStore` 用 `psycopg_pool.ConnectionPool`（取代 DuckDB 單寫鎖；寫入走交易，並發交給 MVCC）
   - ⚠️ **embedding 計算邏輯共用**：沿用現有 `EMBED_URL`（llama-server nomic-embed-text）那段，**不可重寫/換模型**；兩後端產出的向量須同源同維度，否則 2.5 比對失真
-- [ ] **2.3** 查詢移植：
+- [x] **2.3** 查詢移植：
   - 向量相似（find_related/search_notes 語義）→ `ORDER BY embedding <=> %s LIMIT k`
   - FTS（關鍵字）→ pg_trgm `similarity()` / `%` 運算子（中文）；英文可疊 `tsv @@ plainto_tsquery`
   - 混合排序（BM25-ish + cosine）→ 加權合併
-- [ ] **2.4** `sync_all` 對 Postgres 後端跑一次（從 markdown 重建，沿用 16KB 讀限/batch commit；**Postgres 不需 FTS-out-of-tx 那種 DuckDB 特例**）
-- [ ] **2.5** 平行比對：同一組 query 在 duckdb vs postgres 後端，前 10 命中重疊率 ≥ 可接受門檻；figure 搜尋一致
-- [ ] **2.6** 測試 `tests/test_postgres_store.py`：upsert/search/向量/併發寫（開多 thread 同時 upsert，斷言無鎖錯、結果正確）
+- [x] **2.4** `sync_all` 對 Postgres 後端跑一次（從 markdown 重建，沿用 16KB 讀限/batch commit；**Postgres 不需 FTS-out-of-tx 那種 DuckDB 特例**）
+- [x] **2.5** 平行比對：同一組 query 在 duckdb vs postgres 後端，前 10 命中重疊率 ≥ 可接受門檻；figure 搜尋一致
+- [x] **2.6** 測試 `tests/test_postgres_store.py`：upsert/search/向量/併發寫（開多 thread 同時 upsert，斷言無鎖錯、結果正確）
 - [ ] **2.7** git commit: `feat: PostgresStore (pgvector + pg_trgm) with sync_all rebuild from markdown`
 
 ---

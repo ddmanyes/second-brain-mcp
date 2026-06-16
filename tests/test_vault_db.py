@@ -833,10 +833,15 @@ class TestServerHelpers:
         md_file.write_text("# new", encoding="utf-8")
 
         monkeypatch.setattr(server.vault_db, "DB_PATH", db_file)
+        # Index already populated → exercise the DuckDB mtime-throttle path
+        # (the empty-bytes db_file is not a valid DuckDB file, so stub has_index)
+        monkeypatch.setattr(server._store, "has_index", lambda: True)
         incremental_called = []
         sync_all_called = []
         monkeypatch.setattr(server.vault_db, "sync_incremental", lambda v: incremental_called.append(v) or {"updated": 1})
         monkeypatch.setattr(server.vault_db, "sync_all", lambda v: sync_all_called.append(v) or {"synced": 1, "embed_failed": 0})
+        monkeypatch.setattr(server._store, "sync_incremental", lambda v: incremental_called.append(v) or {"updated": 1})
+        monkeypatch.setattr(server._store, "sync_all", lambda v: sync_all_called.append(v) or {"synced": 1, "embed_failed": 0})
 
         server._maybe_sync(tmp_path)
         assert incremental_called, "_maybe_sync should have called sync_incremental"
@@ -925,10 +930,14 @@ class TestServerHelpers:
         # DB mtime is current (fresh)
 
         monkeypatch.setattr(server.vault_db, "DB_PATH", db_file)
+        # Index already populated → exercise the DuckDB mtime-throttle path
+        monkeypatch.setattr(server._store, "has_index", lambda: True)
         sync_all_called = []
         incremental_called = []
         monkeypatch.setattr(server.vault_db, "sync_all", lambda v: sync_all_called.append(v) or {})
         monkeypatch.setattr(server.vault_db, "sync_incremental", lambda v: incremental_called.append(v) or {})
+        monkeypatch.setattr(server._store, "sync_all", lambda v: sync_all_called.append(v) or {})
+        monkeypatch.setattr(server._store, "sync_incremental", lambda v: incremental_called.append(v) or {})
 
         server._maybe_sync(tmp_path)
         assert not sync_all_called, "_maybe_sync should not call sync_all when fresh"
