@@ -2,8 +2,10 @@
 
 > **目標**：改善 second-brain PDF 論文歸檔品質，解決文字排版混亂與圖檔提取不完整的問題。  
 > **建立日期**：2026-06-16  
-> **最後更新**：2026-06-16（對照原始碼 review 後修正執行順序與快取設計）  
-> **狀態**：待執行  
+> **最後更新**：2026-06-16（全 phase 實作完成，211 tests green）  
+> **狀態**：✅ 已實作（branch `feat/pdf-pipeline`）。Phase 0/1/3a/2/3b/5/5.8/4 皆完成並各自 commit。
+>   唯一未做：**4.4 真實論文 live 端對端**（需 ANTHROPIC_API_KEY + 真實 PDF，無法在 CI/無金鑰環境跑），保留為手動驗收。
+>   依賴管理註記：`uv lock` 因既有 marker-pdf↔anthropic 版本衝突無法 resolve，套件直接裝在 `.venv`；測試以 `.venv/bin/python -m pytest` 執行（非 `uv run`）。  
 > **執行順序（已修正）**：Phase 0 → Phase 1 → Phase 3a（token）→ Phase 2 → Phase 3b（caption）→ Phase 5（取用）→ Phase 4
 >
 > ⚠️ **舊定序 `0→1→3→2→4` 有缺陷**：Phase 3 的 caption 驗證（3.4 搜尋命中）依賴 Phase 2 產出的 caption 資料，若整個 Phase 3 排在 Phase 2 前面，3.4 必然失敗。故 Phase 3 已拆成 **3a（token 升級，可先做）** 與 **3b（caption，必須在 Phase 2 後）**。

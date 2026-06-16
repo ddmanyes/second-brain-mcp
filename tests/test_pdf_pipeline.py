@@ -9,7 +9,7 @@ Covers:
 
 import re
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -333,3 +333,45 @@ class TestAnnotateFigure:
         assert isinstance(result, list)
         assert any(isinstance(x, Image) for x in result)
         assert any(isinstance(x, str) and "IC50uniqtok" in x for x in result)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — fallback safeguards
+# ---------------------------------------------------------------------------
+
+class TestFallbacks:
+    def test_pymupdf4llm_failure_invokes_marker(self, tmp_path):
+        """When pymupdf4llm raises, the Marker converter must be tried next."""
+        from unittest.mock import MagicMock
+        from mcp_second_brain import server
+
+        pdf = _make_text_pdf(tmp_path / "p.pdf")
+        marker_out = MagicMock()
+        marker_out.markdown = "# Marker output\n\ntext"
+        fake_converter = MagicMock(return_value=marker_out)
+
+        with patch("pymupdf4llm.to_markdown", side_effect=RuntimeError("x")), \
+             patch.object(server, "_get_marker_converter", return_value=fake_converter):
+            body = server._extract_pdf_body(str(pdf))
+
+        fake_converter.assert_called_once()
+        assert "Marker output" in body
+
+    def test_vlm_detection_failure_falls_back_to_pdfimages(self, isolated_fig_env):
+        """If every page detection raises, extract_figures uses pdfimages."""
+        from mcp_second_brain import figures
+
+        vault = isolated_fig_env
+        pdf = _make_pdf_with_drawing(vault / "src.pdf", n_pages=1, draw_on=0)
+        note_path = _make_note_with_pdf(vault, pdf)
+
+        sentinel = [{"fig_index": 0, "local_path": "/x/fig-00.png",
+                     "ocr_text": "", "description": "from pdfimages"}]
+        fallback = MagicMock(return_value=sentinel)
+
+        with patch.object(figures, "_detect_figures_on_page", side_effect=RuntimeError("no api")), \
+             patch.object(figures, "_extract_figures_pdfimages", fallback):
+            results = figures.extract_figures(note_path, vault)
+
+        fallback.assert_called_once()
+        assert results == sentinel
