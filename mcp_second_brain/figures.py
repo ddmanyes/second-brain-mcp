@@ -151,8 +151,12 @@ def _image_to_base64(path: Path) -> str:
 # VLM analysis via Claude API
 # ---------------------------------------------------------------------------
 
-def _analyse_with_claude(image_path: Path) -> dict:
-    """Send image to Claude via anthropic SDK and get OCR + description."""
+def _analyse_with_claude(image_path: Path, caption: str = "") -> dict:
+    """Send image to Claude via anthropic SDK and get OCR + description.
+
+    When `caption` is provided (from Phase 2 page detection) it is given as
+    context so the OCR/description is more accurate.
+    """
     try:
         import anthropic
         client = anthropic.Anthropic()
@@ -161,6 +165,7 @@ def _analyse_with_claude(image_path: Path) -> dict:
         if ext not in ("png", "jpg", "jpeg", "gif", "webp"):
             media_type = "image/png"
 
+        caption_ctx = f"Caption: {caption}\n" if caption else ""
         message = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=1024,
@@ -179,6 +184,7 @@ def _analyse_with_claude(image_path: Path) -> dict:
                     {
                         "type": "text",
                         "text": (
+                            f"{caption_ctx}"
                             "Analyse this scientific figure. Respond in JSON with two fields:\n"
                             '{"ocr_text": "all text visible in the figure (labels, axes, legends, values)", '
                             '"description": "one sentence describing what this figure shows"}'
@@ -202,10 +208,12 @@ def _analyse_with_claude(image_path: Path) -> dict:
     return {"ocr_text": "", "description": ""}
 
 
-def _analyse_with_gemini(image_path: Path) -> dict:
-    """Primary: Gemini CLI with image passed via stdin prompt + positional path."""
+def _analyse_with_gemini(image_path: Path, caption: str = "") -> dict:
+    """Fallback: Gemini CLI with image passed via stdin prompt + positional path."""
     try:
+        caption_ctx = f"Caption: {caption} " if caption else ""
         prompt = (
+            f'{caption_ctx}'
             'Analyse this scientific figure. '
             'Reply ONLY in JSON with two fields: '
             '{"ocr_text": "all text visible in figure including labels axes legends values", '
@@ -232,12 +240,12 @@ def _analyse_with_gemini(image_path: Path) -> dict:
     return {"ocr_text": "", "description": ""}
 
 
-def analyse_figure(image_path: Path) -> dict:
-    """Claude → Gemini fallback."""
-    result = _analyse_with_claude(image_path)
+def analyse_figure(image_path: Path, caption: str = "") -> dict:
+    """Claude → Gemini fallback. caption (if any) threads into BOTH paths."""
+    result = _analyse_with_claude(image_path, caption)
     if result["ocr_text"] or result["description"]:
         return result
-    return _analyse_with_gemini(image_path)
+    return _analyse_with_gemini(image_path, caption)
 
 
 # ---------------------------------------------------------------------------
@@ -504,8 +512,8 @@ def _extract_figures_render(pdf_path: str, note_path: str, fig_dir: Path) -> lis
                 dest = fig_dir / f"fig-{fig_index:02d}.png"
                 if not _crop_figure(page_png, det["bbox"], dest):
                     continue
-                analysis = analyse_figure(dest)
                 caption = det.get("caption", "")
+                analysis = analyse_figure(dest, caption)
                 description = analysis["description"] or caption
                 vault_db.upsert_figure(
                     note_path=note_path,

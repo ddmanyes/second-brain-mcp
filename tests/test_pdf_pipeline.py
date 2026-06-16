@@ -124,7 +124,7 @@ class TestFigureExtractionRender:
             {"bbox": [100, 150, 900, 900], "caption": "Figure 1. A vector chart.",
              "type": "figure"}
         ]
-        analyse = lambda p: {"ocr_text": "axis labels", "description": "a chart"}  # noqa: E731
+        analyse = lambda p, caption="": {"ocr_text": "axis labels", "description": "a chart"}  # noqa: E731
 
         with patch.object(figures, "_detect_figures_on_page", side_effect=detect), \
              patch.object(figures, "analyse_figure", side_effect=analyse):
@@ -156,7 +156,7 @@ class TestFigureExtractionRender:
             return []
 
         mock_detect = MagicMock(side_effect=detect)
-        analyse = lambda p: {"ocr_text": "", "description": "d"}  # noqa: E731
+        analyse = lambda p, caption="": {"ocr_text": "", "description": "d"}  # noqa: E731
 
         with patch.object(figures, "_detect_figures_on_page", mock_detect), \
              patch.object(figures, "analyse_figure", side_effect=analyse):
@@ -167,3 +167,26 @@ class TestFigureExtractionRender:
             figures.extract_figures(note_path, vault)
             # negative cache: no page (incl. the text-only one) is re-sent
             assert mock_detect.call_count == calls_after_first
+
+
+# ---------------------------------------------------------------------------
+# Phase 3b — caption threads into search
+# ---------------------------------------------------------------------------
+
+class TestCaptionSearch:
+    def test_caption_keyword_is_searchable(self, isolated_fig_env):
+        from mcp_second_brain import vault_db
+
+        vault_db.upsert_figure(
+            note_path="20-areas/research/paper.md",
+            fig_index=0,
+            image_url="file:///x/fig-00.png",
+            local_path="/x/fig-00.png",
+            ocr_text="",            # OCR empty — only the caption carries the term
+            description="a scatter plot",
+            token_est=400,
+            caption="Figure 1. UMAP embedding of single cells",
+        )
+        hits = vault_db.search_figures("UMAP")
+        assert len(hits) == 1
+        assert hits[0]["caption"].startswith("Figure 1. UMAP")
