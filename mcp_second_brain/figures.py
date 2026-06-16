@@ -163,7 +163,7 @@ def _analyse_with_claude(image_path: Path) -> dict:
 
         message = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=512,
+            max_tokens=1024,
             stream=False,
             messages=[{
                 "role": "user",
