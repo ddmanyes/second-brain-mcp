@@ -87,6 +87,7 @@ class VaultStore(Protocol):
         ocr_text: str,
         description: str,
         token_est: int = 0,
+        caption: str = "",
     ) -> None:
         """Insert or update a figure record."""
         ...
@@ -115,6 +116,10 @@ class VaultStore(Protocol):
 
     def search_figures(self, query: str, limit: int = 10) -> list[dict]:
         """Search figures by OCR text or description."""
+        ...
+
+    def get_figure(self, note_path: str, fig_index: int) -> dict | None:
+        """Return a single figure row (for read_figure), or None if absent."""
         ...
 
     def find_related(

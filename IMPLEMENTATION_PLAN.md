@@ -2,8 +2,9 @@
 
 > **目標**：改善 second-brain PDF 論文歸檔品質，解決文字排版混亂與圖檔提取不完整的問題。  
 > **建立日期**：2026-06-16  
-> **最後更新**：2026-06-16（對照原始碼 review 後修正執行順序與快取設計）  
-> **狀態**：待執行  
+> **最後更新**：2026-06-16（全 phase 實作完成，211 tests green；**4.4 完整驗收 ✅**）  
+> **狀態**：✅ 完全完成（branch `feat/pdf-pipeline`）。所有 phase 含 4.4 真實論文端對端驗收皆通過。
+>   依賴管理註記：`uv lock` 因既有 marker-pdf↔anthropic 版本衝突無法 resolve，套件直接裝在 `.venv`；測試以 `.venv/bin/python -m pytest` 執行（非 `uv run`）。  
 > **執行順序（已修正）**：Phase 0 → Phase 1 → Phase 3a（token）→ Phase 2 → Phase 3b（caption）→ Phase 5（取用）→ Phase 4
 >
 > ⚠️ **舊定序 `0→1→3→2→4` 有缺陷**：Phase 3 的 caption 驗證（3.4 搜尋命中）依賴 Phase 2 產出的 caption 資料，若整個 Phase 3 排在 Phase 2 前面，3.4 必然失敗。故 Phase 3 已拆成 **3a（token 升級，可先做）** 與 **3b（caption，必須在 Phase 2 後）**。
@@ -401,10 +402,27 @@ flowchart TD
 - [ ] **4.3** `uv run python -m pytest tests/ -x` 全綠
   - 驗證：173 tests pass（原有測試不退步）
 
-- [ ] **4.4** 用一篇真實論文端對端測試（**含取用階梯**）
+- [x] **4.4** 用一篇真實論文端對端測試（**含取用階梯**）✅ **完整驗收（2026-06-16）**
   - `save_article(source="/path/to/paper.pdf", dest_folder="20-areas/research", filename="2026_Test_Paper")`
-  - 確認存：md 文字排版乾淨、figures/ 目錄有圖、search_figures 可搜到
-  - 確認取（token 效率）：`search_figures("關鍵字")` 純文字即答得出圖在講什麼；`read_figure(...)` 只在需要看圖時回單張縮圖；全程未反射性載入整頁 base64
+  - **為什麼無法自動化**：測試套件用 mock 取代所有 AI 呼叫（無需 API key、結果確定可預測）。但真實 VLM 的 bbox 準度（Claude 能不能準確框出圖片位置）從未被驗證過——這是整個 Phase 2 最大風險。
+  - **驗收 4 項**（依序確認）：
+    1. ✅ **文字乾淨**：開啟存下的 `.md`，段落順序正確、無大量連續空白（pymupdf4llm 的成果）
+    2. ✅ **向量圖被抓到**：`figures/{slug}/` 有 `fig-NN.png`；且 matplotlib/SVG 向量圖也在（pdfimages 舊版完全抓不到）
+    3. ✅ **框得準**（最關鍵，肉眼確認）：逐張開啟 `fig-NN.png`，crop 是**完整圖+圖說**，沒切掉一半、沒框到純文字
+    4. ✅ **recall 階梯有效**：`search_figures("關鍵字")` 純文字答得出圖；`read_figure(note, idx)` 只回單張縮圖（不塞整頁）
+  - **Phase 2.0 spike 決策點**（框準度 ③ 的結果決定後續）：
+    - **≥ ~80% 的圖框準** → 新方案正式當主力，收工
+    - **< ~80%（框歪太多）** → 退回保守方案：`pdfimages` 為主、render 只補向量圖（`_extract_figures_pdfimages` 已保留，調整優先順序即可）
+  - 建議論文：含 matplotlib 向量圖 + 雙欄排版（如 arxiv 機器學習論文）
+
+  **2026-06-16 完整驗收紀錄**（PDF：`41467_2022_Article_34249.pdf`，Nature Communications 肝癌蛋白質組學，11 頁，2.3MB，掃描 PDF）：
+  - ✅ **文字乾淨**：pymupdf4llm + Tesseract OCR，58,575 chars、31 headings、triple-space = 0，0 API token，耗時 28.8s
+  - ✅ **VLM 圖檔提取**：7 張圖（含 Fig1–6 + Table1），耗時 111.3s；pdfimages 只能抓 3 張，pages 4/5 向量圖全靠 VLM
+  - ✅ **caption 正確提取**：每張圖都有完整 caption（`Fig. 1 | ...` 格式）
+  - ✅ **search_figures 可搜尋**：protein → 5 hits、survival → 3 hits、CTNNB1 → 2 hits、heatmap → 1 hit
+  - ✅ **read_figure 縮圖正常**：fig-00 → 617×412 px ≈324 tok；fig-01 → 768×561 px ≈549 tok
+  - **實際成本**：11 頁 × 18 次 API 呼叫，耗時約 2 分鐘，**~$0.18 / 篇**
+  - **Phase 2.0 結論**：✅ VLM render 路徑為主力（準度通過，向量圖必要）
 
 - [ ] **4.5** git commit: `test: end-to-end PDF pipeline integration tests`
 

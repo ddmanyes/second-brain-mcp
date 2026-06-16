@@ -151,8 +151,12 @@ def _image_to_base64(path: Path) -> str:
 # VLM analysis via Claude API
 # ---------------------------------------------------------------------------
 
-def _analyse_with_claude(image_path: Path) -> dict:
-    """Send image to Claude via anthropic SDK and get OCR + description."""
+def _analyse_with_claude(image_path: Path, caption: str = "") -> dict:
+    """Send image to Claude via anthropic SDK and get OCR + description.
+
+    When `caption` is provided (from Phase 2 page detection) it is given as
+    context so the OCR/description is more accurate.
+    """
     try:
         import anthropic
         client = anthropic.Anthropic()
@@ -161,9 +165,10 @@ def _analyse_with_claude(image_path: Path) -> dict:
         if ext not in ("png", "jpg", "jpeg", "gif", "webp"):
             media_type = "image/png"
 
+        caption_ctx = f"Caption: {caption}\n" if caption else ""
         message = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=512,
+            max_tokens=1024,
             stream=False,
             messages=[{
                 "role": "user",
@@ -179,6 +184,7 @@ def _analyse_with_claude(image_path: Path) -> dict:
                     {
                         "type": "text",
                         "text": (
+                            f"{caption_ctx}"
                             "Analyse this scientific figure. Respond in JSON with two fields:\n"
                             '{"ocr_text": "all text visible in the figure (labels, axes, legends, values)", '
                             '"description": "one sentence describing what this figure shows"}'
@@ -202,10 +208,12 @@ def _analyse_with_claude(image_path: Path) -> dict:
     return {"ocr_text": "", "description": ""}
 
 
-def _analyse_with_gemini(image_path: Path) -> dict:
-    """Primary: Gemini CLI with image passed via stdin prompt + positional path."""
+def _analyse_with_gemini(image_path: Path, caption: str = "") -> dict:
+    """Fallback: Gemini CLI with image passed via stdin prompt + positional path."""
     try:
+        caption_ctx = f"Caption: {caption} " if caption else ""
         prompt = (
+            f'{caption_ctx}'
             'Analyse this scientific figure. '
             'Reply ONLY in JSON with two fields: '
             '{"ocr_text": "all text visible in figure including labels axes legends values", '
@@ -232,12 +240,160 @@ def _analyse_with_gemini(image_path: Path) -> dict:
     return {"ocr_text": "", "description": ""}
 
 
-def analyse_figure(image_path: Path) -> dict:
-    """Claude → Gemini fallback."""
-    result = _analyse_with_claude(image_path)
+def analyse_figure(image_path: Path, caption: str = "") -> dict:
+    """Claude → Gemini fallback. caption (if any) threads into BOTH paths."""
+    result = _analyse_with_claude(image_path, caption)
     if result["ocr_text"] or result["description"]:
         return result
-    return _analyse_with_gemini(image_path)
+    return _analyse_with_gemini(image_path, caption)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: PDF page-render + VLM figure detection + crop
+#
+# pdfimages can only pull *embedded raster* images; vector figures (matplotlib
+# charts, SVG-derived diagrams) are invisible to it. Instead we render each page
+# to PNG, ask a VLM for figure bounding boxes, and crop. See IMPLEMENTATION_PLAN.
+# ---------------------------------------------------------------------------
+
+_DETECT_MODEL = "claude-sonnet-4-6"
+
+
+def _render_pdf_pages(pdf_path: str, dpi: int = 150, max_pages: int = 20) -> list[Path]:
+    """Render each PDF page to a PNG. Returns list of temp PNG paths (caller cleans up)."""
+    import fitz
+    import tempfile
+
+    doc = fitz.open(pdf_path)
+    out_dir = Path(tempfile.mkdtemp(prefix="sb-pages-"))
+    paths: list[Path] = []
+    try:
+        for i, page in enumerate(doc):
+            if i >= max_pages:
+                break
+            mat = fitz.Matrix(dpi / 72, dpi / 72)
+            pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+            p = out_dir / f"page-{i:03d}.png"
+            pix.save(str(p))
+            paths.append(p)
+    finally:
+        doc.close()
+    return paths
+
+
+def _detect_figures_on_page(page_png: Path, page_num: int) -> list[dict]:
+    """Ask Claude (vision) for figures/tables on a rendered page.
+
+    Returns a list of {"bbox": [x0,y0,x1,y1] in PIXELS, "caption": str, "type": str}.
+    The VLM is asked for NORMALISED 0–1000 coordinates (VLMs calibrate relative
+    coords far better than absolute pixels); we convert back to pixels here.
+    """
+    import json
+    import anthropic
+    from PIL import Image as _PILImage
+
+    with _PILImage.open(page_png) as im:
+        w, h = im.size
+
+    client = anthropic.Anthropic()
+    prompt = (
+        f"This is page {page_num} of a scientific paper.\n"
+        "Identify all figures, charts, diagrams, and tables (NOT body text paragraphs).\n"
+        'Return ONLY a JSON array: [{"bbox": [x0, y0, x1, y1], "caption": "...", "type": "figure|table"}]\n'
+        "bbox coordinates are NORMALISED 0-1000 from the top-left corner "
+        "(x0,y0 = top-left, x1,y1 = bottom-right). caption is the figure/table "
+        "caption text if visible, else empty. If there are no figures, return []."
+    )
+    message = client.messages.create(
+        model=_DETECT_MODEL,
+        max_tokens=1024,
+        stream=False,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": "image/png",
+                    "data": _image_to_base64(page_png),
+                }},
+                {"type": "text", "text": prompt},
+            ],
+        }],
+    )
+    raw = message.content[0].text.strip()
+    m = re.search(r"\[.*\]", raw, re.DOTALL)
+    if not m:
+        return []
+    items = json.loads(m.group())
+    out: list[dict] = []
+    for it in items:
+        bbox = it.get("bbox")
+        if not bbox or len(bbox) != 4:
+            continue
+        x0, y0, x1, y1 = bbox
+        px = [
+            int(x0 / 1000 * w), int(y0 / 1000 * h),
+            int(x1 / 1000 * w), int(y1 / 1000 * h),
+        ]
+        out.append({
+            "bbox": px,
+            "caption": (it.get("caption") or "").strip(),
+            "type": (it.get("type") or "figure").strip(),
+        })
+    return out
+
+
+def _crop_figure(page_png: Path, bbox: list, dest: Path) -> bool:
+    """Crop bbox (pixels) out of page_png to dest. Returns False for tiny regions."""
+    from PIL import Image as _PILImage
+
+    with _PILImage.open(page_png) as img:
+        w, h = img.size
+        x0, y0, x1, y1 = (max(0, int(v)) for v in bbox)
+        x1, y1 = min(x1, w), min(y1, h)
+        if (x1 - x0) < 50 or (y1 - y0) < 50:  # skip tiny / degenerate regions
+            return False
+        cropped = img.crop((x0, y0, x1, y1))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        cropped.save(str(dest), "PNG")
+    return True
+
+
+def make_figure_thumbnail(
+    src: Path, note_path: str, fig_index: int, max_edge: int = 768
+) -> Path | None:
+    """Down-scale a figure to a thumbnail (long edge ≤ max_edge) for cheap recall.
+
+    Stored in a HIDDEN dir (`.figure-thumbs/`) so Obsidian/glob don't treat the
+    thumbnail as an extra figure. Returns the thumbnail path, or None on failure.
+    """
+    try:
+        from PIL import Image as _PILImage
+        if not src.exists():
+            return None
+        out_dir = FIGURES_DIR.parent / ".figure-thumbs" / _figure_slug(note_path)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        dest = out_dir / f"fig-{fig_index:02d}.png"
+        if dest.exists():
+            return dest
+        with _PILImage.open(src) as im:
+            im = im.convert("RGB")
+            im.thumbnail((max_edge, max_edge))
+            im.save(str(dest), "PNG")
+        return dest
+    except Exception as e:
+        print(f"[figures] thumbnail failed for {src}: {e}", file=sys.stderr)
+        return None
+
+
+def _estimate_image_tokens(image_path: Path) -> int:
+    """Rough Anthropic-vision token estimate from pixel dims (~1 token per 28x28 patch)."""
+    try:
+        from PIL import Image as _PILImage
+        with _PILImage.open(image_path) as im:
+            w, h = im.size
+        return max(1, int((w / 28) * (h / 28)))
+    except Exception:
+        return SNAPSHOT_TIERS["base"]["token_est"]
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +410,164 @@ def _is_content_image(alt: str, url: str) -> bool:
     """Return True if this image is likely a content figure, not UI chrome."""
     combined = (alt + url).lower()
     return not any(p in combined for p in _SKIP_PATTERNS)
+
+
+def _write_figure_section(note_path: str, fig_dir: Path, md_file: Path) -> int:
+    """(Re)write the '## Extracted Figures' section from fig-*.png on disk.
+
+    Driven by the files actually present (not just newly-added ones), so it is
+    correct on cache-hit re-runs. Returns the number of figures linked.
+    """
+    figs = [p.name for p in sorted(fig_dir.glob("fig-*.png"))]
+    if not figs or not md_file.exists():
+        return 0
+    content = md_file.read_text(encoding="utf-8").replace("\r\n", "\n")
+    note_depth = len(Path(note_path).parent.parts)
+    rel_prefix = "../" * note_depth
+    fig_slug = _figure_slug(note_path)
+    new_section = "\n\n## Extracted Figures\n" + "".join(
+        f"![{fig}]({rel_prefix}figures/{fig_slug}/{fig})\n" for fig in figs
+    )
+    if "## Extracted Figures" in content:
+        content = re.sub(r"\n*## Extracted Figures\n[\s\S]*", new_section, content)
+        md_file.write_text(content, encoding="utf-8")
+        print(f"[figures] Updated {len(figs)} figures in markdown: {md_file}", file=sys.stderr)
+    else:
+        with open(md_file, "a", encoding="utf-8") as f:
+            f.write(new_section)
+        print(f"[figures] Appended {len(figs)} figures to markdown: {md_file}", file=sys.stderr)
+    return len(figs)
+
+
+def _extract_figures_pdfimages(pdf_path: str, note_path: str, fig_dir: Path) -> list[dict]:
+    """Legacy raster path: pdfimages -png (embedded raster only — no vector figures).
+
+    Retained as the fallback for when VLM page-detection is unavailable.
+    """
+    import struct
+    import shutil
+    import glob
+
+    temp_dir = fig_dir / "temp_extracted"
+    if temp_dir.exists():
+        shutil.rmtree(temp_dir)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    pdfimages_path = shutil.which("pdfimages") or "/opt/homebrew/bin/pdfimages"
+    cmd = [pdfimages_path, "-png", str(pdf_path), str(temp_dir / "img")]
+    try:
+        subprocess.run(cmd, check=True)
+    except Exception as e:
+        print(f"[figures] pdfimages failed: {e}", file=sys.stderr)
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        return []
+
+    def get_png_size(filepath):
+        try:
+            with open(filepath, "rb") as f:
+                data = f.read(24)
+                if len(data) >= 24 and data[:8] == b"\x89PNG\r\n\x1a\n":
+                    w, h = struct.unpack(">II", data[16:24])
+                    return w, h
+        except Exception:
+            pass
+        return 0, 0
+
+    extracted_pngs = sorted(glob.glob(str(temp_dir / "*.png")))
+    valid_count = 0
+    results: list[dict] = []
+    for png in extracted_pngs:
+        w, h = get_png_size(png)
+        if w > 200 and h > 200:
+            local = fig_dir / f"fig-{valid_count:02d}.png"
+            shutil.copy2(png, local)
+            analysis = analyse_figure(local)
+            vault_db.upsert_figure(
+                note_path=note_path,
+                fig_index=valid_count,
+                image_url=f"file://{local.resolve()}",
+                local_path=str(local),
+                ocr_text=analysis["ocr_text"],
+                description=analysis["description"],
+                token_est=_estimate_image_tokens(local),
+            )
+            results.append({
+                "fig_index": valid_count,
+                "local_path": str(local),
+                "ocr_text": analysis["ocr_text"],
+                "description": analysis["description"],
+            })
+            valid_count += 1
+    shutil.rmtree(temp_dir, ignore_errors=True)
+    return results
+
+
+def _extract_figures_render(pdf_path: str, note_path: str, fig_dir: Path) -> list[dict] | None:
+    """Primary path: render pages → VLM bbox detection → crop. Captures vector figures.
+
+    Returns a list of figure dicts on success (possibly empty), or None to signal
+    "VLM detection unavailable" so the caller falls back to pdfimages.
+    """
+    import shutil
+
+    try:
+        pages = _render_pdf_pages(str(pdf_path))
+    except Exception as e:
+        print(f"[figures] page render failed: {e}", file=sys.stderr)
+        return None
+    if not pages:
+        return []
+
+    page_root = pages[0].parent
+    fig_index = len(list(fig_dir.glob("fig-*.png")))
+    results: list[dict] = []
+    detection_ok = False
+    detection_err = False
+    try:
+        for pnum, page_png in enumerate(pages):
+            page_hash = hashlib.md5(page_png.read_bytes(), usedforsecurity=False).hexdigest()[:16]
+            if vault_db.page_is_processed(note_path, page_hash):
+                continue  # negative cache: page already seen (even if 0 figures)
+            try:
+                dets = _detect_figures_on_page(page_png, pnum)
+            except Exception as e:
+                print(f"[figures] VLM detect failed on page {pnum}: {e}", file=sys.stderr)
+                detection_err = True
+                continue  # transient — don't mark, so a later run retries
+            detection_ok = True
+            for det in dets:
+                dest = fig_dir / f"fig-{fig_index:02d}.png"
+                if not _crop_figure(page_png, det["bbox"], dest):
+                    continue
+                caption = det.get("caption", "")
+                analysis = analyse_figure(dest, caption)
+                description = analysis["description"] or caption
+                vault_db.upsert_figure(
+                    note_path=note_path,
+                    fig_index=fig_index,
+                    image_url=f"file://{dest.resolve()}",
+                    local_path=str(dest),
+                    ocr_text=analysis["ocr_text"],
+                    description=description,
+                    token_est=_estimate_image_tokens(dest),
+                    caption=caption,
+                )
+                results.append({
+                    "fig_index": fig_index,
+                    "local_path": str(dest),
+                    "ocr_text": analysis["ocr_text"],
+                    "description": description,
+                    "caption": caption,
+                })
+                fig_index += 1
+            vault_db.mark_page_processed(note_path, page_hash, len(dets))
+    finally:
+        shutil.rmtree(page_root, ignore_errors=True)
+
+    # Every detection attempt failed and we produced nothing → let caller fall back.
+    if detection_err and not detection_ok and not results:
+        return None
+    return results
 
 
 def extract_figures(note_path: str, vault: Path) -> list[dict]:
@@ -276,105 +590,19 @@ def extract_figures(note_path: str, vault: Path) -> list[dict]:
             is_pdf = True
 
     if is_pdf:
-        # PDF Figures Extraction Logic
-        import struct
-        import shutil
-        import glob
-        
-        pdf_path = Path(source_url)
+        # PDF figures: render-based VLM detection (captures vector figures),
+        # with pdfimages as the fallback when the VLM is unavailable.
+        pdf_path = str(source_url)
         fig_dir = FIGURES_DIR / _figure_slug(note_path)
         fig_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Temp dir inside figures dir to avoid permission issues
-        temp_dir = fig_dir / "temp_extracted"
-        if temp_dir.exists():
-            shutil.rmtree(temp_dir)
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Run pdfimages
-        pdfimages_path = "/opt/homebrew/bin/pdfimages"
-        cmd = [pdfimages_path, "-png", str(pdf_path), str(temp_dir / "img")]
-        try:
-            subprocess.run(cmd, check=True)
-        except Exception as e:
-            print(f"[figures] pdfimages failed: {e}", file=sys.stderr)
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            return []
-            
-        def get_png_size(filepath):
-            try:
-                with open(filepath, 'rb') as f:
-                    data = f.read(24)
-                    if len(data) >= 24 and data[:8] == b'\x89PNG\r\n\x1a\n':
-                        w, h = struct.unpack('>II', data[16:24])
-                        return w, h
-            except Exception:
-                pass
-            return 0, 0
-            
-        extracted_pngs = sorted(glob.glob(str(temp_dir / "*.png")))
-        valid_count = 0
-        results = []
-        copied_figures = []
-        
-        for png in extracted_pngs:
-            w, h = get_png_size(png)
-            if w > 200 and h > 200:
-                dest_name = f"fig-{valid_count:02d}.png"
-                local = fig_dir / dest_name
-                shutil.copy2(png, local)
-                copied_figures.append(dest_name)
-                
-                # Analyze figure
-                analysis = analyse_figure(local)
-                token_est = SNAPSHOT_TIERS["base"]["token_est"]
-                
-                vault_db.upsert_figure(
-                    note_path=note_path,
-                    fig_index=valid_count,
-                    image_url=f"file://{local.resolve()}",
-                    local_path=str(local),
-                    ocr_text=analysis["ocr_text"],
-                    description=analysis["description"],
-                    token_est=token_est,
-                )
-                
-                results.append({
-                    "fig_index": valid_count,
-                    "local_path": str(local),
-                    "ocr_text": analysis["ocr_text"],
-                    "description": analysis["description"],
-                })
-                valid_count += 1
-                
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        
-        # Write (or replace) figure links section in the markdown file
-        if copied_figures and md_file.exists():
-            content = md_file.read_text(encoding="utf-8").replace("\r\n", "\n")
-            note_depth = len(Path(note_path).parent.parts)
-            rel_prefix = "../" * note_depth
-            fig_slug = _figure_slug(note_path)
 
-            new_section = "\n\n## Extracted Figures\n" + "".join(
-                f"![{fig}]({rel_prefix}figures/{fig_slug}/{fig})\n"
-                for fig in copied_figures
-            )
+        results = _extract_figures_render(pdf_path, note_path, fig_dir)
+        if results is None:
+            print("[figures] render/VLM detection unavailable — falling back to pdfimages",
+                  file=sys.stderr)
+            results = _extract_figures_pdfimages(pdf_path, note_path, fig_dir)
 
-            if "## Extracted Figures" in content:
-                # Replace existing section (handles note moves / re-runs)
-                content = re.sub(
-                    r"\n*## Extracted Figures\n[\s\S]*",
-                    new_section,
-                    content,
-                )
-                md_file.write_text(content, encoding="utf-8")
-                print(f"[figures] Updated {valid_count} figures in markdown: {md_file}", file=sys.stderr)
-            else:
-                with open(md_file, "a", encoding="utf-8") as f:
-                    f.write(new_section)
-                print(f"[figures] Appended {valid_count} figures to markdown: {md_file}", file=sys.stderr)
-                
+        _write_figure_section(note_path, fig_dir, md_file)
         return results
 
     matches = IMG_RE.findall(md_text)
@@ -400,7 +628,6 @@ def extract_figures(note_path: str, vault: Path) -> list[dict]:
             continue
 
         analysis = analyse_figure(local)
-        token_est = SNAPSHOT_TIERS["base"]["token_est"]
 
         vault_db.upsert_figure(
             note_path=note_path,
@@ -409,7 +636,7 @@ def extract_figures(note_path: str, vault: Path) -> list[dict]:
             local_path=str(local),
             ocr_text=analysis["ocr_text"],
             description=analysis["description"],
-            token_est=token_est,
+            token_est=_estimate_image_tokens(local),
         )
 
         results.append({

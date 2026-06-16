@@ -8,6 +8,12 @@ requests>=2.34.2
 anthropic>=0.109.1
 ollama>=0.6.2
 marker-pdf>=1.6.0
+# PDF pipeline: pymupdf4llm = primary text extractor (multi-column + reading order);
+# pulls in pymupdf (fitz), used for page-render figure extraction. AGPL 3.0 —
+# fine for private/self-hosted use; re-evaluate if ever publicly distributed.
+pymupdf4llm>=0.0.17
+pymupdf>=1.24.0
+Pillow>=10.0.0
 # markitdown[all] pins magika~=0.6.1, but we override to >=1.0.0 for Python 3.14
 # support (matches pyproject [tool.uv] override-dependencies). markitdown works
 # with magika 1.0.3 in practice; the `pip check` warning is expected and benign.

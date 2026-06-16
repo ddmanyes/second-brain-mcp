@@ -77,9 +77,11 @@ class DuckDBStore:
         ocr_text: str,
         description: str,
         token_est: int = 0,
+        caption: str = "",
     ) -> None:
         vault_db.upsert_figure(
-            note_path, fig_index, image_url, local_path, ocr_text, description, token_est
+            note_path, fig_index, image_url, local_path, ocr_text, description,
+            token_est, caption,
         )
 
     # ------------------------------------------------------------------
@@ -109,6 +111,9 @@ class DuckDBStore:
 
     def search_figures(self, query: str, limit: int = 10) -> list[dict]:
         return vault_db.search_figures(query, limit)
+
+    def get_figure(self, note_path: str, fig_index: int) -> dict | None:
+        return vault_db.get_figure(note_path, fig_index)
 
     def find_related(
         self,
