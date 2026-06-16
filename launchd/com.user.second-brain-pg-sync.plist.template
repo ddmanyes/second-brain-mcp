@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/Users/zhanqiru/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+		<key>SB_DB_BACKEND</key>
+		<string>postgres</string>
+		<key>SB_PG_DSN</key>
+		<string>postgresql://postgres:CHANGEME@localhost:5432/sb_personal</string>
+		<key>SECOND_BRAIN_PATH</key>
+		<string>/Users/zhanqiru/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/second-brain</string>
+	</dict>
+	<key>Label</key>
+	<string>com.user.second-brain-pg-sync</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/zhanqiru/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/mcp-tools/second-brain/.venv/bin/python</string>
+		<string>/Users/zhanqiru/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/mcp-tools/second-brain/launchd/run_pg_sync.py</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/tmp/second-brain-pg-sync.log</string>
+	<key>StandardOutPath</key>
+	<string>/tmp/second-brain-pg-sync.log</string>
+	<key>StartInterval</key>
+	<integer>1800</integer>
+</dict>
+</plist>
