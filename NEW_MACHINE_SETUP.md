@@ -1,29 +1,84 @@
 # Deploy second-brain on a New Machine (Drive source version)
 
-> **Who this is for:** Setting up second-brain on your own additional Mac, running directly from Google Drive–synced source code (not `pip install mcp-second-brain` — that's for public users).
+> **Who this is for:** Running second-brain across your own machines from Google Drive–synced
+> source (not `pip install mcp-second-brain` — that's for public users).
 >
-> Public installation → [README.md](README.md). Your own multi-machine setup → this guide. Always runs the latest Drive source.
+> Public installation → [README.md](README.md). Your own multi-machine setup → this guide.
+>
+> **Architecture reference:** [AGENTS.md](AGENTS.md) → "Connection Topology & Write Discipline";
+> full plan → [MIGRATION_PLAN_POSTGRES.md](MIGRATION_PLAN_POSTGRES.md).
 
 ---
 
-## Mental Model: Each machine runs its own local server
+## Mental Model: one central brain, many thin clients
 
-Multiple machines do **not** share a single server. Each machine runs its own local server. Four components, clearly separated:
+The current setup is **one central HTTP server + Postgres**, not a local server per machine.
 
-| Component | Location | Why |
+```text
+            Postgres (sb-pg, Docker)        ← 127.0.0.1:5432 only, never exposed
+                  ▲ localhost
+   central host ──┤ MCP server :9100 (streamable-http, bound to Tailscale IP)
+   (always-on)    │   SB_DB_BACKEND=postgres, SB_API_KEY=…
+                  │   + pg-sync (every 30 min) + pg-backup (daily)
+                  ▼ Tailscale
+   client Macs ───── connect via http://<tailscale-ip>:9100/mcp  +  X-API-Key header
+                     (no venv, no DuckDB, no sync — just MCP config)
+```
+
+| Component | Where | Notes |
 | --- | --- | --- |
-| Source code `mcp_second_brain/` (package) | **Google Drive** (auto-sync) | Change once, synced everywhere |
-| venv | **Local `~/.venvs/second-brain/`** | Drive sync breaks symlinks; macOS blocks executing binaries from cloud folders (`Operation not permitted`) |
-| Index DB `~/.second-brain/vault.db` | **Local, auto-created** | Rebuilt from synced vault markdown; DuckDB is single-writer, independent per machine |
-| Vault notes (markdown) | **Google Drive** (auto-sync) | Content shared across machines |
+| Vault notes (markdown) | **Google Drive** (auto-sync) | Canonical source of truth (L1). Only the **central host** writes. |
+| Source code `mcp_second_brain/` | **Google Drive** (auto-sync) | Change once, synced everywhere. |
+| Postgres index (L2) | **central host only**, Docker volume on local SSD | Rebuildable from markdown via `sync_all`; **never** put the data dir on Drive. |
+| Central MCP server | **central host**, launchd `com.user.second-brain-remote` | streamable-http on the Tailscale IP `:9100`, single instance. |
+| Client machines | connect over HTTP | Need **only** an MCP config pointing at the central server + the API key. |
 
-> Multiple servers can coexist on the same machine (Desktop stdio + Claude Code stdio), sharing the same local DuckDB. The server is designed with **lock-aware retry — no index corruption**; stdio servers no longer kill each other.
+> **Write discipline:** all writes go through the central server (single writer → no Google
+> Drive conflict copies). Client-side Obsidian is **read-only** — read synced markdown, but make
+> changes via MCP tools, not by typing into Obsidian on a laptop.
 
 ---
 
-## New Machine Bootstrap
+## A. Client machine setup (the common case — ~2 minutes)
 
-Set variables for this machine's Drive path (`/Users/<you>` differs per machine):
+A new Mac that just needs to *use* the brain. **No Python, no venv, no DuckDB, no indexing.**
+
+Get the API key from the central host (it lives in `SB_API_KEY` of
+`~/Library/LaunchAgents/com.user.second-brain-remote.plist`, and in the existing clients'
+configs).
+
+**Claude Code (CLI):**
+
+```bash
+claude mcp add --scope user --transport http second-brain \
+  "http://100.81.161.16:9100/mcp" \
+  --header "X-API-Key: <the-key>"
+```
+
+**Claude Desktop** — edit `~/Library/Application Support/Claude/claude_desktop_config.json`
+(Desktop reaches HTTP servers through the `mcp-remote` proxy):
+
+```json
+{
+  "mcpServers": {
+    "second-brain": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://100.81.161.16:9100/mcp", "--header", "X-API-Key: <the-key>"]
+    }
+  }
+}
+```
+
+⌘Q and relaunch Desktop. That's it — the client now reads/writes the central brain over Tailscale.
+
+> Prerequisite: the client is a member of the same Tailscale tailnet (so the
+> `100.81.161.16` address is reachable). Without a valid `X-API-Key` the server returns `401`.
+
+---
+
+## B. Central host setup (one-time, the machine that owns the data)
+
+Only **one** machine plays this role (your always-on personal host). Set per-machine paths:
 
 ```bash
 PJ="$HOME/Library/CloudStorage/GoogleDrive-<your-account>/我的雲端硬碟/PJ_save"
@@ -31,117 +86,101 @@ SB="$PJ/mcp-tools/second-brain"
 VAULT="$PJ/second-brain"
 ```
 
-### Step 1 — Get the code
+### B1 — Postgres + pgvector (Docker)
 
-Sign in to the same Google Drive account — files sync automatically. Confirm `$SB/mcp_second_brain/server.py` exists.
+```bash
+docker run -d --name sb-pg \
+  -e POSTGRES_PASSWORD=<pw> \
+  -p 127.0.0.1:5432:5432 \
+  -v "$HOME/sb-pgdata:/var/lib/postgresql/data" \
+  pgvector/pgvector:pg16
+docker exec sb-pg psql -U postgres -c "CREATE DATABASE sb_personal;"
+docker exec -i sb-pg psql -U postgres -d sb_personal < "$SB/mcp_second_brain/store/postgres_schema.sql"
+```
 
-### Step 2 — Create a local venv (**never inside the Drive folder**)
+- ⚠️ **`-p` must be `127.0.0.1:5432:5432`** (localhost-only). `5432:5432` would expose Postgres on all interfaces.
+- ⚠️ **Data dir on local SSD, never on Google Drive** (Drive sync corrupts a Postgres data dir).
+- Verify: `docker exec sb-pg psql -U postgres -d sb_personal -c "SELECT extname FROM pg_extension;"` shows `vector` + `pg_trgm`.
+
+### B2 — venv + dependencies (local, **never inside the Drive folder**)
 
 ```bash
 python3 -m venv ~/.venvs/second-brain
-~/.venvs/second-brain/bin/pip install -r "$SB/requirements.txt"
-~/.venvs/second-brain/bin/playwright install chromium   # for PNG snapshot rendering
+~/.venvs/second-brain/bin/pip install -r "$SB/requirements.txt"   # includes psycopg[binary,pool]
+~/.venvs/second-brain/bin/playwright install chromium             # for PNG snapshot rendering
 ```
 
 > **PDF conversion dependencies** — `save_article` uses a three-tier pipeline:
->
-> 1. **Marker** (ML, best quality) — installed via `requirements.txt` above; ~1.35 GB models auto-downloaded on first PDF save to `~/.cache/datalab/`
-> 2. **pdftotext / pdfinfo** (fallback) — install poppler: `brew install poppler`
-> 3. **MarkItDown** (last fallback) — already in requirements
->
-> Marker models are machine-local and not synced. First PDF save on a new machine triggers automatic download (~1–2 min depending on network).
+> 1. **Marker** (ML, best quality) — from `requirements.txt`; ~1.35 GB models auto-download on first PDF save to `~/.cache/datalab/`.
+> 2. **pdftotext / pdfinfo** (fallback) — `brew install poppler`.
+> 3. **MarkItDown** (last fallback) — already in requirements.
 
-### Step 3 — Register MCP with Claude
+### B3 — Embedding server
 
-**A. Claude Desktop** — edit `~/Library/Application Support/Claude/claude_desktop_config.json`.
-`command` must point to the **local venv**; `args` must use `-m` to launch as a package (**never point directly to `server.py`** — relative imports will fail):
+`nomic-embed-text` via llama-server on `:11435` (auto-started by the server when present), or
+Ollama: `ollama pull nomic-embed-text` and set `EMBED_URL`/`EMBED_PORT`. Embeddings are 768-dim.
 
-```json
-{
-  "mcpServers": {
-    "second-brain": {
-      "command": "/Users/<you>/.venvs/second-brain/bin/python",
-      "args": ["-m", "mcp_second_brain.server"],
-      "env": {
-        "PYTHONPATH": "<PJ>/mcp-tools/second-brain",
-        "SECOND_BRAIN_PATH": "<PJ>/second-brain"
-      }
-    }
-  }
-}
+### B4 — Central HTTP server (launchd, KeepAlive)
+
+The launchd job `com.user.second-brain-remote` runs the server bound to the Tailscale IP with:
+
+```text
+SB_DB_BACKEND=postgres
+SB_PG_DSN=postgresql://postgres:<pw>@localhost:5432/sb_personal
+SB_API_KEY=<generate a strong key>          # clients must send it as X-API-Key
+SECOND_BRAIN_PATH=<VAULT>
 ```
 
-After editing, **⌘Q to fully quit and relaunch** Claude Desktop (MCP config is only read at startup).
-
-**B. Claude Code (CLI)**:
-
-`claude mcp add` does not support the `-m` flag, so edit `~/.claude.json` directly:
+Start script binds `--host <tailscale-ip> --port 9100 --transport streamable-http`. After
+editing the plist's `EnvironmentVariables`, reload it (env changes need a full reload, not just
+`kickstart`):
 
 ```bash
-python3 -c "
-import json
-with open('/Users/<you>/.claude.json', 'r') as f:
-    d = json.load(f)
-d['mcpServers']['second-brain'] = {
-    'type': 'stdio',
-    'command': '$HOME/.venvs/second-brain/bin/python',
-    'args': ['-m', 'mcp_second_brain.server'],
-    'env': {
-        'PYTHONPATH': '$SB',
-        'SECOND_BRAIN_PATH': '$VAULT'
-    }
-}
-with open('/Users/<you>/.claude.json', 'w') as f:
-    json.dump(d, f, indent=2, ensure_ascii=False)
-print('Done')
-"
+launchctl bootout  gui/$(id -u)/com.user.second-brain-remote
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.user.second-brain-remote.plist
 ```
 
-### Step 4 — Build the index for the first time
+The log (`/tmp/second-brain-remote.log`) should show `API-key auth ENABLED`.
 
-Start the agent and say `init_vault` (creates/repairs directories and templates), then run `sync_index` to build the local index DB. Re-run `sync_index` after bulk file changes.
-
-> **Do not** run `python -c "vault_db.sync_all(...)"` directly — it competes with Claude Code's MCP server for DuckDB's exclusive write lock, causing `CatalogException: Table does not exist`.
-> Always sync via the MCP tool (`sync_index`) so the server executes it internally.
-
-### Step 5 — (Optional) Semantic search
-
-Works without this (falls back to BM25 automatically). For semantic search, install Ollama:
+### B5 — First index build
 
 ```bash
-brew install ollama 2>/dev/null || true
-ollama pull nomic-embed-text
-# Then add to the env block in your MCP config above:
-#   "EMBED_URL": "http://localhost:11434/v1/embeddings", "EMBED_PORT": "11434"
+SB_DB_BACKEND=postgres SB_PG_DSN=… SECOND_BRAIN_PATH="$VAULT" \
+  PYTHONPATH="$SB" ~/.venvs/second-brain/bin/python -c \
+  "from mcp_second_brain.store import get_store; from pathlib import Path; import os; \
+   print(get_store().sync_all(Path(os.environ['SECOND_BRAIN_PATH'])))"
 ```
 
-### Step 6 — (Optional) Weekly automated maintenance
+Expect `{'synced': N, 'embed_failed': 0}`. (~900 notes ≈ 35 s once embeddings are fast.)
 
-```bash
-SECOND_BRAIN_PATH="$VAULT" bash "$SB/launchd/install.sh"
-```
+### B6 — Maintenance schedules (launchd)
 
-`install.sh` generates and loads a plist using the local `~/.venvs/second-brain/bin/python`. Runs every Sunday at 02:00: index → embedding → compress old notes → extract rules.
+| Job | Cadence | Purpose |
+| --- | --- | --- |
+| `com.user.second-brain-pg-sync` | every 30 min | `sync_incremental` against Postgres so cron-driven markdown edits don't let the index drift (`launchd/run_pg_sync.py`). |
+| `com.user.second-brain-pg-backup` | daily 04:00 | `pg_dump \| gzip` of `sb_personal`/`sb_lab` to `PJ_save/backups/`, keep last 7 (`launchd/run_pg_backup.sh`). |
+| `com.user.vault-janitor` / `com.user.vault-sleep` | weekly | Vault cleanup + Ebbinghaus compression. ⚠️ still write only DuckDB and bypass the store abstraction; `pg-sync` propagates their markdown edits into Postgres. |
 
 ---
 
-## Per-machine Local Data
+## C. Offline fallback (no network / Tailscale down)
 
-| Data | Location | Synced? |
+The DuckDB backend is retained for offline read-only use. With no connectivity, run a **local
+stdio** server with `SB_DB_BACKEND=duckdb` (rebuilds `~/.second-brain/vault.db` from synced
+markdown via `sync_index`). Reconcile by re-running `sync_all` against Postgres once back online.
+This is a deliberate degraded mode, not the normal path.
+
+---
+
+## Per-machine Data Summary
+
+| Data | Location | Shared? |
 | --- | --- | :---: |
-| Vault markdown notes | Google Drive | ✅ Shared across all machines |
-| Source code (`mcp_second_brain/`) | Google Drive | ✅ Shared across all machines |
-| Python venv | `~/.venvs/second-brain/` | ❌ Created separately per machine |
-| DuckDB index | `~/.second-brain/vault.db` | ❌ Rebuilt per machine via `sync_index` |
-| MCP config | Desktop config / Claude Code user scope | ❌ Configured separately per machine |
-
----
-
-## Multi-machine Notes
-
-- **Never edit the same vault note on two machines simultaneously** → Google Drive creates `xxx (1).md` conflict files. Wait for sync to complete before switching machines.
-- **The index DB is not shared across machines** (`~/.second-brain/vault.db` is rebuilt from synced markdown on each machine) — this is intentional. Do not put the DB in Drive.
-- **No HTTP remote server needed.** If you have Drive synced and a local venv, use the local server. The Tailscale remote access setup has been retired.
+| Vault markdown notes | Google Drive | ✅ all machines |
+| Source code (`mcp_second_brain/`) | Google Drive | ✅ all machines |
+| Postgres index | central host (Docker, local SSD) | ❌ central only — the single live index |
+| Python venv / Docker / embedding | central host | ❌ host only (clients need none) |
+| MCP config + API key | each client | ❌ per machine |
 
 ---
 
@@ -149,11 +188,12 @@ SECOND_BRAIN_PATH="$VAULT" bash "$SB/launchd/install.sh"
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| Desktop `Operation not permitted` / `Server disconnected` | `command` still points to `.venv/bin/python` inside Drive | Change to local `~/.venvs/second-brain/bin/python` |
-| `ImportError: attempted relative import with no known parent package` | `args` points directly to `server.py` (script mode cannot resolve relative imports) | Use `["-m", "mcp_second_brain.server"]` — Desktop: edit JSON directly; Claude Code: use the Python script to edit `.claude.json` (`claude mcp add` does not support `-m`) |
-| Connected but drops after 0.5 s | Old mutual-kill mechanism (fixed in current code) | Confirm you're running the fixed Drive source (`_kill_old_server` only exists in the HTTP branch) |
-| Agent can't see notes / empty results | Index not built | Run `sync_index` once |
-| Semantic search silently falls back to BM25 | Embedding server not running | Start Ollama / llama-server |
-| `read_note_as_image` snapshot fails | playwright chromium not installed | `~/.venvs/second-brain/bin/playwright install chromium` |
-| `Failure while replaying WAL file` (DB corrupted) | DuckDB write interrupted (IDE restart, `pkill -9`, sleep) | `rm -f ~/.second-brain/vault.db ~/.second-brain/vault.db.wal`, restart server, then `sync_index` |
-| `~/.second-brain/vault.db` is tiny but a larger one exists elsewhere | Server started with cwd ≠ home; DuckDB created the DB in cwd | `find ~ -name vault.db -size +1M`, move the found file to `~/.second-brain/vault.db` |
+| Client `401 unauthorized` | missing/wrong `X-API-Key` | Add `--header "X-API-Key: <key>"` (Code) or the `--header` arg to `mcp-remote` (Desktop). |
+| Client can't connect at all | not on the tailnet, or central server / Tailscale down | `tailscale status`; from the host check `pgrep -f streamable-http` and `/tmp/second-brain-remote.log`. |
+| Server log says `API-key auth DISABLED` after setting the key | `kickstart` doesn't reload plist env | `launchctl bootout` + `bootstrap` (see B4). |
+| Empty results right after host setup | index not built | Run the B5 `sync_all`. |
+| `sync_all` crawls / many HTTP 500 from embed server | embed truncation vs token batch (fixed) | Ensure current Drive source (`_call_embed_api` has the 256-char tier + no backoff on deterministic 500). |
+| Postgres index drifting from markdown | `pg-sync` job not loaded | `launchctl list \| grep pg-sync`; bootstrap `com.user.second-brain-pg-sync`. |
+| Running pytest wiped the live index | old test default DSN pointed at `sb_personal` (fixed) | Tests now default to `sb_test` with a hard guard; never point `SB_PG_TEST_DSN` at `sb_personal`/`sb_lab`. |
+| `read_note_as_image` snapshot fails (host) | playwright chromium not installed | `~/.venvs/second-brain/bin/playwright install chromium`. |
+| Desktop `Operation not permitted` (if running a local stdio host) | `command` points to `.venv/bin/python` inside Drive | Use local `~/.venvs/second-brain/bin/python`. |

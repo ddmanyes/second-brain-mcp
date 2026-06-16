@@ -17,7 +17,7 @@ uv run playwright install chromium
 uv run pytest tests/ -q --tb=short
 ```
 
-All 115 tests must pass. New code should include tests. Coverage threshold is 70%.
+All 198 tests must pass. New code should include tests. Coverage threshold is 70%.
 
 ## Code style
 
