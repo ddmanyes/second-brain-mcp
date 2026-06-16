@@ -87,6 +87,7 @@ class VaultStore(Protocol):
         ocr_text: str,
         description: str,
         token_est: int = 0,
+        caption: str = "",
     ) -> None:
         """Insert or update a figure record."""
         ...

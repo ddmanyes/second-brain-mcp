@@ -77,9 +77,11 @@ class DuckDBStore:
         ocr_text: str,
         description: str,
         token_est: int = 0,
+        caption: str = "",
     ) -> None:
         vault_db.upsert_figure(
-            note_path, fig_index, image_url, local_path, ocr_text, description, token_est
+            note_path, fig_index, image_url, local_path, ocr_text, description,
+            token_est, caption,
         )
 
     # ------------------------------------------------------------------

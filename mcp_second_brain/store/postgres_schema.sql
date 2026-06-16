@@ -46,6 +46,9 @@ CREATE TABLE IF NOT EXISTS figures (
     created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- PDF pipeline Phase 2.5c: figure caption (detected during page-render extraction)
+ALTER TABLE figures ADD COLUMN IF NOT EXISTS caption TEXT;
+
 -- ---------------------------------------------------------------------------
 -- Scalar indexes
 -- ---------------------------------------------------------------------------

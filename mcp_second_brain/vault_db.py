@@ -85,6 +85,17 @@ CREATE INDEX IF NOT EXISTS idx_note_date     ON notes(note_date DESC);
 CREATE INDEX IF NOT EXISTS idx_note_type     ON notes(note_type);
 CREATE INDEX IF NOT EXISTS idx_status        ON notes(status);
 CREATE INDEX IF NOT EXISTS idx_figures_note  ON figures(note_path);
+
+-- processed_pages — negative cache for PDF page-render figure extraction.
+-- A row is written for EVERY rendered page (even those with 0 figures), so a
+-- second extract_figures run skips re-sending blank pages to the VLM.
+CREATE TABLE IF NOT EXISTS processed_pages (
+    note_path     TEXT NOT NULL,
+    page_hash     TEXT NOT NULL,
+    fig_count     INTEGER DEFAULT 0,
+    processed_at  TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (note_path, page_hash)
+);
 """
 
 # Migration: add columns incrementally (safe to re-run)
@@ -98,6 +109,7 @@ _MIGRATIONS = [
     "ALTER TABLE notes ADD COLUMN IF NOT EXISTS semantic_keywords TEXT",       # Phase 12
     "ALTER TABLE notes ADD COLUMN IF NOT EXISTS neighbor_keywords TEXT",      # Phase 13
     "ALTER TABLE notes ADD COLUMN IF NOT EXISTS cluster_topic TEXT",          # Phase 13
+    "ALTER TABLE figures ADD COLUMN IF NOT EXISTS caption TEXT",              # PDF pipeline Phase 2.5c
 ]
 
 # ---------------------------------------------------------------------------
@@ -1293,6 +1305,7 @@ def upsert_figure(
     ocr_text: str,
     description: str,
     token_est: int = 0,
+    caption: str = "",
 ) -> None:
     """Insert or update a figure record."""
     with _connect() as con:
@@ -1303,43 +1316,90 @@ def upsert_figure(
         if existing:
             con.execute(
                 """UPDATE figures SET image_url=?, local_path=?, ocr_text=?,
-                   description=?, token_est=? WHERE id=?""",
-                [image_url, local_path, ocr_text, description, token_est, existing[0]],
+                   description=?, token_est=?, caption=? WHERE id=?""",
+                [image_url, local_path, ocr_text, description, token_est, caption, existing[0]],
             )
         else:
             con.execute(
                 """INSERT INTO figures
-                   (note_path, fig_index, image_url, local_path, ocr_text, description, token_est)
-                   VALUES (?,?,?,?,?,?,?)""",
-                [note_path, fig_index, image_url, local_path, ocr_text, description, token_est],
+                   (note_path, fig_index, image_url, local_path, ocr_text, description, token_est, caption)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                [note_path, fig_index, image_url, local_path, ocr_text, description, token_est, caption],
             )
 
 
 def search_figures(query: str, limit: int = 10) -> list[dict]:
-    """Search figures by OCR text or description (any query word match suffices)."""
+    """Search figures by caption, OCR text or description (any query word match suffices)."""
     words = query.lower().split()
     if not words:
         return []
 
-    # Any word appearing in description OR ocr_text is a hit (OR across words)
+    # Any word appearing in caption OR description OR ocr_text is a hit (OR across words)
     clauses = " OR ".join(
-        "(lower(coalesce(ocr_text,'')) LIKE ? OR lower(coalesce(description,'')) LIKE ?)"
+        "(lower(coalesce(ocr_text,'')) LIKE ? OR lower(coalesce(description,'')) LIKE ? "
+        "OR lower(coalesce(caption,'')) LIKE ?)"
         for _ in words
     )
-    params: list = [p for w in words for p in (f"%{w}%", f"%{w}%")]
+    params: list = [p for w in words for p in (f"%{w}%", f"%{w}%", f"%{w}%")]
     params.append(limit)
 
     with _connect() as con:
         rows = con.execute(
-            f"SELECT note_path, fig_index, image_url, ocr_text, description "
+            f"SELECT note_path, fig_index, image_url, ocr_text, description, "
+            f"coalesce(caption,''), coalesce(token_est,0) "
             f"FROM figures WHERE {clauses} ORDER BY note_path LIMIT ?",
             params,
         ).fetchall()
         return [
             {"note_path": r[0], "fig_index": r[1], "image_url": r[2],
-             "ocr_text": r[3], "description": r[4]}
+             "ocr_text": r[3], "description": r[4], "caption": r[5], "token_est": r[6]}
             for r in rows
         ]
+
+
+# ---------------------------------------------------------------------------
+# Figure-extraction page cache (negative cache — see IMPLEMENTATION_PLAN Phase 2.5b)
+# ---------------------------------------------------------------------------
+
+def page_is_processed(note_path: str, page_hash: str) -> bool:
+    """Return True if this (note, page-render hash) was already sent to the VLM."""
+    with _connect() as con:
+        row = con.execute(
+            "SELECT 1 FROM processed_pages WHERE note_path = ? AND page_hash = ?",
+            [note_path, page_hash],
+        ).fetchone()
+        return row is not None
+
+
+def mark_page_processed(note_path: str, page_hash: str, fig_count: int = 0) -> None:
+    """Record that a rendered page was processed (even with 0 figures)."""
+    with _connect() as con:
+        con.execute(
+            """INSERT INTO processed_pages (note_path, page_hash, fig_count)
+               VALUES (?, ?, ?)
+               ON CONFLICT (note_path, page_hash)
+               DO UPDATE SET fig_count = excluded.fig_count,
+                             processed_at = now()""",
+            [note_path, page_hash, fig_count],
+        )
+
+
+def get_figure(note_path: str, fig_index: int) -> dict | None:
+    """Return a single figure row for read_figure (Phase 5.3). None if absent."""
+    with _connect() as con:
+        row = con.execute(
+            "SELECT note_path, fig_index, image_url, local_path, ocr_text, "
+            "description, coalesce(caption,''), coalesce(token_est,0) "
+            "FROM figures WHERE note_path = ? AND fig_index = ?",
+            [note_path, fig_index],
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "note_path": row[0], "fig_index": row[1], "image_url": row[2],
+            "local_path": row[3], "ocr_text": row[4], "description": row[5],
+            "caption": row[6], "token_est": row[7],
+        }
 
 
 def db_stats() -> dict:

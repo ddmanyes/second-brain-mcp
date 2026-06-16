@@ -428,6 +428,7 @@ class PostgresStore:
         ocr_text: str,
         description: str,
         token_est: int = 0,
+        caption: str = "",
     ) -> None:
         with self._pool.connection() as conn:
             existing = conn.execute(
@@ -437,15 +438,15 @@ class PostgresStore:
             if existing:
                 conn.execute(
                     """UPDATE figures SET image_url=%s, local_path=%s, ocr_text=%s,
-                       description=%s, token_est=%s WHERE id=%s""",
-                    [image_url, local_path, ocr_text, description, token_est, existing[0]],
+                       description=%s, token_est=%s, caption=%s WHERE id=%s""",
+                    [image_url, local_path, ocr_text, description, token_est, caption, existing[0]],
                 )
             else:
                 conn.execute(
                     """INSERT INTO figures
-                       (note_path, fig_index, image_url, local_path, ocr_text, description, token_est)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s)""",
-                    [note_path, fig_index, image_url, local_path, ocr_text, description, token_est],
+                       (note_path, fig_index, image_url, local_path, ocr_text, description, token_est, caption)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    [note_path, fig_index, image_url, local_path, ocr_text, description, token_est, caption],
                 )
             conn.commit()
 
@@ -619,14 +620,16 @@ class PostgresStore:
         if not words:
             return []
         clauses = " OR ".join(
-            "(lower(coalesce(ocr_text,'')) LIKE %s OR lower(coalesce(description,'')) LIKE %s)"
+            "(lower(coalesce(ocr_text,'')) LIKE %s OR lower(coalesce(description,'')) LIKE %s "
+            "OR lower(coalesce(caption,'')) LIKE %s)"
             for _ in words
         )
-        params: list = [p for w in words for p in (f"%{w}%", f"%{w}%")]
+        params: list = [p for w in words for p in (f"%{w}%", f"%{w}%", f"%{w}%")]
         params.append(limit)
         with self._pool.connection() as conn:
             rows = conn.execute(
-                f"SELECT note_path, fig_index, image_url, ocr_text, description "
+                f"SELECT note_path, fig_index, image_url, ocr_text, description, "
+                f"coalesce(caption,''), coalesce(token_est,0) "
                 f"FROM figures WHERE {clauses} ORDER BY note_path LIMIT %s",
                 params,
             ).fetchall()
@@ -637,6 +640,8 @@ class PostgresStore:
                 "image_url": r[2],
                 "ocr_text": r[3],
                 "description": r[4],
+                "caption": r[5],
+                "token_est": r[6],
             }
             for r in rows
         ]
