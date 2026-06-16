@@ -189,3 +189,44 @@ class DuckDBStore:
 
     def db_stats(self) -> dict:
         return vault_db.db_stats()
+
+    # ------------------------------------------------------------------
+    # Server-side query helpers
+    # ------------------------------------------------------------------
+
+    def has_index(self) -> bool:
+        if not vault_db.DB_PATH.exists():
+            return False
+        with vault_db._connect() as con:
+            row = con.execute("SELECT COUNT(*) FROM notes").fetchone()
+        return bool(row and row[0] > 0)
+
+    def get_snapshot_path(self, path: str) -> str | None:
+        with vault_db._connect() as con:
+            row = con.execute(
+                "SELECT snapshot_path FROM notes WHERE path = ?", [path]
+            ).fetchone()
+        return row[0] if row else None
+
+    def get_paths_for_semantic_keywords(self, force: bool = False) -> list[str]:
+        sql = "SELECT path FROM notes" if force else "SELECT path FROM notes WHERE semantic_keywords IS NULL"
+        with vault_db._connect() as con:
+            rows = con.execute(sql).fetchall()
+        return [r[0] for r in rows]
+
+    def get_paths_for_neighbor_keywords(self, force: bool = False) -> list[str]:
+        sql = (
+            "SELECT path FROM notes WHERE embedding IS NOT NULL"
+            if force
+            else "SELECT path FROM notes WHERE embedding IS NOT NULL AND neighbor_keywords IS NULL"
+        )
+        with vault_db._connect() as con:
+            rows = con.execute(sql).fetchall()
+        return [r[0] for r in rows]
+
+    def get_paths_with_embeddings(self) -> list[str]:
+        with vault_db._connect() as con:
+            rows = con.execute(
+                "SELECT path FROM notes WHERE embedding IS NOT NULL"
+            ).fetchall()
+        return [r[0] for r in rows]

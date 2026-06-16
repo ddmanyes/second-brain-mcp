@@ -6,6 +6,6 @@ Usage:
 """
 
 from .base import VaultStore
-from .factory import get_store
+from .factory import get_store, reset_store
 
-__all__ = ["VaultStore", "get_store"]
+__all__ = ["VaultStore", "get_store", "reset_store"]

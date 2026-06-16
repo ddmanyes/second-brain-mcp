@@ -22,11 +22,14 @@ from . import vault_db
 from .vault_db import KNOWLEDGE_EXCLUDE
 from . import vault_sleep as _vs
 from . import figures as _fig
+from .store import get_store
 
 VAULT = Path(os.environ.get(
     "SECOND_BRAIN_PATH",
     Path.home() / "second-brain"
 )).expanduser().resolve()
+
+_store = get_store()  # DuckDBStore or PostgresStore, selected by SB_DB_BACKEND env var
 
 # ── 防止兩個 HTTP server 搶同一個 port：kill 舊的 HTTP 進程 ──────────────────
 # 注意：只有長駐的 HTTP transport（遠端 Tailscale server）才需要這個單例保護。
@@ -259,8 +262,7 @@ def _run_keyword_enrichment_async(dest: Path, content: str) -> None:
             sk = _extract_semantic_keywords_via_gemini(content)
             if sk:
                 _inject_semantic_keywords(dest, sk)
-                with vault_db._connect() as con:
-                    vault_db.upsert_note(con, VAULT, dest)
+                _store.index_file(VAULT, dest)
         except Exception as e:
             print(f"[second-brain] background keyword enrichment failed for {dest.name}: {e}", file=sys.stderr)
 
@@ -287,15 +289,18 @@ def _inject_neighbor_keywords(note_path: Path, data: dict) -> None:
 
 
 def _maybe_sync(vault: Path) -> None:
-    """Sync vault index at startup if DB is stale or missing.
+    """Sync vault index at startup if the index is empty or stale.
 
-    Throttled to 30 minutes — skips if DB was updated recently and vault has no
-    newer markdown files. Non-blocking on first run (no DB yet → full sync).
+    DuckDB backend: throttled to 30 min by DB file mtime.
+    Postgres backend: full sync on first use (has_index() False), then skips.
     """
+    if not _store.has_index():
+        _store.sync_all(vault)
+        return
+    # DuckDB-only throttle: skip if DB file was written within the last 30 min
     db_path = vault_db.DB_PATH
     if not db_path.exists():
-        vault_db.sync_all(vault)
-        return
+        return  # Postgres backend — index already populated, skip
     db_mtime = db_path.stat().st_mtime
     if time.time() - db_mtime > 1800:
         try:
@@ -305,7 +310,7 @@ def _maybe_sync(vault: Path) -> None:
         except Exception:
             return
         if latest_md > db_mtime:
-            vault_db.sync_incremental(vault)
+            _store.sync_incremental(vault)
 
 
 def _inject_related_links(note_path: Path, rel: str) -> int:
@@ -313,7 +318,7 @@ def _inject_related_links(note_path: Path, rel: str) -> int:
 
     Returns count of links added (0 = no embedding server or no matches).
     """
-    related = vault_db.find_related(rel, limit=5, threshold=0.7)
+    related = _store.find_related(rel, limit=5, threshold=0.7)
     if not related:
         return 0
 
@@ -358,8 +363,8 @@ def get_context() -> str:
 
     top: list[dict] = []
     try:
-        top = (vault_db.top_by_score(limit=20, exclude_types=KNOWLEDGE_EXCLUDE)
-               or vault_db.top_by_recency(limit=20, exclude_types=KNOWLEDGE_EXCLUDE))
+        top = (_store.top_by_score(limit=20, exclude_types=KNOWLEDGE_EXCLUDE)
+               or _store.top_by_recency(limit=20, exclude_types=KNOWLEDGE_EXCLUDE))
         rows = "\n".join(
             f"- [{r['title']}]({r['path']})"
             + (f" _(score: {r['score']:.2f})_" if "score" in r else "")
@@ -374,10 +379,10 @@ def get_context() -> str:
     # Layer 2: load embedding cache once, reuse across all find_related calls
     related_section = ""
     try:
-        emb_cache = vault_db.load_embedding_cache()
+        emb_cache = _store.load_embedding_cache()
         related_map: dict[str, list[str]] = {}
         for r in top[:5]:
-            links = vault_db.find_related(r["path"], limit=3, threshold=0.75, _embedding_cache=emb_cache)
+            links = _store.find_related(r["path"], limit=3, threshold=0.75, _embedding_cache=emb_cache)
             if links:
                 related_map[r["path"]] = links
         if related_map:
@@ -447,8 +452,7 @@ def new_note(note_type: str, title: str, content: str = "", tags: str = "") -> s
 
     # Index immediately, then enrich keywords in background (avoids blocking on Gemini CLI)
     try:
-        with vault_db._connect() as con:
-            vault_db.upsert_note(con, VAULT, dest)
+        _store.index_file(VAULT, dest)
         n_links = _inject_related_links(dest, rel)
     except Exception as e:
         print(f"[second-brain] warning: index/link failed for {rel}: {e}", file=sys.stderr)
@@ -473,7 +477,7 @@ def search_notes(query: str) -> str:
         query: Search term — supports natural language and keywords
     """
     try:
-        hits = vault_db.hybrid_search(query, limit=20, exclude_types=KNOWLEDGE_EXCLUDE)
+        hits = _store.hybrid_search(query, limit=20, exclude_types=KNOWLEDGE_EXCLUDE)
     except Exception:
         hits = []
 
@@ -511,7 +515,7 @@ def search_news_tool(query: str, days: int = 7) -> str:
         days:  How many days back to search (default 7)
     """
     try:
-        hits = vault_db.search_news(query, days=days, limit=20)
+        hits = _store.search_news(query, days=days, limit=20)
     except Exception:
         hits = []
 
@@ -580,7 +584,7 @@ def read_note(path: str) -> str:
     if not full_path.exists():
         return f"Note not found: {path}"
     try:
-        vault_db.record_access(path)
+        _store.record_access(path)
     except Exception:
         pass  # access tracking is best-effort
     return full_path.read_text(encoding="utf-8")
@@ -604,8 +608,7 @@ def update_note(path: str, content: str) -> str:
         return f"Note not found: {path}. Use new_note to create it."
     full_path.write_text(content, encoding="utf-8")
     try:
-        with vault_db._connect() as con:
-            vault_db.upsert_note(con, VAULT, full_path)
+        _store.index_file(VAULT, full_path)
         n_links = _inject_related_links(full_path, path)
     except Exception as e:
         print(f"[second-brain] warning: index/link failed for {path}: {e}", file=sys.stderr)
@@ -634,8 +637,7 @@ def append_to_note(path: str, content: str) -> str:
     separator = "\n" if existing.endswith("\n") else "\n\n"
     full_path.write_text(existing + separator + content, encoding="utf-8")
     try:
-        with vault_db._connect() as con:
-            vault_db.upsert_note(con, VAULT, full_path)
+        _store.index_file(VAULT, full_path)
         _inject_related_links(full_path, path)
     except Exception as e:
         print(f"[second-brain] warning: index/link failed for {path}: {e}", file=sys.stderr)
@@ -670,8 +672,7 @@ def mark_note_status(path: str, status: str) -> str:
     full_path.write_text(updated, encoding="utf-8")
 
     try:
-        with vault_db._connect() as con:
-            con.execute("UPDATE notes SET status = ? WHERE path = ?", [status, path])
+        _store.set_note_status(path, status)
     except Exception as e:
         print(f"[second-brain] warning: DB status update failed for {path}: {e}", file=sys.stderr)
 
@@ -683,9 +684,9 @@ def sync_index() -> str:
     """Rebuild the DuckDB index by scanning all vault markdown files.
     Run this after adding notes manually, or when setting up on a new machine.
     """
-    result = vault_db.sync_all(VAULT)
-    emb = vault_db.sync_embeddings(vault=VAULT)
-    stats = vault_db.db_stats()
+    result = _store.sync_all(VAULT)
+    emb = _store.sync_embeddings(vault=VAULT)
+    stats = _store.db_stats()
     embed_warn = f" ⚠️ {result['embed_failed']} notes missing embedding" if result["embed_failed"] else ""
     return (
         f"Synced {result['synced']} files → {stats['total_notes']} notes in index.{embed_warn}\n"
@@ -699,7 +700,7 @@ def sync_index() -> str:
 def index_stats() -> str:
     """Show vault index statistics: total notes, breakdown by type, DB location."""
     try:
-        stats = vault_db.db_stats()
+        stats = _store.db_stats()
         lines = [f"Total: {stats['total_notes']} notes", f"DB: {stats['db_path']}", ""]
         lines += [f"  {t}: {c}" for t, c in stats["by_type"].items()]
         
@@ -773,7 +774,7 @@ def vault_sleep(dry_run: bool = False) -> str:
 def sleep_status() -> str:
     """Check current sleep triggers and list candidates without compressing."""
     triggers = _vs.check_triggers(VAULT)
-    candidates = vault_db.sleep_candidates()
+    candidates = _store.sleep_candidates()
 
     lines = ["## Sleep Status", ""]
     if triggers:
@@ -845,14 +846,7 @@ def expand_semantic_keywords_tool(note_path: str = "", force: bool = False) -> s
     if note_path:
         paths = [note_path]
     else:
-        with vault_db._connect() as con:
-            if force:
-                rows = con.execute("SELECT path FROM notes").fetchall()
-            else:
-                rows = con.execute(
-                    "SELECT path FROM notes WHERE semantic_keywords IS NULL"
-                ).fetchall()
-        paths = [r[0] for r in rows]
+        paths = _store.get_paths_for_semantic_keywords(force)
 
     processed, skipped, failed = 0, 0, 0
     for rel in paths:
@@ -871,22 +865,13 @@ def expand_semantic_keywords_tool(note_path: str = "", force: bool = False) -> s
             sk = _extract_semantic_keywords_via_gemini(content)
             if sk:
                 _inject_semantic_keywords(full, sk)
-                with vault_db._connect() as con:
-                    vault_db.upsert_note(con, VAULT, full)
+                _store.index_file(VAULT, full)
                 processed += 1
             else:
                 skipped += 1
         except Exception as e:
             print(f"[second-brain] expand_semantic_keywords failed for {rel}: {e}", file=sys.stderr)
             failed += 1
-
-    # Rebuild FTS index to incorporate new semantic_keywords
-    if processed > 0:
-        try:
-            with vault_db._connect() as con:
-                vault_db._ensure_fts(con)
-        except Exception as e:
-            print(f"[second-brain] FTS rebuild failed: {e}", file=sys.stderr)
 
     return str({"processed": processed, "skipped": skipped, "failed": failed})
 
@@ -908,7 +893,7 @@ def enrich_neighbor_keywords_tool(note_path: str = "", force: bool = False) -> s
     """
     enriched = skipped = no_neighbors = 0
     try:
-        all_data = vault_db.compute_neighbor_keywords()
+        all_data = _store.compute_neighbor_keywords()
     except Exception as e:
         return str({"error": f"compute_neighbor_keywords failed: {e}"})
 
@@ -917,14 +902,7 @@ def enrich_neighbor_keywords_tool(note_path: str = "", force: bool = False) -> s
         targets = [note_path]
     else:
         # Batch: only notes that have no neighbor_keywords yet (unless force)
-        with vault_db._connect() as con:
-            if force:
-                rows = con.execute("SELECT path FROM notes WHERE embedding IS NOT NULL").fetchall()
-            else:
-                rows = con.execute(
-                    "SELECT path FROM notes WHERE embedding IS NOT NULL AND neighbor_keywords IS NULL"
-                ).fetchall()
-        targets = [r[0] for r in rows]
+        targets = _store.get_paths_for_neighbor_keywords(force)
 
     for path in targets:
         full = VAULT / path
@@ -947,19 +925,11 @@ def enrich_neighbor_keywords_tool(note_path: str = "", force: bool = False) -> s
                 pass
         try:
             _inject_neighbor_keywords(full, data)
-            with vault_db._connect() as con:
-                vault_db.upsert_note(con, VAULT, full)
+            _store.index_file(VAULT, full)
             enriched += 1
         except Exception as e:
             print(f"[second-brain] enrich_neighbor_keywords failed for {path}: {e}", file=sys.stderr)
             skipped += 1
-
-    if enriched > 0:
-        try:
-            with vault_db._connect() as con:
-                vault_db._ensure_fts(con)
-        except Exception as e:
-            print(f"[second-brain] FTS rebuild failed: {e}", file=sys.stderr)
 
     return str({"enriched": enriched, "skipped": skipped, "no_neighbors": no_neighbors})
 
@@ -1049,13 +1019,23 @@ def _normalise_source_url(source: str) -> str:
 
 
 @mcp.tool()
-def save_article(source: str, title: str = "", tags: str = "") -> str:
-    """Convert a web article or PDF into a markdown note and save it to 30-resources/.
+def save_article(
+    source: str,
+    title: str = "",
+    tags: str = "",
+    dest_folder: str = "30-resources",
+    filename: str = "",
+) -> str:
+    """Convert a web article or PDF into a markdown note and save it to the vault.
 
     Args:
         source: URL of a web article, or absolute path to a local PDF/DOCX file.
         title: Optional title override. If empty, inferred from the source filename or URL.
         tags: Comma-separated tags to add to frontmatter, e.g. 'bioinformatics,clustering'.
+        dest_folder: Vault-relative folder to save into. Defaults to '30-resources'.
+                     Use '20-areas/research' for academic papers with DOI/journal.
+        filename: Filename stem (without .md). If empty, auto-generated from title as kebab-slug.
+                  Use 'YYYY_Author_ShortTitle' format for research papers, e.g. '2024_Bakr_ARID1A'.
     """
     source = _normalise_source_url(source)
     safe = _validate_source(source)
@@ -1084,26 +1064,49 @@ def save_article(source: str, title: str = "", tags: str = "") -> str:
                 title = stem.replace("-", " ").replace("_", " ").title()
 
     today = date.today().isoformat()
-    slug = _slugify(title)
-    dest = VAULT / "30-resources" / f"{slug}.md"
+
+    # Validate dest_folder: must resolve inside vault (prevent path traversal)
+    folder = (VAULT / dest_folder).resolve()
+    if not folder.is_relative_to(VAULT.resolve()):
+        return f"dest_folder is outside vault: {dest_folder!r}"
+
+    # Sanitize filename: strip, forbid path separators and traversal sequences
+    filename = filename.strip()
+    if filename:
+        if "/" in filename or "\\" in filename or filename.startswith("."):
+            return f"filename contains invalid characters: {filename!r}"
+    stem = filename if filename else _slugify(title)
+    if not stem:
+        return "Cannot determine a valid filename. Provide a title or filename."
+
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = (folder / f"{stem}.md").resolve()
+    if not dest.is_relative_to(VAULT.resolve()):
+        return f"Resolved path escapes vault: {dest}"
+    rel = str(dest.relative_to(VAULT.resolve()))
 
     if dest.exists():
-        return f"Already saved: 30-resources/{slug}.md"
+        return f"Already saved: {rel}"
 
+    # note_type follows folder path components (exact match, not startswith prefix)
+    folder_parts = Path(dest_folder).parts
+    note_type = (
+        "research"
+        if len(folder_parts) >= 2 and folder_parts[0] == "20-areas" and folder_parts[1] == "research"
+        else "resource"
+    )
     tag_list = f"[{', '.join(_safe_tag(t) for t in tags.split(',') if _safe_tag(t))}]" if tags else "[]"
     frontmatter = (
-        f'---\ntitle: "{_safe_yaml(title)}"\ndate: {today}\ntype: resource\n'
+        f'---\ntitle: "{_safe_yaml(title)}"\ndate: {today}\ntype: {note_type}\n'
         f'status: active\ntags: {tag_list}\nsource: "{_safe_yaml(source)}"\n---\n\n'
     )
     dest.write_text(frontmatter + body, encoding="utf-8")
 
-    rel = f"30-resources/{slug}.md"
     _append_to_index(rel, title, today)
 
     # Index immediately, then enrich keywords in background (avoids blocking on Gemini CLI)
     try:
-        with vault_db._connect() as con:
-            vault_db.upsert_note(con, VAULT, dest)
+        _store.index_file(VAULT, dest)
     except Exception as e:
         print(f"[second-brain] warning: index failed for {rel}: {e}", file=sys.stderr)
 
@@ -1144,13 +1147,10 @@ def update_links_tool(note_path: str = "") -> str:
         return f"Updated: {note_path} — {n} related links written"
 
     # Batch: update all indexed notes
-    with vault_db._connect() as con:
-        rows = con.execute(
-            "SELECT path FROM notes WHERE embedding IS NOT NULL"
-        ).fetchall()
+    paths_with_emb = _store.get_paths_with_embeddings()
 
     updated, skipped = 0, 0
-    for (rel,) in rows:
+    for rel in paths_with_emb:
         full = (VAULT / rel).resolve()
         if full.exists() and full.is_relative_to(VAULT):
             n = _inject_related_links(full, rel)
@@ -1183,7 +1183,7 @@ def search_figures(query: str) -> str:
     Args:
         query: Search term, e.g. 'UMAP', 'TYRP1', 'cluster', 'p < 0.001'
     """
-    hits = vault_db.search_figures(query, limit=10)
+    hits = _store.search_figures(query, limit=10)
     if not hits:
         return f"No figures found matching: {query}"
     lines = [f"Found {len(hits)} figure(s) matching '{query}':\n"]
@@ -1291,21 +1291,16 @@ def read_note_as_image(path: str):
     if not full_path.is_relative_to(VAULT) or not full_path.exists():
         return f"Note not found: {path}"
 
-    with vault_db._connect() as con:
-        row = con.execute(
-            "SELECT snapshot_path FROM notes WHERE path=?",
-            [path]
-        ).fetchone()
-
-    if row and row[0]:
-        snap_path = Path(row[0]).resolve()
+    _snap = _store.get_snapshot_path(path)
+    if _snap:
+        snap_path = Path(_snap).resolve()
         snap_root = (VAULT / ".snapshots").resolve()
         if snap_path.exists() and snap_path.is_relative_to(snap_root):
-            vault_db.record_access(path)
+            _store.record_access(path)
             return Image(path=snap_path, format="png")
 
     # No snapshot — return text (capped at 32KB)
-    vault_db.record_access(path)
+    _store.record_access(path)
     text = full_path.read_text(encoding="utf-8")
     _MAX_CHARS = 32_000
     excerpt = text[:_MAX_CHARS] + ("\n\n[…truncated]" if len(text) > _MAX_CHARS else "")
@@ -1654,7 +1649,7 @@ def health_check() -> str:
                             # 呼叫我們獨立的 VLM 分析
                             analysis = local_analyse_figure(local_path)
                             
-                            vault_db.upsert_figure(
+                            _store.upsert_figure(
                                 note_path=f"10-projects/may-chen/research/{slug}.md",
                                 fig_index=fig_idx,
                                 image_url=f"file://{local_path.resolve()}",
@@ -1691,8 +1686,7 @@ def health_check() -> str:
     # 2. DB connectivity + note count
     db_path = Path.home() / ".second-brain" / "vault.db"
     try:
-        from . import vault_db
-        stats = vault_db.db_stats()
+        stats = _store.db_stats()
         db_count = stats.get("total_notes", 0)
         gap = md_count - db_count
         if gap > 20:

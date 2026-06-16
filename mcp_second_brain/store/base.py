@@ -191,3 +191,35 @@ class VaultStore(Protocol):
     def db_stats(self) -> dict:
         """Return summary statistics about the vault index."""
         ...
+
+    # ------------------------------------------------------------------
+    # Server-side query helpers (used by server.py tool implementations)
+    # ------------------------------------------------------------------
+
+    def has_index(self) -> bool:
+        """Return True if the index has been populated (at least one note)."""
+        ...
+
+    def get_snapshot_path(self, path: str) -> str | None:
+        """Return the snapshot_path for a note, or None if absent."""
+        ...
+
+    def get_paths_for_semantic_keywords(self, force: bool = False) -> list[str]:
+        """Return paths of notes that need semantic keyword extraction.
+
+        force=False → only notes where semantic_keywords IS NULL.
+        force=True  → all notes.
+        """
+        ...
+
+    def get_paths_for_neighbor_keywords(self, force: bool = False) -> list[str]:
+        """Return paths of notes with embeddings that need neighbor_keywords.
+
+        force=False → only notes where neighbor_keywords IS NULL.
+        force=True  → all notes with embeddings.
+        """
+        ...
+
+    def get_paths_with_embeddings(self) -> list[str]:
+        """Return paths of all notes that have an embedding vector."""
+        ...

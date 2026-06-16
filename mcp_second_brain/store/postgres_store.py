@@ -801,6 +801,49 @@ class PostgresStore:
         return [(r[0], r[1], list(r[2])) for r in rows]
 
     # ------------------------------------------------------------------
+    # Server-side query helpers
+    # ------------------------------------------------------------------
+
+    def has_index(self) -> bool:
+        with self._pool.connection() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM notes").fetchone()
+        return bool(row and row[0] > 0)
+
+    def get_snapshot_path(self, path: str) -> str | None:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT snapshot_path FROM notes WHERE path = %s", [path]
+            ).fetchone()
+        return row[0] if row else None
+
+    def get_paths_for_semantic_keywords(self, force: bool = False) -> list[str]:
+        sql = (
+            "SELECT path FROM notes"
+            if force
+            else "SELECT path FROM notes WHERE semantic_keywords IS NULL"
+        )
+        with self._pool.connection() as conn:
+            rows = conn.execute(sql).fetchall()
+        return [r[0] for r in rows]
+
+    def get_paths_for_neighbor_keywords(self, force: bool = False) -> list[str]:
+        sql = (
+            "SELECT path FROM notes WHERE embedding IS NOT NULL"
+            if force
+            else "SELECT path FROM notes WHERE embedding IS NOT NULL AND neighbor_keywords IS NULL"
+        )
+        with self._pool.connection() as conn:
+            rows = conn.execute(sql).fetchall()
+        return [r[0] for r in rows]
+
+    def get_paths_with_embeddings(self) -> list[str]:
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT path FROM notes WHERE embedding IS NOT NULL"
+            ).fetchall()
+        return [r[0] for r in rows]
+
+    # ------------------------------------------------------------------
     # Meta
     # ------------------------------------------------------------------
 
