@@ -298,11 +298,20 @@ def _detect_figures_on_page(page_png: Path, page_num: int) -> list[dict]:
     client = anthropic.Anthropic()
     prompt = (
         f"This is page {page_num} of a scientific paper.\n"
-        "Identify all figures, charts, diagrams, and tables (NOT body text paragraphs).\n"
+        "Identify all figures, charts, diagrams, and tables.\n"
+        "EXCLUDE the following — do NOT return bboxes for:\n"
+        "  - Body text paragraphs (blocks of prose/sentences)\n"
+        "  - Page headers (journal name, article type, DOI, URL lines at top)\n"
+        "  - Section headings or titles (e.g. 'Introduction', 'Results')\n"
+        "  - Author lists or affiliation text\n"
+        "Only include regions that contain actual visual data: plots, graphs, "
+        "heatmaps, diagrams, microscopy images, or data tables with rows/columns.\n"
+        "The bbox must tightly wrap the visual content + its caption, "
+        "but must NOT include surrounding body text or page headers.\n"
         'Return ONLY a JSON array: [{"bbox": [x0, y0, x1, y1], "caption": "...", "type": "figure|table"}]\n'
         "bbox coordinates are NORMALISED 0-1000 from the top-left corner "
         "(x0,y0 = top-left, x1,y1 = bottom-right). caption is the figure/table "
-        "caption text if visible, else empty. If there are no figures, return []."
+        "caption text if visible, else empty string. If there are no figures, return []."
     )
     message = client.messages.create(
         model=_DETECT_MODEL,
@@ -324,12 +333,22 @@ def _detect_figures_on_page(page_png: Path, page_num: int) -> list[dict]:
     if not m:
         return []
     items = json.loads(m.group())
+    # Header guard: academic papers have a header band in the top ~6% of the page
+    # (journal name, article type, DOI/URL). If a bbox starts in that band, push
+    # y0 down to just below it. This prevents the header from being cropped in.
+    HEADER_GUARD_Y = 60   # normalised 0-1000; ~6% from top
+
     out: list[dict] = []
     for it in items:
         bbox = it.get("bbox")
         if not bbox or len(bbox) != 4:
             continue
         x0, y0, x1, y1 = bbox
+        # Push top edge below header band
+        y0 = max(y0, HEADER_GUARD_Y)
+        # Skip if bbox collapsed or is too small after adjustment
+        if y1 - y0 < 50 or x1 - x0 < 50:
+            continue
         px = [
             int(x0 / 1000 * w), int(y0 / 1000 * h),
             int(x1 / 1000 * w), int(y1 / 1000 * h),
