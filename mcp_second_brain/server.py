@@ -1793,7 +1793,42 @@ def main() -> None:
             f"{mcp.settings.host}:{mcp.settings.port}",
             file=sys.stderr,
         )
-        mcp.run(transport=args.transport)
+        _run_http_with_auth(args.transport)
+
+
+def _run_http_with_auth(transport: str) -> None:
+    """Run the HTTP transport like FastMCP.run, but install API-key auth middleware first.
+
+    Replicates run_streamable_http_async / run_sse_async (build app → uvicorn serve),
+    adding maybe_add_api_key_auth(app) in between so a valid key is required when
+    SB_API_KEY / SB_API_KEYS is set (opt-in; no-op otherwise).
+    """
+    import anyio
+    import uvicorn
+
+    from .auth import maybe_add_api_key_auth
+
+    app = mcp.sse_app() if transport == "sse" else mcp.streamable_http_app()
+    n_keys = maybe_add_api_key_auth(app)
+    if n_keys:
+        print(f"[second-brain] API-key auth ENABLED ({n_keys} key(s))", file=sys.stderr)
+    else:
+        print(
+            "[second-brain] API-key auth DISABLED (set SB_API_KEY to enable) "
+            "— relying on Tailscale membership only",
+            file=sys.stderr,
+        )
+
+    async def _serve() -> None:
+        config = uvicorn.Config(
+            app,
+            host=mcp.settings.host,
+            port=mcp.settings.port,
+            log_level=mcp.settings.log_level.lower(),
+        )
+        await uvicorn.Server(config).serve()
+
+    anyio.run(_serve)
 
 
 if __name__ == "__main__":

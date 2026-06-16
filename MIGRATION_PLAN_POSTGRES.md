@@ -265,11 +265,12 @@ flowchart TD
 
 ## P5 — 安全與維運（真多機寫入後必補）
 
-- [ ] **5.1** API-key header middleware（FastMCP/ASGI，~30 行）：Tailscale 成員之上再加金鑰；金鑰存環境變數
-- [ ] **5.2**（可選）讀寫角色：唯讀 token 只掛 search/read 工具
-- [ ] **5.3** Postgres 備份：每日 `pg_dump` 到 Drive（正本仍是 markdown，PG 備份為加速復原）
-- [ ] **5.4** 健康檢查/可觀測：連線池用量、慢查詢、server uptime；接入既有 `health_check`
-- [ ] **5.5** git commit: `feat: api-key auth + pg backup + observability for central brain`
+- [x] **5.1** API-key 純-ASGI middleware（`mcp_second_brain/auth.py`）：opt-in，設 `SB_API_KEY`（單）或 `SB_API_KEYS`（逗號分隔可多把、可逐把撤銷）才啟用；驗 `X-API-Key` 或 `Authorization: Bearer`，constant-time 比對。`server.py` 改 `_run_http_with_auth()` 在 `streamable_http_app()` 上掛 middleware 再跑 uvicorn。**已啟用並驗證**：無 key/錯 key→401、正確 key→200；本機 Claude Code 與桌面 mcp-remote 皆改帶 `--header X-API-Key`，仍 Connected。8 個 auth 單元測試綠。
+- [ ] **5.2**（可選，延後）讀寫角色：唯讀 token 只掛 search/read。`auth.py` 已支援多把 key（key→角色映射的地基），但「依 key 限制可用工具」需在 MCP 層解析 tool name，留待 **D.3** 一起做。
+- [x] **5.3** Postgres 備份：`launchd/run_pg_backup.sh`（`docker exec pg_dump | gzip`，保留近 7 份，自動跳過不存在的 db）+ `com.user.second-brain-pg-backup`（每日 04:00）。輸出到 **repo/vault 之外**的 `PJ_save/backups/second-brain-pg/`（不被提交、不被索引）。已實跑：sb_personal 3.6M、sb_lab 空。
+- [x] **5.4** 可觀測：`PostgresStore.db_stats()` 加 `backend`、`pool`（size/available/requests_waiting）、`long_running_queries`（>5s active），並**遮罩 db_path 密碼**（`_redact_dsn`）。
+  - ⚠️ **另記**：`server.py::health_check` 內混入一次性副作用程式碼（搬特定論文檔、從 `/Volumes/KINGSTON` 複製圖片）——與健檢無關的遺留髒碼，建議另開工作清掉，本次未動。
+- [x] **5.5** git commit: `feat(P5): api-key auth + daily pg_dump backup + pool/query observability`
 
 ---
 

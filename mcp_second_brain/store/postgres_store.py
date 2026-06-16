@@ -35,6 +35,13 @@ def _vec_to_pg(vec: list[float]) -> list[float]:
     return vec
 
 
+def _redact_dsn(dsn: str) -> str:
+    """Hide the password in a postgresql:// DSN before returning it in stats/logs."""
+    import re
+
+    return re.sub(r"(://[^:/@]+:)[^@]+@", r"\1***@", dsn)
+
+
 class PostgresStore:
     """VaultStore backed by Postgres 16 + pgvector.
 
@@ -848,14 +855,37 @@ class PostgresStore:
     # ------------------------------------------------------------------
 
     def db_stats(self) -> dict:
+        long_running = 0
         with self._pool.connection() as conn:
             row = conn.execute("SELECT COUNT(*) FROM notes").fetchone()
             total = row[0] if row else 0
             by_type = conn.execute(
                 "SELECT note_type, COUNT(*) FROM notes GROUP BY note_type ORDER BY 2 DESC"
             ).fetchall()
+            # observability: queries running >5s on this database (excludes idle)
+            try:
+                lr = conn.execute(
+                    "SELECT COUNT(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND state = 'active' "
+                    "AND now() - query_start > interval '5 seconds'"
+                ).fetchone()
+                long_running = lr[0] if lr else 0
+            except Exception:
+                pass
+        # pool usage (psycopg_pool): in-use, available, waiters
+        try:
+            pool = self._pool.get_stats()
+        except Exception:
+            pool = {}
         return {
+            "backend": "postgres",
             "total_notes": total,
             "by_type": {r[0]: r[1] for r in by_type},
-            "db_path": self._dsn,
+            "db_path": _redact_dsn(self._dsn),
+            "pool": {
+                "size": pool.get("pool_size"),
+                "available": pool.get("pool_available"),
+                "requests_waiting": pool.get("requests_waiting"),
+            },
+            "long_running_queries": long_running,
         }
