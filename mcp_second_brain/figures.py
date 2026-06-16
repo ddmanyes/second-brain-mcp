@@ -422,11 +422,9 @@ def _write_figure_section(note_path: str, fig_dir: Path, md_file: Path) -> int:
     if not figs or not md_file.exists():
         return 0
     content = md_file.read_text(encoding="utf-8").replace("\r\n", "\n")
-    note_depth = len(Path(note_path).parent.parts)
-    rel_prefix = "../" * note_depth
     fig_slug = _figure_slug(note_path)
     new_section = "\n\n## Extracted Figures\n" + "".join(
-        f"![{fig}]({rel_prefix}figures/{fig_slug}/{fig})\n" for fig in figs
+        f"![[figures/{fig_slug}/{fig}]]\n" for fig in figs
     )
     if "## Extracted Figures" in content:
         content = re.sub(r"\n*## Extracted Figures\n[\s\S]*", new_section, content)
