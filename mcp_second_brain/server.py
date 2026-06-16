@@ -1351,7 +1351,100 @@ def read_figure(note_path: str, fig_index: int):
         )
 
     thumb = _fig.make_figure_thumbnail(src, note_path, fig_index)
-    return Image(path=thumb or src, format="png")
+    img = Image(path=thumb or src, format="png")
+
+    # 5.8.4 — surface any prior read-time insight so next time text alone suffices.
+    insight_rel = _figure_insight_rel(note_path, fig_index)
+    insight_file = (VAULT / insight_rel).resolve()
+    if insight_file.exists() and insight_file.is_relative_to(VAULT.resolve()):
+        body = insight_file.read_text(encoding="utf-8")
+        return [img, f"📝 Prior insights ([[{insight_rel.removesuffix('.md')}]]):\n\n{body}"]
+    return img
+
+
+# ---------------------------------------------------------------------------
+# Figure insight write-back (Phase 5.8) — atomic vault notes, no DuckDB mirror
+# ---------------------------------------------------------------------------
+
+def _figure_insight_rel(note_path: str, fig_index: int) -> str:
+    """Vault-relative path of the atomic insight note for one figure."""
+    paper_slug = _fig._figure_slug(note_path)
+    return f"20-areas/research/figure-insights/{paper_slug}--fig{fig_index:02d}.md"
+
+
+def _add_figure_insight_backlink(note_path: str, fig_index: int, insight_rel: str) -> None:
+    """Add an idempotent forward link in the paper note's figure section."""
+    paper = (VAULT / note_path).resolve()
+    if not (paper.exists() and paper.is_relative_to(VAULT.resolve())):
+        return
+    link = f"→ insights fig {fig_index:02d}: [[{insight_rel.removesuffix('.md')}]]"
+    content = paper.read_text(encoding="utf-8")
+    if link in content:
+        return
+    if "## Figure Insights" in content:
+        content = content.replace("## Figure Insights\n", f"## Figure Insights\n{link}\n", 1)
+    else:
+        content = content.rstrip() + f"\n\n## Figure Insights\n{link}\n"
+    paper.write_text(content, encoding="utf-8")
+
+
+@mcp.tool()
+def annotate_figure(note_path: str, fig_index: int, insight: str) -> str:
+    """Save a read-time insight about a figure as an atomic vault note.
+
+    Use AFTER you have loaded a figure (read_figure) and reasoned out something
+    worth keeping — e.g. a specific value, trend, or conclusion. The insight is
+    stored as a short standalone note (fully within the search index window) that
+    backlinks the paper, so next time the question can be answered from text alone
+    without re-loading the image. Insights for the same figure are appended.
+
+    Store STRUCTURED facts ('panel C: IC50 = 2.3 µM') over prose — they cache better.
+
+    Args:
+        note_path: Vault-relative path of the source paper note
+        fig_index: 0-based figure index (as shown by search_figures / read_figure)
+        insight: The fact/observation to remember about this figure
+    """
+    insight = insight.strip()
+    if not insight:
+        return "Empty insight — nothing saved."
+
+    rel = _figure_insight_rel(note_path, fig_index)
+    dest = (VAULT / rel).resolve()
+    if not dest.is_relative_to(VAULT.resolve()):
+        return f"Resolved path escapes vault: {rel}"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    today = date.today().isoformat()
+    paper_link = note_path.removesuffix(".md")
+    if dest.exists():
+        with open(dest, "a", encoding="utf-8") as f:
+            f.write(f"- {today}: {insight}\n")
+        action = "Appended insight to"
+    else:
+        paper_slug = _fig._figure_slug(note_path)
+        title = f"{paper_slug} — figure {fig_index} insights"
+        frontmatter = (
+            f'---\ntitle: "{_safe_yaml(title)}"\ndate: {today}\n'
+            f'type: figure-insight\nstatus: active\ntags: []\n'
+            f'source_note: "{_safe_yaml(note_path)}"\nfig_index: {fig_index}\n---\n\n'
+        )
+        body = (
+            f"Read-time insights for figure {fig_index} of [[{paper_link}]].\n\n"
+            f"- {today}: {insight}\n"
+        )
+        dest.write_text(frontmatter + body, encoding="utf-8")
+        _append_to_index(rel, title, today)
+        action = "Created insight note"
+
+    # Index so search_notes finds it (content_hash change triggers embedding/FTS).
+    try:
+        _store.index_file(VAULT, dest)
+    except Exception as e:
+        print(f"[second-brain] warning: index failed for {rel}: {e}", file=sys.stderr)
+
+    _add_figure_insight_backlink(note_path, fig_index, rel)
+    return f"{action}: {rel}"
 
 
 @mcp.tool()

@@ -79,6 +79,7 @@ Postgres directly.
 | "Extract figures" | `extract_figures_for(note_path)` | Saves to figures/ |
 | "Search figures" | `search_figures(query)` | Text proxy (caption+OCR+description) — usually answers without loading pixels |
 | "Show me figure N" | `read_figure(note_path, fig_index)` | Loads ONE figure thumbnail (~256-400 tok); use only when text isn't enough |
+| "Remember this about figure N" | `annotate_figure(note_path, fig_index, insight)` | Saves a read-time insight as an atomic note so next time text answers (no re-load) |
 | "Snapshot this note" | `snapshot_note_tool(note_path, tier)` | tier: "base" or "detail" |
 | "Initialize vault / fix directory structure" | `init_vault()` | Safe to re-run, only creates missing items |
 | "Agent instructions" (remote session start) | `get_agent_instructions()` | Returns this document |

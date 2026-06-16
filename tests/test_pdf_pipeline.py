@@ -243,3 +243,93 @@ class TestReadFigure:
         small = tmp_path / "small.png"
         _PILImage.new("RGB", (280, 280)).save(str(small))
         assert figures._estimate_image_tokens(big) > figures._estimate_image_tokens(small)
+
+
+# ---------------------------------------------------------------------------
+# Phase 5.8 — figure insight write-back as atomic vault notes
+# ---------------------------------------------------------------------------
+
+class TestAnnotateFigure:
+    def _setup_paper(self, vault: Path) -> str:
+        note_rel = "20-areas/research/paper.md"
+        note = vault / note_rel
+        note.parent.mkdir(parents=True, exist_ok=True)
+        note.write_text(
+            "---\ntitle: Paper\ndate: 2026-06-16\ntype: research\n"
+            "status: active\ntags: []\n---\n\n# Paper\n\nBody.\n",
+            encoding="utf-8",
+        )
+        return note_rel
+
+    def test_annotate_creates_atomic_note_and_backlink(self, isolated_fig_env, monkeypatch):
+        from mcp_second_brain import server, vault_db
+        vault = isolated_fig_env
+        monkeypatch.setattr(server, "VAULT", vault)
+
+        note_rel = self._setup_paper(vault)
+        out = server.annotate_figure(note_rel, 0, "panel C: IC50uniqtok = 2.3 uM")
+        assert "Created" in out
+
+        insight = vault / "20-areas/research/figure-insights/paper--fig00.md"
+        assert insight.exists()
+        text = insight.read_text(encoding="utf-8")
+        assert "type: figure-insight" in text
+        assert "source_note:" in text
+        assert "IC50uniqtok" in text
+        assert "[[20-areas/research/paper]]" in text  # backlink to paper
+
+        # forward link added to the paper note
+        paper_text = (vault / note_rel).read_text(encoding="utf-8")
+        assert "## Figure Insights" in paper_text
+        assert "paper--fig00" in paper_text
+
+        # second insight appends (does not create a new file)
+        server.annotate_figure(note_rel, 0, "panel D: n=42")
+        text2 = insight.read_text(encoding="utf-8")
+        assert "IC50uniqtok" in text2 and "n=42" in text2
+
+        # DuckDB figures table is NOT touched — insight lives only in the vault note
+        with vault_db._connect() as con:
+            n_figs = con.execute("SELECT COUNT(*) FROM figures").fetchone()[0]
+        assert n_figs == 0
+
+    def test_insight_searchable_and_survives_rebuild(self, isolated_fig_env, monkeypatch):
+        from mcp_second_brain import server, vault_db
+        from mcp_second_brain.store import get_store
+        vault = isolated_fig_env
+        monkeypatch.setattr(server, "VAULT", vault)
+
+        note_rel = self._setup_paper(vault)
+        server.annotate_figure(note_rel, 0, "panel C: IC50uniqtok = 2.3 uM")
+
+        store = get_store()
+        hits = store.hybrid_search("IC50uniqtok", limit=10)
+        assert any("figure-insights" in h.get("path", "") for h in hits)
+
+        # rebuild the whole index from the vault (source of truth) → still found
+        vault_db.sync_all(vault)
+        hits2 = store.hybrid_search("IC50uniqtok", limit=10)
+        assert any("figure-insights" in h.get("path", "") for h in hits2)
+
+    def test_read_figure_surfaces_insight(self, isolated_fig_env, monkeypatch):
+        from mcp_second_brain import server, figures, vault_db
+        from mcp.server.fastmcp import Image
+        vault = isolated_fig_env
+        monkeypatch.setattr(server, "VAULT", vault)
+        monkeypatch.setattr(figures, "FIGURES_DIR", vault / "figures")
+
+        note_rel = self._setup_paper(vault)
+        fig_path = vault / "figures" / "paper" / "fig-00.png"
+        fig_path.parent.mkdir(parents=True, exist_ok=True)
+        from PIL import Image as _PILImage
+        _PILImage.new("RGB", (800, 800)).save(str(fig_path))
+        vault_db.upsert_figure(
+            note_path=note_rel, fig_index=0, image_url=f"file://{fig_path}",
+            local_path=str(fig_path), ocr_text="", description="d", token_est=400, caption="c",
+        )
+        server.annotate_figure(note_rel, 0, "panel C: IC50uniqtok = 2.3 uM")
+
+        result = server.read_figure(note_rel, 0)
+        assert isinstance(result, list)
+        assert any(isinstance(x, Image) for x in result)
+        assert any(isinstance(x, str) and "IC50uniqtok" in x for x in result)
