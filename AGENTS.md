@@ -6,7 +6,7 @@
 >
 > **When adding documentation**: modify the relevant section here, then update the Last updated date.
 >
-> **Last updated:** 2026-06-10
+> **Last updated:** 2026-06-16
 
 ---
 
@@ -15,8 +15,38 @@
 Second Brain is a personal knowledge management server that exposes vault read/write, search, archiving, and maintenance via MCP.
 
 - **MCP server**: `server.py` (27 tools)
-- **Vector database**: `vault_db.py` (semantic search, Ebbinghaus scoring)
+- **Index backend**: pluggable `VaultStore` (`store/`), selected by `SB_DB_BACKEND`:
+  - `postgres` (central brain) — `store/postgres_store.py`, Postgres 16 + pgvector + pg_trgm, connection-pooled, multi-machine concurrent read/write via MVCC.
+  - `duckdb` (default / offline fallback) — `store/duckdb_store.py` wrapping `vault_db.py`.
 - **Vault path**: controlled by environment variable `SECOND_BRAIN_PATH`
+- **Source of truth**: markdown is canonical (L1); the index (Postgres or DuckDB) is a
+  rebuildable L2 — `sync_all` regenerates it from markdown. Switching backends never
+  touches markdown.
+
+---
+
+## Connection Topology & Write Discipline
+
+The production setup is **one central HTTP server + Postgres**; clients never touch
+Postgres directly.
+
+- **Central server**: launchd `com.user.second-brain-remote`, `streamable-http` bound to
+  the Tailscale IP `:9100`, `SB_DB_BACKEND=postgres`. Single instance (PID guard).
+- **Postgres**: Docker `sb-pg`, bound to `127.0.0.1:5432` only — **never** exposed off-host.
+- **Clients connect via MCP over HTTP**: `http://<tailscale-ip>:9100/mcp` with header
+  `X-API-Key: <key>` (auth is enforced when `SB_API_KEY`/`SB_API_KEYS` is set on the server).
+- **Index freshness**: `com.user.second-brain-pg-sync` runs `sync_incremental` against
+  Postgres every 30 min so cron-driven markdown edits don't let the index drift.
+- **Backups**: `com.user.second-brain-pg-backup` runs `pg_dump` daily (markdown is still
+  the real backup; this only speeds recovery).
+
+**Write discipline (avoid Google Drive conflict copies):**
+- All writes go through the **central server** (single writer on the host).
+- Client-side Obsidian is **read-only** — read synced markdown, but edit via MCP tools,
+  not by typing into Obsidian on a laptop (two machines editing one file → Drive conflict
+  copy → pollutes the source and index).
+- Offline fallback: with no network, set `SB_DB_BACKEND=duckdb` + stdio for local
+  read-only use; reconcile via `sync_all` when back online.
 
 ---
 

@@ -2,7 +2,7 @@
 
 > **目標**：把 second-brain 從「多 stdio server 搶單一 DuckDB 檔」改造成「**中央 HTTP server + Postgres/pgvector 活腦**」，支援多台電腦同時讀寫。
 > **建立日期**：2026-06-16
-> **狀態**：執行中（P0–P2 完成並驗證；P3 核心 3.1–3.3 完成；剩 P3.4–3.5、P4–P6、D 待用戶決策）
+> **狀態**：核心遷移完成（**P0–P6 全部完成並驗證**，中央 Postgres+HTTP server 上線、API-key 啟用、備份+防脫節排程就緒）。**剩 D 雙SB lab 部署**（需實驗室決策）+ P4.4(a) janitor/sleep 全港 Postgres（選做）。
 > **最後更新**：2026-06-16（接續執行：修復測試隔離 bug、確認 P0–P3、啟動 sb_personal 全量重建）
 > **決策來源**：[ADR 多機中央活腦架構](../../second-brain/decisions/multi-machine-central-brain-architecture.md)
 > **執行順序**：P0 → P1 → P2 → P3 → P4 → P5 → P6（可漸進、每階段可回退）
@@ -240,8 +240,8 @@ flowchart TD
 - [x] **3.1** 啟用 `com.user.second-brain-remote.plist`（移除 `.disabled`），環境設 `SB_DB_BACKEND=postgres`、`MCP_TRANSPORT=streamable-http`、PG 連線字串、`EMBED_URL`
 - [x] **3.2** 確認 HTTP 分支單例（`_kill_old_server` PID）正常；KeepAlive 重啟可恢復
 - [x] **3.3** 並發煙霧測試：兩個 client 同時呼叫 search + new_note，斷言皆成功、無鎖等待、延遲正常
-- [ ] **3.4** 離線 fallback 文件化：筆電離線時 `SB_DB_BACKEND=duckdb` + stdio 本地唯讀（可選）
-- [ ] **3.5** git commit: `feat: enable central streamable-http server backed by postgres (launchd KeepAlive)`
+- [x] **3.4** 離線 fallback 已文件化：見 [AGENTS.md](AGENTS.md) 「Connection Topology & Write Discipline」段（離線時 `SB_DB_BACKEND=duckdb` + stdio 本地唯讀，回線 `sync_all` 對帳）。
+- [x] **3.5** git commit：P3 啟用已於 `d26dc97`（早期）+ 本輪 `8f70338` 驗證完成。
 
 ---
 
@@ -276,10 +276,10 @@ flowchart TD
 
 ## P6 — 收尾
 
-- [ ] **6.1** 跑 ≥1 週穩定後，決定 DuckDB 路徑去留：保留為「離線唯讀模式」或移除
-- [ ] **6.2** 更新 `AGENTS.md` / `CLAUDE.md` / `REMOTE_SETUP.md`：新拓樸、連線方式、寫入紀律（Obsidian 唯讀）
-- [ ] **6.3** 更新相關 ADR `status: proposed → accepted`
-- [ ] **6.4** git commit: `docs: finalize central brain architecture; retire/segregate duckdb path`
+- [x] **6.1** DuckDB 去留決策：**保留為離線唯讀 fallback**（store 抽象已支援，離線/災難復原有價值，不刪碼）。觀察 ≥1 週後若確認用不到再評估移除。
+- [x] **6.2** 已更新 `AGENTS.md`（新增 Connection Topology & Write Discipline 段）+ `CLAUDE.md`（架構段）。`REMOTE_SETUP.md` 早先已移除（內容併入 AGENTS.md）。
+- [x] **6.3** 兩份 ADR `status: proposed → accepted`：`multi-machine-central-brain-architecture.md`（決策已實作上線）、`duckdb-multi-writer-lock-contention.md`（問題已解）。
+- [x] **6.4** git commit: `docs(P6): finalize central brain topology in AGENTS/CLAUDE + accept ADRs`
 
 ---
 
