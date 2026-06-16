@@ -731,9 +731,17 @@ _embed_offline_until: float = 0.0  # cooldown timestamp when server is offline
 def _call_embed_api(text: str) -> list[float] | None:
     """Call embedding endpoint, retrying with shorter text on 500 (model context limit).
 
-    Exponential backoff between retries (1s, 2s) avoids hammering an overloaded server.
+    The smallest tier (256 chars) is sized to stay under the server's 512-token
+    physical batch even for CJK text (≈1–1.5 tokens/char), so a long Chinese note
+    still gets an embedding instead of failing out.
+
+    A 500 "too large to process" is *deterministic* (input exceeds the batch), so we
+    retry the next (shorter) tier immediately — no backoff sleep. Only a non-deterministic
+    500 (e.g. transient overload) gets the exponential backoff, since hammering helps no one.
     """
-    for i, max_chars in enumerate((2048, 1024, 512)):
+    tiers = (2048, 1024, 512, 256)
+    last = len(tiers) - 1
+    for i, max_chars in enumerate(tiers):
         payload = json.dumps({"input": text[:max_chars], "model": EMBED_MODEL}).encode()
         req = urllib.request.Request(
             EMBED_URL, data=payload,
@@ -744,9 +752,16 @@ def _call_embed_api(text: str) -> list[float] | None:
                 return json.loads(resp.read())["data"][0]["embedding"]
         except urllib.error.HTTPError as e:
             if e.code == 500:
-                if i < 2:
-                    time.sleep(2 ** i)  # 1s then 2s before next shorter attempt
-                continue  # text too long for model context — retry shorter
+                if i >= last:
+                    return None  # already at smallest tier — give up
+                body = ""
+                try:
+                    body = e.read().decode("utf-8", "replace")
+                except Exception:
+                    pass
+                if "too large" not in body:
+                    time.sleep(2 ** i)  # transient overload — back off before retrying shorter
+                continue  # retry next (shorter) tier
             return None
         except Exception:
             return None
