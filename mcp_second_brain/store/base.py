@@ -118,6 +118,10 @@ class VaultStore(Protocol):
         """Search figures by OCR text or description."""
         ...
 
+    def get_figure(self, note_path: str, fig_index: int) -> dict | None:
+        """Return a single figure row (for read_figure), or None if absent."""
+        ...
+
     def find_related(
         self,
         path: str,

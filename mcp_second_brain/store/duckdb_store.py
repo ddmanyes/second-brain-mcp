@@ -112,6 +112,9 @@ class DuckDBStore:
     def search_figures(self, query: str, limit: int = 10) -> list[dict]:
         return vault_db.search_figures(query, limit)
 
+    def get_figure(self, note_path: str, fig_index: int) -> dict | None:
+        return vault_db.get_figure(note_path, fig_index)
+
     def find_related(
         self,
         path: str,

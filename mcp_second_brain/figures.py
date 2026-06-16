@@ -358,6 +358,33 @@ def _crop_figure(page_png: Path, bbox: list, dest: Path) -> bool:
     return True
 
 
+def make_figure_thumbnail(
+    src: Path, note_path: str, fig_index: int, max_edge: int = 768
+) -> Path | None:
+    """Down-scale a figure to a thumbnail (long edge ≤ max_edge) for cheap recall.
+
+    Stored in a HIDDEN dir (`.figure-thumbs/`) so Obsidian/glob don't treat the
+    thumbnail as an extra figure. Returns the thumbnail path, or None on failure.
+    """
+    try:
+        from PIL import Image as _PILImage
+        if not src.exists():
+            return None
+        out_dir = FIGURES_DIR.parent / ".figure-thumbs" / _figure_slug(note_path)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        dest = out_dir / f"fig-{fig_index:02d}.png"
+        if dest.exists():
+            return dest
+        with _PILImage.open(src) as im:
+            im = im.convert("RGB")
+            im.thumbnail((max_edge, max_edge))
+            im.save(str(dest), "PNG")
+        return dest
+    except Exception as e:
+        print(f"[figures] thumbnail failed for {src}: {e}", file=sys.stderr)
+        return None
+
+
 def _estimate_image_tokens(image_path: Path) -> int:
     """Rough Anthropic-vision token estimate from pixel dims (~1 token per 28x28 patch)."""
     try:

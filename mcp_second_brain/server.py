@@ -1196,14 +1196,21 @@ def search_figures(query: str) -> str:
     hits = _store.search_figures(query, limit=10)
     if not hits:
         return f"No figures found matching: {query}"
-    lines = [f"Found {len(hits)} figure(s) matching '{query}':\n"]
+    lines = [
+        f"Found {len(hits)} figure(s) matching '{query}':",
+        "(text proxy below — only call read_figure if the text can't answer you)\n",
+    ]
     for h in hits:
         lines.append(f"**{h['note_path']}** (fig {h['fig_index']})")
+        if h.get("caption"):
+            lines.append(f"  caption: {h['caption']}")
         if h["description"]:
             lines.append(f"  → {h['description']}")
         if h["ocr_text"]:
             snippet = h["ocr_text"][:120].replace("\n", " ")
             lines.append(f"  OCR: {snippet}")
+        # Load ladder: nudge toward the single-figure thumbnail, not full-page render.
+        lines.append(f'  → need the image: read_figure("{h["note_path"]}", {h["fig_index"]})')
         lines.append("")
     return "\n".join(lines)
 
@@ -1316,6 +1323,35 @@ def read_note_as_image(path: str):
     excerpt = text[:_MAX_CHARS] + ("\n\n[…truncated]" if len(text) > _MAX_CHARS else "")
     hint = f"run snapshot_note_tool('{path}') to create one"
     return f"[TEXT MODE] ~{len(text)//4} tokens (no snapshot — {hint})\n\n{excerpt}"
+
+
+@mcp.tool()
+def read_figure(note_path: str, fig_index: int):
+    """Load ONE extracted figure as a down-scaled image (the cheap rung of the
+    recall ladder — between text search and rendering a whole page).
+
+    Use this only when search_figures' text proxy (caption + OCR + description)
+    can't answer the question. Returns a thumbnail (long edge ~768px, ~256-400
+    tokens) rather than the full-resolution image or the whole page.
+
+    Args:
+        note_path: Vault-relative path of the source note, e.g. '20-areas/research/paper.md'
+        fig_index: 0-based figure index as shown by search_figures
+    """
+    row = _store.get_figure(note_path, fig_index)
+    if not row:
+        return f"No figure #{fig_index} for {note_path} (try search_figures first)"
+
+    src = Path(row["local_path"]).resolve()
+    fig_root = (VAULT / "figures").resolve()
+    if not (src.exists() and src.is_relative_to(fig_root)):
+        return (
+            f"Figure file missing or outside vault for {note_path} #{fig_index}. "
+            f"caption: {row.get('caption') or '—'}; description: {row.get('description') or '—'}"
+        )
+
+    thumb = _fig.make_figure_thumbnail(src, note_path, fig_index)
+    return Image(path=thumb or src, format="png")
 
 
 @mcp.tool()

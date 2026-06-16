@@ -77,7 +77,8 @@ Postgres directly.
 | "Extract rules from note" | `extract_rules_tool(note_path)` | Extracts `- [ ]` rule items |
 | "Update links" | `update_links_tool(note_path)` | Rebuilds wiki links |
 | "Extract figures" | `extract_figures_for(note_path)` | Saves to figures/ |
-| "Search figures" | `search_figures(query)` | |
+| "Search figures" | `search_figures(query)` | Text proxy (caption+OCR+description) — usually answers without loading pixels |
+| "Show me figure N" | `read_figure(note_path, fig_index)` | Loads ONE figure thumbnail (~256-400 tok); use only when text isn't enough |
 | "Snapshot this note" | `snapshot_note_tool(note_path, tier)` | tier: "base" or "detail" |
 | "Initialize vault / fix directory structure" | `init_vault()` | Safe to re-run, only creates missing items |
 | "Agent instructions" (remote session start) | `get_agent_instructions()` | Returns this document |
@@ -134,6 +135,17 @@ All figures live under vault root `figures/`, **not scattered next to notes**.
 - Extract from local PDF: `pdftoppm -r 150 -png -f {start} -l {end} input.pdf figures/{slug}/fig`
 - Embed: `![[figures/{slug}/fig-00.png]]`
 - `extract_figures_for` only works on notes created by `save_article` (requires a source URL); use `pdftoppm` for local PDFs
+
+### Recall ladder — cheap → expensive (don't skip rungs)
+
+When answering a question that *might* need a figure, climb only as far as needed:
+
+1. `search_notes` / `search_figures` — **pure text** (semantic + caption + OCR + description). Cheapest; usually enough to answer "what does figure X show / what's the value".
+2. `read_note` — full clean markdown body, when you need surrounding text.
+3. `read_figure(note_path, fig_index)` — **one** figure thumbnail (~256-400 tok). Only when the text proxy can't answer (a specific visual detail).
+4. `read_note_as_image(path)` — whole-page render (highest cost). Last resort, layout/visual-only cases.
+
+> Rule of thumb: **if text can answer it, do not load pixels.** Captions and OCR are stored precisely so the expensive rungs are rarely needed. Never reflexively `read_note_as_image` an article just to inspect one chart — use `read_figure`.
 
 ---
 

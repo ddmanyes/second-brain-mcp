@@ -190,3 +190,56 @@ class TestCaptionSearch:
         hits = vault_db.search_figures("UMAP")
         assert len(hits) == 1
         assert hits[0]["caption"].startswith("Figure 1. UMAP")
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — read_figure single-image recall + real token_est
+# ---------------------------------------------------------------------------
+
+class TestReadFigure:
+    def _make_png(self, path: Path, size=(1000, 1000)):
+        from PIL import Image as _PILImage
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _PILImage.new("RGB", size, (200, 200, 255)).save(str(path), "PNG")
+
+    def test_read_figure_returns_image_and_thumbnail(self, isolated_fig_env, monkeypatch):
+        from mcp_second_brain import server, figures, vault_db
+        from mcp.server.fastmcp import Image
+
+        vault = isolated_fig_env
+        monkeypatch.setattr(server, "VAULT", vault)
+        monkeypatch.setattr(figures, "FIGURES_DIR", vault / "figures")
+
+        note_path = "20-areas/research/paper.md"
+        fig_path = vault / "figures" / "paper" / "fig-00.png"
+        self._make_png(fig_path)
+        vault_db.upsert_figure(
+            note_path=note_path, fig_index=0,
+            image_url=f"file://{fig_path}", local_path=str(fig_path),
+            ocr_text="", description="d", token_est=400, caption="cap",
+        )
+
+        result = server.read_figure(note_path, 0)
+        assert isinstance(result, Image)
+        # a down-scaled thumbnail was created (long edge <= 768)
+        from PIL import Image as _PILImage
+        thumb = vault / ".figure-thumbs" / "paper" / "fig-00.png"
+        assert thumb.exists()
+        with _PILImage.open(thumb) as im:
+            assert max(im.size) <= 768
+
+    def test_read_figure_missing_returns_text(self, isolated_fig_env, monkeypatch):
+        from mcp_second_brain import server
+        monkeypatch.setattr(server, "VAULT", isolated_fig_env)
+        out = server.read_figure("nope/missing.md", 3)
+        assert isinstance(out, str)
+        assert "No figure" in out
+
+    def test_estimate_image_tokens_scales_with_size(self, tmp_path):
+        from mcp_second_brain import figures
+        from PIL import Image as _PILImage
+        big = tmp_path / "big.png"
+        _PILImage.new("RGB", (1400, 1400)).save(str(big))
+        small = tmp_path / "small.png"
+        _PILImage.new("RGB", (280, 280)).save(str(small))
+        assert figures._estimate_image_tokens(big) > figures._estimate_image_tokens(small)
