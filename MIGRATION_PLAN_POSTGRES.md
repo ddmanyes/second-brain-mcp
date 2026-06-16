@@ -3,6 +3,7 @@
 > **目標**：把 second-brain 從「多 stdio server 搶單一 DuckDB 檔」改造成「**中央 HTTP server + Postgres/pgvector 活腦**」，支援多台電腦同時讀寫。
 > **建立日期**：2026-06-16
 > **狀態**：核心遷移完成（**P0–P6 全部完成並驗證**，中央 Postgres+HTTP server 上線、API-key 啟用、備份+防脫節排程就緒）。**剩 D 雙SB lab 部署**（需實驗室決策）+ P4.4(a) janitor/sleep 全港 Postgres（選做）。
+> **代碼審查**：2026-06-16 過審，無 CRITICAL/HIGH，198 tests 綠（含 8 auth），auth.py 覆蓋率 96%。health_check 一次性髒碼已清（`d6791c7`）。
 > **最後更新**：2026-06-16（接續執行：修復測試隔離 bug、確認 P0–P3、啟動 sb_personal 全量重建）
 > **決策來源**：[ADR 多機中央活腦架構](../../second-brain/decisions/multi-machine-central-brain-architecture.md)
 > **執行順序**：P0 → P1 → P2 → P3 → P4 → P5 → P6（可漸進、每階段可回退）
@@ -269,7 +270,7 @@ flowchart TD
 - [ ] **5.2**（可選，延後）讀寫角色：唯讀 token 只掛 search/read。`auth.py` 已支援多把 key（key→角色映射的地基），但「依 key 限制可用工具」需在 MCP 層解析 tool name，留待 **D.3** 一起做。
 - [x] **5.3** Postgres 備份：`launchd/run_pg_backup.sh`（`docker exec pg_dump | gzip`，保留近 7 份，自動跳過不存在的 db）+ `com.user.second-brain-pg-backup`（每日 04:00）。輸出到 **repo/vault 之外**的 `PJ_save/backups/second-brain-pg/`（不被提交、不被索引）。已實跑：sb_personal 3.6M、sb_lab 空。
 - [x] **5.4** 可觀測：`PostgresStore.db_stats()` 加 `backend`、`pool`（size/available/requests_waiting）、`long_running_queries`（>5s active），並**遮罩 db_path 密碼**（`_redact_dsn`）。
-  - ⚠️ **另記**：`server.py::health_check` 內混入一次性副作用程式碼（搬特定論文檔、從 `/Volumes/KINGSTON` 複製圖片）——與健檢無關的遺留髒碼，建議另開工作清掉，本次未動。
+  - ✅ **已清（commit `d6791c7`）**：`server.py::health_check` 內混入的一次性副作用程式碼（搬特定論文檔、從 `/Volumes/KINGSTON` 複製圖片+索引，共 −135 行）已移除，回歸純唯讀診斷。
 - [x] **5.5** git commit: `feat(P5): api-key auth + daily pg_dump backup + pool/query observability`
 
 ---
