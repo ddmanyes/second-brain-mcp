@@ -961,7 +961,17 @@ def _get_marker_converter():
 
 def _extract_pdf_body(path: str) -> str:
     """Extract text from a PDF.
-    Priority: Marker (ML, best quality) → pdftotext -layout → MarkItDown."""
+    Priority: pymupdf4llm (multi-column + reading order) → Marker (scanned PDFs)
+    → pdftotext -layout → MarkItDown."""
+    # primary: pymupdf4llm — clean GitHub-flavoured Markdown, detects columns,
+    # tables and reading order; far less whitespace noise than pdftotext.
+    try:
+        import pymupdf4llm
+        result = pymupdf4llm.to_markdown(path)
+        if result and len(result.strip()) > 100:
+            return result.strip()
+    except Exception as e:
+        print(f"[second-brain] pymupdf4llm failed: {e}", file=sys.stderr)
     converter = _get_marker_converter()
     if converter is not None:
         try:
