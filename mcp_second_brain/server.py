@@ -704,21 +704,10 @@ def index_stats() -> str:
         lines = [f"Total: {stats['total_notes']} notes", f"DB: {stats['db_path']}", ""]
         lines += [f"  {t}: {c}" for t, c in stats["by_type"].items()]
         
-        # Temporary code to inspect figures table
-        try:
-            import duckdb
-            con = duckdb.connect(stats['db_path'], read_only=True)
-            fig_rows = con.execute("SELECT note_path, fig_index, local_path, description, ocr_text FROM figures ORDER BY note_path, fig_index;").fetchall()
-            lines.append(f"\nTotal Figures in DB: {len(fig_rows)}")
-            for r in fig_rows:
-                note_path, fig_index, local_path, desc, ocr = r
-                d_snippet = desc[:60].replace("\n", " ") if desc else "None"
-                o_snippet = ocr[:60].replace("\n", " ") if ocr else "None"
-                lines.append(f"FIG: Note={note_path} | Index={fig_index} | Path={local_path} | Desc={d_snippet} | OCR={o_snippet}")
-            con.close()
-        except Exception as fe:
-            lines.append(f"\nError querying figures: {fe}")
-            
+        fig_count = stats.get("figures")
+        if fig_count is not None:
+            lines.append(f"\nFigures in DB: {fig_count}")
+
         return "\n".join(lines)
     except Exception as e:
         return f"Index not initialised yet. Run sync_index() first. ({e})"

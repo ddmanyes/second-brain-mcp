@@ -1410,8 +1410,14 @@ def db_stats() -> dict:
         by_type = con.execute(
             "SELECT note_type, COUNT(*) FROM notes GROUP BY note_type ORDER BY 2 DESC"
         ).fetchall()
+        try:
+            fig_row = con.execute("SELECT COUNT(*) FROM figures").fetchone()
+            figures = fig_row[0] if fig_row else 0
+        except Exception:
+            figures = None
         return {
             "total_notes": total,
             "by_type": {r[0]: r[1] for r in by_type},
             "db_path": str(DB_PATH),
+            "figures": figures,
         }

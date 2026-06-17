@@ -883,6 +883,11 @@ class PostgresStore:
             by_type = conn.execute(
                 "SELECT note_type, COUNT(*) FROM notes GROUP BY note_type ORDER BY 2 DESC"
             ).fetchall()
+            try:
+                fig_row = conn.execute("SELECT COUNT(*) FROM figures").fetchone()
+                figures = fig_row[0] if fig_row else 0
+            except Exception:
+                figures = None
             # observability: queries running >5s on this database (excludes idle)
             try:
                 lr = conn.execute(
@@ -903,6 +908,7 @@ class PostgresStore:
             "total_notes": total,
             "by_type": {r[0]: r[1] for r in by_type},
             "db_path": _redact_dsn(self._dsn),
+            "figures": figures,
             "pool": {
                 "size": pool.get("pool_size"),
                 "available": pool.get("pool_available"),
