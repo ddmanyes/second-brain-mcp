@@ -996,6 +996,10 @@ class PostgresStore:
 
     def register_api_key(self, key_hash: str, user_id: str, role: str) -> None:
         """Insert a new API key. Raises psycopg.errors.UniqueViolation if duplicate."""
+        from ..identity import VALID_ROLES
+
+        if role not in VALID_ROLES:
+            raise ValueError(f"role must be one of {sorted(VALID_ROLES)}, got {role!r}")
         with self._pool.connection() as conn:
             conn.execute(
                 "INSERT INTO api_keys (key_hash, user_id, role) VALUES (%s, %s, %s)",
@@ -1014,7 +1018,7 @@ class PostgresStore:
             conn.commit()
             return (cur.rowcount or 0) > 0
 
-    def list_api_keys(self, user_id: str | None = None) -> list[dict]:
+    def list_api_keys(self, user_id: str | None = None, limit: int = 1000) -> list[dict]:
         """Return key records with truncated hash prefix (first 8 chars)."""
         conditions = []
         params: list = []
@@ -1022,10 +1026,11 @@ class PostgresStore:
             conditions.append("user_id = %s")
             params.append(user_id)
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        params.append(limit)
         with self._pool.connection() as conn:
             rows = conn.execute(
                 f"SELECT key_hash, user_id, role, created_at, revoked_at "
-                f"FROM api_keys {where} ORDER BY created_at DESC",
+                f"FROM api_keys {where} ORDER BY created_at DESC LIMIT %s",
                 params,
             ).fetchall()
         return [

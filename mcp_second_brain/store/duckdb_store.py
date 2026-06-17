@@ -264,5 +264,5 @@ class DuckDBStore:
     def revoke_api_key(self, key_hash: str) -> bool:  # noqa: ARG002
         return False
 
-    def list_api_keys(self, user_id: str | None = None) -> list[dict]:  # noqa: ARG002
+    def list_api_keys(self, user_id: str | None = None, limit: int = 1000) -> list[dict]:  # noqa: ARG002
         return []

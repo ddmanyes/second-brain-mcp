@@ -10,7 +10,6 @@ Covers:
 """
 from __future__ import annotations
 
-import os
 import pytest
 
 from mcp_second_brain.identity import (
@@ -253,16 +252,126 @@ class TestManageApiKeyAdminGate:
 
 
 # ---------------------------------------------------------------------------
-# SB_POOL_MAX_SIZE env var
+# query_audit_log tool — admin gate
+# ---------------------------------------------------------------------------
+
+class TestQueryAuditLogAdminGate:
+    def test_non_admin_blocked(self):
+        from mcp_second_brain.server import query_audit_log
+        tok = set_identity(Identity(user_id="bob", role="writer"))
+        try:
+            result = query_audit_log()
+            assert "[RBAC]" in result
+            assert "admin" in result
+        finally:
+            _current.reset(tok)
+
+    def test_reader_blocked(self):
+        from mcp_second_brain.server import query_audit_log
+        tok = set_identity(Identity(user_id="carol", role="reader"))
+        try:
+            result = query_audit_log()
+            assert "[RBAC]" in result
+        finally:
+            _current.reset(tok)
+
+    def test_none_identity_allowed(self):
+        from mcp_second_brain.server import query_audit_log
+        result = query_audit_log()
+        assert "[RBAC]" not in result
+
+    def test_admin_allowed(self):
+        from mcp_second_brain.server import query_audit_log
+        tok = set_identity(Identity(user_id="root", role="admin"))
+        try:
+            result = query_audit_log()
+            assert "[RBAC]" not in result
+        finally:
+            _current.reset(tok)
+
+
+# ---------------------------------------------------------------------------
+# CRITICAL fix verification — lookup_fn receives raw key, store receives hash
+# ---------------------------------------------------------------------------
+
+class TestLookupFnHashContract:
+    """Verify that the auth → store lookup chain hashes the raw key before DB lookup."""
+
+    def test_store_lookup_uses_hash_not_raw(self):
+        """get_identity_for_key must be called with SHA-256 hash, not plaintext."""
+        raw_key = "my-plaintext-secret-key"
+        kh = hash_key(raw_key)
+
+        store = _MockKeyStore()
+        store.register_api_key(kh, "alice", "writer")
+
+        # Direct lookup with raw key must fail (wrong input)
+        assert store.get_identity_for_key(raw_key) is None
+        # Lookup with hash must succeed
+        assert store.get_identity_for_key(kh) is not None
+
+    def test_lambda_wrapper_hashes_before_lookup(self):
+        """Simulate the server.py wiring: lambda raw: store.get_identity_for_key(hash_key(raw))."""
+        raw_key = "my-plaintext-secret-key"
+        kh = hash_key(raw_key)
+
+        store = _MockKeyStore()
+        store.register_api_key(kh, "alice", "writer")
+
+        lookup_fn = lambda raw: store.get_identity_for_key(hash_key(raw))  # noqa: E731
+
+        identity = lookup_fn(raw_key)
+        assert identity is not None
+        assert identity.user_id == "alice"
+        assert identity.role == "writer"
+
+    def test_lambda_wrapper_revoked_key_returns_none(self):
+        raw_key = "revoked-key"
+        kh = hash_key(raw_key)
+
+        store = _MockKeyStore()
+        store.register_api_key(kh, "alice", "writer")
+        store.revoke_api_key(kh)
+
+        lookup_fn = lambda raw: store.get_identity_for_key(hash_key(raw))  # noqa: E731
+        assert lookup_fn(raw_key) is None
+
+
+# ---------------------------------------------------------------------------
+# SB_POOL_MAX_SIZE env var — factory.py logic
 # ---------------------------------------------------------------------------
 
 class TestPoolMaxSizeEnvVar:
-    def test_default_is_10(self, monkeypatch):
-        monkeypatch.delenv("SB_POOL_MAX_SIZE", raising=False)
-        pool_max = int(os.environ.get("SB_POOL_MAX_SIZE", "10"))
-        assert pool_max == 10
+    def test_invalid_value_raises_runtime_error(self, monkeypatch):
+        """factory.py should raise RuntimeError for non-integer SB_POOL_MAX_SIZE."""
+        from mcp_second_brain.store.factory import get_store, reset_store
 
-    def test_override_is_respected(self, monkeypatch):
-        monkeypatch.setenv("SB_POOL_MAX_SIZE", "20")
-        pool_max = int(os.environ.get("SB_POOL_MAX_SIZE", "10"))
-        assert pool_max == 20
+        monkeypatch.setenv("SB_DB_BACKEND", "postgres")
+        monkeypatch.setenv("SB_PG_DSN", "postgresql://fake/db")
+        monkeypatch.setenv("SB_POOL_MAX_SIZE", "not-a-number")
+        reset_store()
+        try:
+            with pytest.raises(RuntimeError, match="SB_POOL_MAX_SIZE invalid"):
+                get_store()
+        finally:
+            reset_store()
+            monkeypatch.delenv("SB_DB_BACKEND", raising=False)
+            monkeypatch.delenv("SB_PG_DSN", raising=False)
+            monkeypatch.delenv("SB_POOL_MAX_SIZE", raising=False)
+
+    def test_zero_value_raises_runtime_error(self, monkeypatch):
+        """SB_POOL_MAX_SIZE=0 must be rejected."""
+        from mcp_second_brain.store.factory import get_store, reset_store
+
+        monkeypatch.setenv("SB_DB_BACKEND", "postgres")
+        monkeypatch.setenv("SB_PG_DSN", "postgresql://fake/db")
+        monkeypatch.setenv("SB_POOL_MAX_SIZE", "0")
+        reset_store()
+        try:
+            with pytest.raises(RuntimeError, match="SB_POOL_MAX_SIZE invalid"):
+                get_store()
+        finally:
+            reset_store()
+            monkeypatch.delenv("SB_DB_BACKEND", raising=False)
+            monkeypatch.delenv("SB_PG_DSN", raising=False)
+            monkeypatch.delenv("SB_POOL_MAX_SIZE", raising=False)

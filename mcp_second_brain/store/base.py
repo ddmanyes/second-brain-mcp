@@ -280,10 +280,11 @@ class VaultStore(Protocol):
         """
         ...
 
-    def list_api_keys(self, user_id: str | None = None) -> list[dict]:
+    def list_api_keys(self, user_id: str | None = None, limit: int = 1000) -> list[dict]:
         """Return API key records.
 
         Returns list of {"key_hash_prefix", "user_id", "role", "created_at", "revoked_at"} dicts.
         key_hash is truncated to first 8 chars to avoid exposing the full hash.
+        limit: max rows (default 1000).
         """
         ...

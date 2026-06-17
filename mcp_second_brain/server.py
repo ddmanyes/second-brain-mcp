@@ -1725,8 +1725,10 @@ def manage_api_key(
         kh = hash_key(raw_key)
         try:
             _store.register_api_key(kh, user_id, role)
-        except Exception as exc:
-            return f"Error registering key: {exc}"
+        except ValueError as exc:
+            return f"Error: {exc}"
+        except Exception:
+            return f"Error: failed to register key (hash_prefix={kh[:8]}) — check server logs"
         return f"Registered key for '{user_id}' (role={role}, hash_prefix={kh[:8]})"
 
     if action == "revoke":
@@ -1952,9 +1954,14 @@ def _run_http_with_auth(transport: str) -> None:
     import uvicorn
 
     from .auth import maybe_add_api_key_auth
+    from .identity import hash_key as _hash_key
 
     app = mcp.sse_app() if transport == "sse" else mcp.streamable_http_app()
-    n_keys = maybe_add_api_key_auth(app, lookup_fn=_store.get_identity_for_key)
+    # auth.py passes the raw key; store expects SHA-256 hash — wrap here
+    n_keys = maybe_add_api_key_auth(
+        app,
+        lookup_fn=lambda raw: _store.get_identity_for_key(_hash_key(raw)),
+    )
     if n_keys:
         print(f"[second-brain] API-key auth ENABLED ({n_keys} key(s))", file=sys.stderr)
     else:

@@ -37,7 +37,12 @@ def get_store() -> VaultStore:
                 "SB_DB_BACKEND=postgres requires SB_PG_DSN to be set, e.g. "
                 "postgresql://postgres:password@localhost:5432/sb_personal"
             )
-        pool_max = int(os.environ.get("SB_POOL_MAX_SIZE", "10"))
+        try:
+            pool_max = int(os.environ.get("SB_POOL_MAX_SIZE", "10"))
+            if pool_max < 1:
+                raise ValueError("must be >= 1")
+        except ValueError as exc:
+            raise RuntimeError(f"SB_POOL_MAX_SIZE invalid: {exc}") from exc
         _store_instance = PostgresStore(dsn, max_size=pool_max)
     else:
         _store_instance = DuckDBStore()
