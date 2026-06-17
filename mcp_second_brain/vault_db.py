@@ -1384,6 +1384,25 @@ def mark_page_processed(note_path: str, page_hash: str, fig_count: int = 0) -> N
         )
 
 
+def get_figures_for_note(note_path: str) -> list[dict]:
+    """Return all figure rows for a given note (used to sync to postgres)."""
+    with _connect() as con:
+        rows = con.execute(
+            "SELECT note_path, fig_index, image_url, local_path, ocr_text, "
+            "description, coalesce(caption,''), coalesce(token_est,0) "
+            "FROM figures WHERE note_path = ? ORDER BY fig_index",
+            [note_path],
+        ).fetchall()
+    return [
+        {
+            "note_path": r[0], "fig_index": r[1], "image_url": r[2],
+            "local_path": r[3], "ocr_text": r[4], "description": r[5],
+            "caption": r[6], "token_est": r[7],
+        }
+        for r in rows
+    ]
+
+
 def get_figure(note_path: str, fig_index: int) -> dict | None:
     """Return a single figure row for read_figure (Phase 5.3). None if absent."""
     with _connect() as con:

@@ -1118,6 +1118,12 @@ def save_article(
     def _bg_extract():
         try:
             _fig.process_article(rel, VAULT)
+            # Sync figures written to DuckDB cache into the primary store (postgres when SB_DB_BACKEND=postgres)
+            for fig in vault_db.get_figures_for_note(rel):
+                try:
+                    _store.upsert_figure(**fig)
+                except Exception as fe:
+                    print(f"[second-brain] figure sync to store failed: {fe}", file=sys.stderr)
         except Exception as e:
             print(f"[second-brain] figure extraction failed for {rel}: {e}", file=sys.stderr)
 
@@ -1172,6 +1178,11 @@ def extract_figures_for(note_path: str) -> str:
     if not full.is_relative_to(VAULT) or not full.exists():
         return f"Note not found: {note_path}"
     result = _fig.process_article(note_path, VAULT)
+    for fig in vault_db.get_figures_for_note(note_path):
+        try:
+            _store.upsert_figure(**fig)
+        except Exception as fe:
+            print(f"[second-brain] figure sync to store failed: {fe}", file=sys.stderr)
     return result
 
 
