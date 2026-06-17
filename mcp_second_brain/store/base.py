@@ -12,7 +12,10 @@ vault_db.py and can be imported directly by callers.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from ..identity import Identity
 
 
 @runtime_checkable
@@ -251,5 +254,36 @@ class VaultStore(Protocol):
         """Return recent audit records, optionally filtered by user_id or tool.
 
         Returns list of {"ts", "user_id", "tool", "target"} dicts.
+        """
+        ...
+
+    # ------------------------------------------------------------------
+    # API key lifecycle (MULTIUSER_PLAN P4)
+    # ------------------------------------------------------------------
+
+    def get_identity_for_key(self, key_hash: str) -> Identity | None:
+        """Return an Identity-like object for the given key hash, or None.
+
+        Returns None if the key is unknown OR has been revoked (revoked_at IS NOT NULL).
+        DuckDB (single-user) always returns None → auth.py falls back to env-key admin.
+        """
+        ...
+
+    def register_api_key(self, key_hash: str, user_id: str, role: str) -> None:
+        """Insert a new API key row. Raises if key_hash already exists."""
+        ...
+
+    def revoke_api_key(self, key_hash: str) -> bool:
+        """Set revoked_at = NOW() for the given key.
+
+        Returns True if the key existed and was revoked, False if not found.
+        """
+        ...
+
+    def list_api_keys(self, user_id: str | None = None) -> list[dict]:
+        """Return API key records.
+
+        Returns list of {"key_hash_prefix", "user_id", "role", "created_at", "revoked_at"} dicts.
+        key_hash is truncated to first 8 chars to avoid exposing the full hash.
         """
         ...

@@ -23,7 +23,7 @@ from .vault_db import KNOWLEDGE_EXCLUDE
 from . import vault_sleep as _vs
 from . import figures as _fig
 from .store import get_store
-from .identity import check_write_permission, get_current_identity
+from .identity import check_admin_permission, check_write_permission, get_current_identity
 
 VAULT = Path(os.environ.get(
     "SECOND_BRAIN_PATH",
@@ -1695,6 +1695,98 @@ def get_agent_instructions() -> str:
 
 
 @mcp.tool()
+def manage_api_key(
+    action: str,
+    raw_key: str = "",
+    user_id: str = "",
+    role: str = "reader",
+) -> str:
+    """Manage API keys for multi-user access (admin only).
+
+    action: "register" | "revoke" | "list"
+    raw_key: the plaintext API key (register/revoke). Never stored; only its SHA-256 hash is persisted.
+    user_id: human-readable owner label (register/list filter).
+    role: "reader" | "writer" | "admin" (register only, default "reader").
+
+    Returns a plain-text summary of the operation.
+    """
+    if err := check_admin_permission("manage_api_key"):
+        return err
+
+    from .identity import hash_key, VALID_ROLES
+
+    if action == "register":
+        if not raw_key:
+            return "Error: raw_key is required for register"
+        if not user_id:
+            return "Error: user_id is required for register"
+        if role not in VALID_ROLES:
+            return f"Error: role must be one of {sorted(VALID_ROLES)}"
+        kh = hash_key(raw_key)
+        try:
+            _store.register_api_key(kh, user_id, role)
+        except Exception as exc:
+            return f"Error registering key: {exc}"
+        return f"Registered key for '{user_id}' (role={role}, hash_prefix={kh[:8]})"
+
+    if action == "revoke":
+        if not raw_key:
+            return "Error: raw_key is required for revoke"
+        kh = hash_key(raw_key)
+        revoked = _store.revoke_api_key(kh)
+        if revoked:
+            return f"Revoked key (hash_prefix={kh[:8]})"
+        return f"Key not found or already revoked (hash_prefix={kh[:8]})"
+
+    if action == "list":
+        rows = _store.list_api_keys(user_id=user_id or None)
+        if not rows:
+            return "No API keys found."
+        lines = ["prefix   | user_id                       | role    | created_at          | revoked_at"]
+        lines.append("-" * 95)
+        for r in rows:
+            revoked = r["revoked_at"] or "active"
+            lines.append(
+                f"{r['key_hash_prefix']:<8} | {r['user_id']:<29} | {r['role']:<7} | "
+                f"{r['created_at'][:19]} | {revoked[:19]}"
+            )
+        return "\n".join(lines)
+
+    return f"Error: unknown action '{action}'. Use register | revoke | list"
+
+
+@mcp.tool()
+def query_audit_log(
+    user_id: str = "",
+    tool_name: str = "",
+    limit: int = 50,
+) -> str:
+    """Query the write-action audit log (admin only).
+
+    user_id: filter by actor (optional).
+    tool_name: filter by tool (optional).
+    limit: max rows to return (default 50).
+    """
+    if err := check_admin_permission("query_audit_log"):
+        return err
+
+    rows = _store.query_audit_log(
+        user_id=user_id or None,
+        tool=tool_name or None,
+        limit=limit,
+    )
+    if not rows:
+        return "No audit records found."
+    lines = ["ts                   | user_id                       | tool                  | target"]
+    lines.append("-" * 100)
+    for r in rows:
+        lines.append(
+            f"{str(r['ts'])[:19]} | {r['user_id']:<29} | {r['tool']:<21} | {r['target']}"
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
 def health_check() -> str:
     """Diagnose second-brain system health.
 
@@ -1862,7 +1954,7 @@ def _run_http_with_auth(transport: str) -> None:
     from .auth import maybe_add_api_key_auth
 
     app = mcp.sse_app() if transport == "sse" else mcp.streamable_http_app()
-    n_keys = maybe_add_api_key_auth(app)
+    n_keys = maybe_add_api_key_auth(app, lookup_fn=_store.get_identity_for_key)
     if n_keys:
         print(f"[second-brain] API-key auth ENABLED ({n_keys} key(s))", file=sys.stderr)
     else:

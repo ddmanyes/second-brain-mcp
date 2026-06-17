@@ -95,3 +95,28 @@ def check_write_permission(tool_name: str) -> str | None:
         file=sys.stderr,
     )
     return None
+
+
+# ---------------------------------------------------------------------------
+# Admin-permission guard (MULTIUSER_PLAN P4)
+# ---------------------------------------------------------------------------
+
+_ADMIN_DENIED_MSG = "[RBAC] admin access required: '{}' requires admin role (current: {})"
+
+
+def check_admin_permission(tool_name: str) -> str | None:
+    """Return None if caller is admin, or an error string.
+
+    Unlike write permission, admin checks are always enforced regardless of
+    SB_RBAC_ENFORCE — key management must never be accessible to non-admins.
+    None identity (stdio/dev mode) is treated as admin for back-compat.
+    """
+    identity = get_current_identity()
+    if identity is None or identity.is_admin():
+        return None
+    print(
+        f"[RBAC DENY] {identity.user_id} blocked from admin tool '{tool_name}' "
+        f"(role={identity.role})",
+        file=sys.stderr,
+    )
+    return _ADMIN_DENIED_MSG.format(tool_name, identity.role)

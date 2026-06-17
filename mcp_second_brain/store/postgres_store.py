@@ -13,6 +13,10 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..identity import Identity
 
 import psycopg
 from psycopg_pool import ConnectionPool
@@ -969,5 +973,68 @@ class PostgresStore:
             ).fetchall()
         return [
             {"ts": str(r[0]), "user_id": r[1], "tool": r[2], "target": r[3]}
+            for r in rows
+        ]
+
+    # ------------------------------------------------------------------
+    # API key lifecycle (MULTIUSER_PLAN P4)
+    # ------------------------------------------------------------------
+
+    def get_identity_for_key(self, key_hash: str) -> Identity | None:
+        """Return Identity for an active key, or None if unknown/revoked."""
+        from ..identity import Identity  # local import to avoid circular dependency
+
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT user_id, role FROM api_keys "
+                "WHERE key_hash = %s AND revoked_at IS NULL",
+                [key_hash],
+            ).fetchone()
+        if row is None:
+            return None
+        return Identity(user_id=row[0], role=row[1])
+
+    def register_api_key(self, key_hash: str, user_id: str, role: str) -> None:
+        """Insert a new API key. Raises psycopg.errors.UniqueViolation if duplicate."""
+        with self._pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO api_keys (key_hash, user_id, role) VALUES (%s, %s, %s)",
+                [key_hash, user_id, role],
+            )
+            conn.commit()
+
+    def revoke_api_key(self, key_hash: str) -> bool:
+        """Set revoked_at = NOW(). Returns True if a row was updated."""
+        with self._pool.connection() as conn:
+            cur = conn.execute(
+                "UPDATE api_keys SET revoked_at = NOW() "
+                "WHERE key_hash = %s AND revoked_at IS NULL",
+                [key_hash],
+            )
+            conn.commit()
+            return (cur.rowcount or 0) > 0
+
+    def list_api_keys(self, user_id: str | None = None) -> list[dict]:
+        """Return key records with truncated hash prefix (first 8 chars)."""
+        conditions = []
+        params: list = []
+        if user_id is not None:
+            conditions.append("user_id = %s")
+            params.append(user_id)
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                f"SELECT key_hash, user_id, role, created_at, revoked_at "
+                f"FROM api_keys {where} ORDER BY created_at DESC",
+                params,
+            ).fetchall()
+        return [
+            {
+                "key_hash_prefix": r[0][:8],
+                "user_id": r[1],
+                "role": r[2],
+                "created_at": str(r[3]),
+                "revoked_at": str(r[4]) if r[4] else None,
+            }
             for r in rows
         ]

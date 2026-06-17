@@ -240,13 +240,29 @@ class DuckDBStore:
     # Audit log (MULTIUSER_PLAN P3) — noop in DuckDB mode
     # ------------------------------------------------------------------
 
-    def append_audit_log(self, user_id: str, tool: str, target: str = "") -> None:
+    def append_audit_log(self, user_id: str, tool: str, target: str = "") -> None:  # noqa: ARG002
         pass  # DuckDB is single-user local mode; audit log is a Postgres feature
 
     def query_audit_log(
         self,
-        user_id: str | None = None,
-        tool: str | None = None,
-        limit: int = 100,
+        user_id: str | None = None,  # noqa: ARG002
+        tool: str | None = None,  # noqa: ARG002
+        limit: int = 100,  # noqa: ARG002
     ) -> list[dict]:
+        return []
+
+    # ------------------------------------------------------------------
+    # API key lifecycle (MULTIUSER_PLAN P4) — noop in DuckDB single-user mode
+    # ------------------------------------------------------------------
+
+    def get_identity_for_key(self, key_hash: str) -> None:  # noqa: ARG002
+        return None  # triggers env-key admin fallback in auth.py
+
+    def register_api_key(self, key_hash: str, user_id: str, role: str) -> None:  # noqa: ARG002
+        pass
+
+    def revoke_api_key(self, key_hash: str) -> bool:  # noqa: ARG002
+        return False
+
+    def list_api_keys(self, user_id: str | None = None) -> list[dict]:  # noqa: ARG002
         return []

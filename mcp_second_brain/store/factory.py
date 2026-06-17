@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import os
 
+from .base import VaultStore
 from .duckdb_store import DuckDBStore
 
-_store_instance: DuckDBStore | None = None  # singleton per process
+_store_instance: VaultStore | None = None  # singleton per process
 
 
-def get_store() -> DuckDBStore:
+def get_store() -> VaultStore:
     """Return the process-level VaultStore instance (DuckDBStore or PostgresStore).
 
     Cached after first call — environment variables are read once at startup.
@@ -36,7 +37,8 @@ def get_store() -> DuckDBStore:
                 "SB_DB_BACKEND=postgres requires SB_PG_DSN to be set, e.g. "
                 "postgresql://postgres:password@localhost:5432/sb_personal"
             )
-        _store_instance = PostgresStore(dsn)  # type: ignore[assignment]
+        pool_max = int(os.environ.get("SB_POOL_MAX_SIZE", "10"))
+        _store_instance = PostgresStore(dsn, max_size=pool_max)
     else:
         _store_instance = DuckDBStore()
 
