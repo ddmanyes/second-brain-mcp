@@ -2,8 +2,8 @@
 
 > **目標**：改善 second-brain PDF 論文歸檔品質，解決文字排版混亂與圖檔提取不完整的問題。  
 > **建立日期**：2026-06-16  
-> **最後更新**：2026-06-16（全 phase 實作完成，211 tests green；**4.4 完整驗收 ✅**）  
-> **狀態**：✅ 完全完成（branch `feat/pdf-pipeline`）。所有 phase 含 4.4 真實論文端對端驗收皆通過。
+> **最後更新**：2026-06-17（Postgres backend bug fixes；figures 端對端連結確認 ✅）  
+> **狀態**：✅ 完全完成（branch `feat/pdf-pipeline` → merged master）。所有 phase 含 4.4 真實論文端對端驗收皆通過。
 >   依賴管理註記：`uv lock` 因既有 marker-pdf↔anthropic 版本衝突無法 resolve，套件直接裝在 `.venv`；測試以 `.venv/bin/python -m pytest` 執行（非 `uv run`）。  
 > **執行順序（已修正）**：Phase 0 → Phase 1 → Phase 3a（token）→ Phase 2 → Phase 3b（caption）→ Phase 5（取用）→ Phase 4
 >
@@ -424,7 +424,21 @@ flowchart TD
   - **實際成本**：11 頁 × 18 次 API 呼叫，耗時約 2 分鐘，**~$0.18 / 篇**
   - **Phase 2.0 結論**：✅ VLM render 路徑為主力（準度通過，向量圖必要）
 
-- [ ] **4.5** git commit: `test: end-to-end PDF pipeline integration tests`
+- [x] **4.5** 2026-06-17 用戶驗收：wikilink 格式 ✅、header guard ✅、search_figures 命中 ✅、文章↔圖片雙向連結 ✅
+
+---
+
+## Postgres Backend Bug Fixes（2026-06-17）
+
+PDF pipeline 上線後用 Postgres backend 發現的三個潛藏 bug，已全部修復並驗收：
+
+| commit | bug | 根因 | 修法 |
+|---|---|---|---|
+| `ab9b82c` | `index_stats` figures 報 DuckDB 無法開啟 Postgres URI | 殘留 debug code 用 `duckdb.connect(postgres_uri)` | 改在 `db_stats()` 查 `COUNT(*) FROM figures`，兩個 store 都加 `figures` 欄位 |
+| `0ebd288` | `save_article` 報 "can't multiply sequence by non-int of type 'str'" | psycopg3 無 pgvector type adapter，`vector` 欄位回傳 string `"[0.1,...]"`，`_cosine()` 對字元相乘 | 加 `_parse_vec()` helper（str→`json.loads`），在 `find_related` 和 `load_embedding_cache` 套用 |
+| `e1cd5b9` | `search_figures` / `read_figure` 查不到圖片（Figures in DB: 0） | `figures.py` 寫入 DuckDB cache，但 `search_figures` 查 Postgres figures 表（空的） | `extract_figures_for` 和 `_bg_extract` 執行後，從 `vault_db.get_figures_for_note()` 讀回並 upsert 到 `_store` |
+
+**端對端驗收（2026-06-17）**：同篇 PDF 重跑，`Figures in DB: 7`，`search_figures` 命中 6/7 筆（含 caption + description + OCR），`![[wikilink]]` 格式正確，文章↔圖片雙向連結確認。
 
 ---
 
