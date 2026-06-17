@@ -100,6 +100,20 @@ CREATE TABLE IF NOT EXISTS api_keys (
 CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
 
 -- ---------------------------------------------------------------------------
+-- audit_log — immutable write-action record (MULTIUSER_PLAN P3)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS audit_log (
+    id       BIGSERIAL    PRIMARY KEY,
+    ts       TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    user_id  TEXT         NOT NULL,           -- identity.user_id or 'unknown'
+    tool     TEXT         NOT NULL,           -- write tool name
+    target   TEXT         NOT NULL DEFAULT '' -- note_path / URL / title, or ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_ts   ON audit_log(ts DESC);
+
+-- ---------------------------------------------------------------------------
 -- Vector similarity index (HNSW — sub-linear cosine ANN)
 -- ---------------------------------------------------------------------------
 -- Build after sync_all so the index is not rebuilt per-row during import.

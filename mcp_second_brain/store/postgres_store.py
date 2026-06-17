@@ -932,3 +932,42 @@ class PostgresStore:
             },
             "long_running_queries": long_running,
         }
+
+    # ------------------------------------------------------------------
+    # Audit log (MULTIUSER_PLAN P3)
+    # ------------------------------------------------------------------
+
+    def append_audit_log(self, user_id: str, tool: str, target: str = "") -> None:
+        with self._pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO audit_log (user_id, tool, target) VALUES (%s, %s, %s)",
+                [user_id, tool, target],
+            )
+            conn.commit()
+
+    def query_audit_log(
+        self,
+        user_id: str | None = None,
+        tool: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        conditions = []
+        params: list = []
+        if user_id is not None:
+            conditions.append("user_id = %s")
+            params.append(user_id)
+        if tool is not None:
+            conditions.append("tool = %s")
+            params.append(tool)
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        params.append(limit)
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                f"SELECT ts, user_id, tool, target FROM audit_log {where} "
+                f"ORDER BY ts DESC LIMIT %s",
+                params,
+            ).fetchall()
+        return [
+            {"ts": str(r[0]), "user_id": r[1], "tool": r[2], "target": r[3]}
+            for r in rows
+        ]

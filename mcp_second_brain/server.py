@@ -23,7 +23,7 @@ from .vault_db import KNOWLEDGE_EXCLUDE
 from . import vault_sleep as _vs
 from . import figures as _fig
 from .store import get_store
-from .identity import check_write_permission
+from .identity import check_write_permission, get_current_identity
 
 VAULT = Path(os.environ.get(
     "SECOND_BRAIN_PATH",
@@ -31,6 +31,22 @@ VAULT = Path(os.environ.get(
 )).expanduser().resolve()
 
 _store = get_store()  # DuckDBStore or PostgresStore, selected by SB_DB_BACKEND env var
+
+
+def _log_write(tool: str, target: str = "") -> None:
+    """Append an immutable audit record for a write-tool invocation (MULTIUSER_PLAN P3).
+
+    Reads actor from the per-request identity contextvar; falls back to 'unknown'
+    for unauthenticated stdio/dev usage.  Never raises — audit failures must not
+    interrupt actual writes.
+    """
+    identity = get_current_identity()
+    actor = identity.user_id if identity else "unknown"
+    try:
+        _store.append_audit_log(actor, tool, target)
+    except Exception:
+        pass
+
 
 # ── 防止兩個 HTTP server 搶同一個 port：kill 舊的 HTTP 進程 ──────────────────
 # 注意：只有長駐的 HTTP transport（遠端 Tailscale server）才需要這個單例保護。
@@ -416,6 +432,7 @@ def new_note(note_type: str, title: str, content: str = "", tags: str = "") -> s
         tags: Comma-separated tags, e.g. 'evo-prism,architecture'. Added to frontmatter.
     """
     if err := check_write_permission("new_note"): return err
+    _log_write("new_note", title)
     nt = note_type.lower()
     registry = _load_project_registry()
     matched_slug = _detect_project_slug(title, tags, registry)
@@ -568,6 +585,7 @@ def update_goals(new_content: str) -> str:
         new_content: Full new content for goals.md (markdown format)
     """
     if err := check_write_permission("update_goals"): return err
+    _log_write("update_goals", "memory/goals.md")
     goals_path = VAULT / "memory" / "goals.md"
     goals_path.parent.mkdir(parents=True, exist_ok=True)
     goals_path.write_text(new_content, encoding="utf-8")
@@ -605,6 +623,7 @@ def update_note(path: str, content: str) -> str:
         content: Full new content to write (replaces the entire file)
     """
     if err := check_write_permission("update_note"): return err
+    _log_write("update_note", path)
     full_path = (VAULT / path).resolve()
     if not full_path.is_relative_to(VAULT):
         return "Error: path must be within the vault."
@@ -633,6 +652,7 @@ def append_to_note(path: str, content: str) -> str:
         content: Text to append (added after a blank line at end of file)
     """
     if err := check_write_permission("append_to_note"): return err
+    _log_write("append_to_note", path)
     full_path = (VAULT / path).resolve()
     if not full_path.is_relative_to(VAULT):
         return "Error: path must be within the vault."
@@ -660,6 +680,7 @@ def mark_note_status(path: str, status: str) -> str:
         status: One of: active | archived | consolidated | archive_backup
     """
     if err := check_write_permission("mark_note_status"): return err
+    _log_write("mark_note_status", path)
     allowed = {"active", "archived", "consolidated", "archive_backup"}
     if status not in allowed:
         return f"Invalid status {status!r}. Choose from: {', '.join(sorted(allowed))}"
@@ -733,6 +754,7 @@ def vault_sleep(dry_run: bool = False) -> str:
         dry_run: If True, show candidates without making changes.
     """
     if err := check_write_permission("vault_sleep"): return err
+    _log_write("vault_sleep", "")
     result = _vs.run_sleep(VAULT, dry_run=dry_run)
     lines = [
         f"Candidates: {result['candidates']}",
@@ -836,6 +858,7 @@ def expand_semantic_keywords_tool(note_path: str = "", force: bool = False) -> s
         Summary dict: {"processed": N, "skipped": M, "failed": K}
     """
     if err := check_write_permission("expand_semantic_keywords_tool"): return err
+    _log_write("expand_semantic_keywords_tool", note_path)
     gemini_cli = shutil.which("gemini")
     if not gemini_cli:
         return "Gemini CLI not found — install with `npm install -g @google/generative-ai`"
@@ -889,6 +912,7 @@ def enrich_neighbor_keywords_tool(note_path: str = "", force: bool = False) -> s
         JSON-like string with {"enriched": N, "skipped": M, "no_neighbors": K}.
     """
     if err := check_write_permission("enrich_neighbor_keywords_tool"): return err
+    _log_write("enrich_neighbor_keywords_tool", note_path)
     enriched = skipped = no_neighbors = 0
     try:
         all_data = _store.compute_neighbor_keywords()
@@ -1046,6 +1070,7 @@ def save_article(
                   Use 'YYYY_Author_ShortTitle' format for research papers, e.g. '2024_Bakr_ARID1A'.
     """
     if err := check_write_permission("save_article"): return err
+    _log_write("save_article", source)
     source = _normalise_source_url(source)
     safe = _validate_source(source)
     if safe is None:
@@ -1155,6 +1180,7 @@ def update_links_tool(note_path: str = "") -> str:
                    Leave empty to update ALL notes that have embeddings.
     """
     if err := check_write_permission("update_links_tool"): return err
+    _log_write("update_links_tool", note_path)
     if note_path:
         full = (VAULT / note_path).resolve()
         if not full.is_relative_to(VAULT) or not full.exists():
@@ -1186,6 +1212,7 @@ def extract_figures_for(note_path: str) -> str:
         note_path: Relative path within vault, e.g. '30-resources/my-article.md'
     """
     if err := check_write_permission("extract_figures_for"): return err
+    _log_write("extract_figures_for", note_path)
     full = (VAULT / note_path).resolve()
     if not full.is_relative_to(VAULT) or not full.exists():
         return f"Note not found: {note_path}"
@@ -1236,6 +1263,7 @@ def snapshot_note_tool(note_path: str, tier: str = "base") -> str:
         tier: Resolution tier — 'large' (400 tokens), 'base' (256), 'small' (100)
     """
     if err := check_write_permission("snapshot_note_tool"): return err
+    _log_write("snapshot_note_tool", note_path)
     full = (VAULT / note_path).resolve()
     if not full.is_relative_to(VAULT) or not full.exists():
         return f"Note not found: {note_path}"
@@ -1270,6 +1298,7 @@ def consolidate_tool(threshold: float = 0.85, dry_run: bool = True) -> str:
         dry_run: If True, show clusters without consolidating (default True)
     """
     if err := check_write_permission("consolidate_tool"): return err
+    _log_write("consolidate_tool", "")
     result = _vs.run_consolidation(VAULT, threshold=threshold, dry_run=dry_run)
     mode = "DRY RUN" if dry_run else "EXECUTED"
     lines = [f"[{mode}] Clusters found: {result['clusters']}, Consolidated: {result['consolidated']}"]
@@ -1301,6 +1330,7 @@ def prune_archive_tool(min_age_days: int = 365, dry_run: bool = True) -> str:
         dry_run: If True, only report what would be deleted (default True)
     """
     if err := check_write_permission("prune_archive_tool"): return err
+    _log_write("prune_archive_tool", "")
     result = _vs.prune_archive(VAULT, min_age_days=min_age_days, dry_run=dry_run)
     mode = "DRY RUN" if dry_run else "EXECUTED"
     lines = [f"[{mode}] Archive prune: {result['deleted']} deleted, {result['skipped']} skipped"]
@@ -1421,6 +1451,7 @@ def annotate_figure(note_path: str, fig_index: int, insight: str) -> str:
         insight: The fact/observation to remember about this figure
     """
     if err := check_write_permission("annotate_figure"): return err
+    _log_write("annotate_figure", note_path)
     insight = insight.strip()
     if not insight:
         return "Empty insight — nothing saved."
@@ -1629,6 +1660,7 @@ def init_vault() -> str:
     Call this after cloning the repo or setting up on a new machine.
     """
     if err := check_write_permission("init_vault"): return err
+    _log_write("init_vault", "")
     actions = _bootstrap_vault(VAULT)
     if actions:
         return "Vault initialized:\n" + "\n".join(f"  + {a}" for a in actions)

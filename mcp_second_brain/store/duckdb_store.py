@@ -235,3 +235,18 @@ class DuckDBStore:
                 "SELECT path FROM notes WHERE embedding IS NOT NULL"
             ).fetchall()
         return [r[0] for r in rows]
+
+    # ------------------------------------------------------------------
+    # Audit log (MULTIUSER_PLAN P3) — noop in DuckDB mode
+    # ------------------------------------------------------------------
+
+    def append_audit_log(self, user_id: str, tool: str, target: str = "") -> None:
+        pass  # DuckDB is single-user local mode; audit log is a Postgres feature
+
+    def query_audit_log(
+        self,
+        user_id: str | None = None,
+        tool: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        return []

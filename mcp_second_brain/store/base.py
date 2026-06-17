@@ -228,3 +228,28 @@ class VaultStore(Protocol):
     def get_paths_with_embeddings(self) -> list[str]:
         """Return paths of all notes that have an embedding vector."""
         ...
+
+    # ------------------------------------------------------------------
+    # Audit log (MULTIUSER_PLAN P3)
+    # ------------------------------------------------------------------
+
+    def append_audit_log(self, user_id: str, tool: str, target: str = "") -> None:
+        """Append an immutable write-action record.
+
+        user_id: identity.user_id or 'unknown' for unauthenticated writes.
+        tool:    write tool name (e.g. 'new_note').
+        target:  note_path / URL / title, or '' for batch operations.
+        """
+        ...
+
+    def query_audit_log(
+        self,
+        user_id: str | None = None,
+        tool: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Return recent audit records, optionally filtered by user_id or tool.
+
+        Returns list of {"ts", "user_id", "tool", "target"} dicts.
+        """
+        ...
