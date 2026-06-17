@@ -195,6 +195,10 @@ def _analyse_with_claude(image_path: Path, caption: str = "") -> dict:
         )
         import json
         raw = message.content[0].text.strip()
+        usage = {
+            "input": getattr(message.usage, "input_tokens", 0),
+            "output": getattr(message.usage, "output_tokens", 0),
+        }
         # Extract JSON even if wrapped in markdown code block
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
         if json_match:
@@ -202,10 +206,11 @@ def _analyse_with_claude(image_path: Path, caption: str = "") -> dict:
             return {
                 "ocr_text": data.get("ocr_text", ""),
                 "description": data.get("description", ""),
+                "_usage": usage,
             }
     except Exception:
         pass
-    return {"ocr_text": "", "description": ""}
+    return {"ocr_text": "", "description": "", "_usage": {"input": 0, "output": 0}}
 
 
 def _analyse_with_gemini(image_path: Path, caption: str = "") -> dict:
@@ -281,7 +286,7 @@ def _render_pdf_pages(pdf_path: str, dpi: int = 150, max_pages: int = 20) -> lis
     return paths
 
 
-def _detect_figures_on_page(page_png: Path, page_num: int) -> list[dict]:
+def _detect_figures_on_page(page_png: Path, page_num: int) -> tuple[list[dict], dict]:
     """Ask Claude (vision) for figures/tables on a rendered page.
 
     Returns a list of {"bbox": [x0,y0,x1,y1] in PIXELS, "caption": str, "type": str}.
@@ -328,10 +333,14 @@ def _detect_figures_on_page(page_png: Path, page_num: int) -> list[dict]:
             ],
         }],
     )
+    usage = {
+        "input": getattr(message.usage, "input_tokens", 0),
+        "output": getattr(message.usage, "output_tokens", 0),
+    }
     raw = message.content[0].text.strip()
     m = re.search(r"\[.*\]", raw, re.DOTALL)
     if not m:
-        return []
+        return [], usage
     items = json.loads(m.group())
     # Header guard: academic papers have a header band in the top ~6% of the page
     # (journal name, article type, DOI/URL). If a bbox starts in that band, push
@@ -358,7 +367,7 @@ def _detect_figures_on_page(page_png: Path, page_num: int) -> list[dict]:
             "caption": (it.get("caption") or "").strip(),
             "type": (it.get("type") or "figure").strip(),
         })
-    return out
+    return out, usage
 
 
 def _crop_figure(page_png: Path, bbox: list, dest: Path) -> bool:
@@ -540,13 +549,20 @@ def _extract_figures_render(pdf_path: str, note_path: str, fig_dir: Path) -> lis
     results: list[dict] = []
     detection_ok = False
     detection_err = False
+    # Sonnet 4.6: $3/$15 per M input/output; Haiku 4.5: $0.80/$4 per M
+    _SONNET_IN, _SONNET_OUT = 3.0, 15.0
+    _HAIKU_IN, _HAIKU_OUT = 0.80, 4.0
+    detect_tok = {"input": 0, "output": 0}
+    analyse_tok = {"input": 0, "output": 0}
     try:
         for pnum, page_png in enumerate(pages):
             page_hash = hashlib.md5(page_png.read_bytes(), usedforsecurity=False).hexdigest()[:16]
             if vault_db.page_is_processed(note_path, page_hash):
                 continue  # negative cache: page already seen (even if 0 figures)
             try:
-                dets = _detect_figures_on_page(page_png, pnum)
+                dets, det_usage = _detect_figures_on_page(page_png, pnum)
+                detect_tok["input"] += det_usage.get("input", 0)
+                detect_tok["output"] += det_usage.get("output", 0)
             except Exception as e:
                 print(f"[figures] VLM detect failed on page {pnum}: {e}", file=sys.stderr)
                 detection_err = True
@@ -558,6 +574,9 @@ def _extract_figures_render(pdf_path: str, note_path: str, fig_dir: Path) -> lis
                     continue
                 caption = det.get("caption", "")
                 analysis = analyse_figure(dest, caption)
+                a_usage = analysis.pop("_usage", {})
+                analyse_tok["input"] += a_usage.get("input", 0)
+                analyse_tok["output"] += a_usage.get("output", 0)
                 description = analysis["description"] or caption
                 vault_db.upsert_figure(
                     note_path=note_path,
@@ -580,6 +599,17 @@ def _extract_figures_render(pdf_path: str, note_path: str, fig_dir: Path) -> lis
             vault_db.mark_page_processed(note_path, page_hash, len(dets))
     finally:
         shutil.rmtree(page_root, ignore_errors=True)
+
+    if detect_tok["input"] or analyse_tok["input"]:
+        detect_cost = (detect_tok["input"] * _SONNET_IN + detect_tok["output"] * _SONNET_OUT) / 1_000_000
+        analyse_cost = (analyse_tok["input"] * _HAIKU_IN + analyse_tok["output"] * _HAIKU_OUT) / 1_000_000
+        total_cost = detect_cost + analyse_cost
+        print(
+            f"[figures] extraction cost: detect={detect_tok['input']}in/{detect_tok['output']}out "
+            f"(${detect_cost:.4f}) analyse={analyse_tok['input']}in/{analyse_tok['output']}out "
+            f"(${analyse_cost:.4f}) total=${total_cost:.4f}",
+            file=sys.stderr,
+        )
 
     # Every detection attempt failed and we produced nothing → let caller fall back.
     if detection_err and not detection_ok and not results:
