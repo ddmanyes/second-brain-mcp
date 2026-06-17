@@ -35,6 +35,19 @@ def _vec_to_pg(vec: list[float]) -> list[float]:
     return vec
 
 
+def _parse_vec(v: object) -> list[float] | None:
+    """Normalise a pgvector value to list[float].
+
+    psycopg3 without a registered pgvector adapter returns the vector column as
+    a string "[0.1, 0.2, ...]". Convert to list[float] so cosine arithmetic works.
+    """
+    if v is None:
+        return None
+    if isinstance(v, str):
+        return json.loads(v)
+    return [float(x) for x in v]  # type: ignore[union-attr]
+
+
 def _redact_dsn(dsn: str) -> str:
     """Hide the password in a postgresql:// DSN before returning it in stats/logs."""
     import re
@@ -685,12 +698,15 @@ class PostgresStore:
                 ).fetchone()
                 if not row or not row[0]:
                     return []
-                q_vec = row[0]  # psycopg3 returns vector as list via pgvector
+                q_vec = _parse_vec(row[0])
+                if not q_vec:
+                    return []
                 rows = conn.execute(
                     "SELECT path, embedding FROM notes WHERE embedding IS NOT NULL AND path != %s",
                     [path],
                 ).fetchall()
-            scored = [(r[0], _vdb._cosine(q_vec, r[1])) for r in rows]
+            parsed_rows = [(r[0], _parse_vec(r[1])) for r in rows]
+            scored = [(p, _vdb._cosine(q_vec, v)) for p, v in parsed_rows if v]
 
         scored = [(p, s) for p, s in scored if s >= threshold]
         scored.sort(key=lambda x: x[1], reverse=True)
@@ -788,7 +804,7 @@ class PostgresStore:
             rows = conn.execute(
                 "SELECT path, embedding FROM notes WHERE embedding IS NOT NULL"
             ).fetchall()
-        return {r[0]: list(r[1]) if r[1] else [] for r in rows}
+        return {r[0]: _parse_vec(r[1]) or [] for r in rows}
 
     def get_notes_with_snapshots(self) -> set[str]:
         with self._pool.connection() as conn:
