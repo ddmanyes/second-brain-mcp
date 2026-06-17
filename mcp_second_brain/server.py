@@ -23,6 +23,7 @@ from .vault_db import KNOWLEDGE_EXCLUDE
 from . import vault_sleep as _vs
 from . import figures as _fig
 from .store import get_store
+from .identity import check_write_permission
 
 VAULT = Path(os.environ.get(
     "SECOND_BRAIN_PATH",
@@ -414,6 +415,7 @@ def new_note(note_type: str, title: str, content: str = "", tags: str = "") -> s
         content: Optional initial content to append after the template
         tags: Comma-separated tags, e.g. 'evo-prism,architecture'. Added to frontmatter.
     """
+    if err := check_write_permission("new_note"): return err
     nt = note_type.lower()
     registry = _load_project_registry()
     matched_slug = _detect_project_slug(title, tags, registry)
@@ -565,6 +567,7 @@ def update_goals(new_content: str) -> str:
     Args:
         new_content: Full new content for goals.md (markdown format)
     """
+    if err := check_write_permission("update_goals"): return err
     goals_path = VAULT / "memory" / "goals.md"
     goals_path.parent.mkdir(parents=True, exist_ok=True)
     goals_path.write_text(new_content, encoding="utf-8")
@@ -601,6 +604,7 @@ def update_note(path: str, content: str) -> str:
         path: Relative path from vault root, e.g. 'decisions/my-decision.md'
         content: Full new content to write (replaces the entire file)
     """
+    if err := check_write_permission("update_note"): return err
     full_path = (VAULT / path).resolve()
     if not full_path.is_relative_to(VAULT):
         return "Error: path must be within the vault."
@@ -628,6 +632,7 @@ def append_to_note(path: str, content: str) -> str:
         path: Relative path from vault root, e.g. '10-projects/my-project.md'
         content: Text to append (added after a blank line at end of file)
     """
+    if err := check_write_permission("append_to_note"): return err
     full_path = (VAULT / path).resolve()
     if not full_path.is_relative_to(VAULT):
         return "Error: path must be within the vault."
@@ -654,6 +659,7 @@ def mark_note_status(path: str, status: str) -> str:
         path: Relative path from vault root, e.g. '30-resources/my-note.md'
         status: One of: active | archived | consolidated | archive_backup
     """
+    if err := check_write_permission("mark_note_status"): return err
     allowed = {"active", "archived", "consolidated", "archive_backup"}
     if status not in allowed:
         return f"Invalid status {status!r}. Choose from: {', '.join(sorted(allowed))}"
@@ -726,6 +732,7 @@ def vault_sleep(dry_run: bool = False) -> str:
     Args:
         dry_run: If True, show candidates without making changes.
     """
+    if err := check_write_permission("vault_sleep"): return err
     result = _vs.run_sleep(VAULT, dry_run=dry_run)
     lines = [
         f"Candidates: {result['candidates']}",
@@ -828,6 +835,7 @@ def expand_semantic_keywords_tool(note_path: str = "", force: bool = False) -> s
     Returns:
         Summary dict: {"processed": N, "skipped": M, "failed": K}
     """
+    if err := check_write_permission("expand_semantic_keywords_tool"): return err
     gemini_cli = shutil.which("gemini")
     if not gemini_cli:
         return "Gemini CLI not found — install with `npm install -g @google/generative-ai`"
@@ -880,6 +888,7 @@ def enrich_neighbor_keywords_tool(note_path: str = "", force: bool = False) -> s
     Returns:
         JSON-like string with {"enriched": N, "skipped": M, "no_neighbors": K}.
     """
+    if err := check_write_permission("enrich_neighbor_keywords_tool"): return err
     enriched = skipped = no_neighbors = 0
     try:
         all_data = _store.compute_neighbor_keywords()
@@ -1036,6 +1045,7 @@ def save_article(
         filename: Filename stem (without .md). If empty, auto-generated from title as kebab-slug.
                   Use 'YYYY_Author_ShortTitle' format for research papers, e.g. '2024_Bakr_ARID1A'.
     """
+    if err := check_write_permission("save_article"): return err
     source = _normalise_source_url(source)
     safe = _validate_source(source)
     if safe is None:
@@ -1144,6 +1154,7 @@ def update_links_tool(note_path: str = "") -> str:
         note_path: Relative path within vault (e.g. 'decisions/my-note.md').
                    Leave empty to update ALL notes that have embeddings.
     """
+    if err := check_write_permission("update_links_tool"): return err
     if note_path:
         full = (VAULT / note_path).resolve()
         if not full.is_relative_to(VAULT) or not full.exists():
@@ -1174,6 +1185,7 @@ def extract_figures_for(note_path: str) -> str:
     Args:
         note_path: Relative path within vault, e.g. '30-resources/my-article.md'
     """
+    if err := check_write_permission("extract_figures_for"): return err
     full = (VAULT / note_path).resolve()
     if not full.is_relative_to(VAULT) or not full.exists():
         return f"Note not found: {note_path}"
@@ -1223,6 +1235,7 @@ def snapshot_note_tool(note_path: str, tier: str = "base") -> str:
         note_path: Relative path within vault, e.g. 'decisions/my-note.md'
         tier: Resolution tier — 'large' (400 tokens), 'base' (256), 'small' (100)
     """
+    if err := check_write_permission("snapshot_note_tool"): return err
     full = (VAULT / note_path).resolve()
     if not full.is_relative_to(VAULT) or not full.exists():
         return f"Note not found: {note_path}"
@@ -1256,6 +1269,7 @@ def consolidate_tool(threshold: float = 0.85, dry_run: bool = True) -> str:
         threshold: Cosine similarity threshold for clustering (default 0.85)
         dry_run: If True, show clusters without consolidating (default True)
     """
+    if err := check_write_permission("consolidate_tool"): return err
     result = _vs.run_consolidation(VAULT, threshold=threshold, dry_run=dry_run)
     mode = "DRY RUN" if dry_run else "EXECUTED"
     lines = [f"[{mode}] Clusters found: {result['clusters']}, Consolidated: {result['consolidated']}"]
@@ -1286,6 +1300,7 @@ def prune_archive_tool(min_age_days: int = 365, dry_run: bool = True) -> str:
         min_age_days: Minimum age of archived file to consider (default 365)
         dry_run: If True, only report what would be deleted (default True)
     """
+    if err := check_write_permission("prune_archive_tool"): return err
     result = _vs.prune_archive(VAULT, min_age_days=min_age_days, dry_run=dry_run)
     mode = "DRY RUN" if dry_run else "EXECUTED"
     lines = [f"[{mode}] Archive prune: {result['deleted']} deleted, {result['skipped']} skipped"]
@@ -1405,6 +1420,7 @@ def annotate_figure(note_path: str, fig_index: int, insight: str) -> str:
         fig_index: 0-based figure index (as shown by search_figures / read_figure)
         insight: The fact/observation to remember about this figure
     """
+    if err := check_write_permission("annotate_figure"): return err
     insight = insight.strip()
     if not insight:
         return "Empty insight — nothing saved."
@@ -1612,6 +1628,7 @@ def init_vault() -> str:
     Safe to re-run: only creates missing items, never overwrites existing files.
     Call this after cloning the repo or setting up on a new machine.
     """
+    if err := check_write_permission("init_vault"): return err
     actions = _bootstrap_vault(VAULT)
     if actions:
         return "Vault initialized:\n" + "\n".join(f"  + {a}" for a in actions)
