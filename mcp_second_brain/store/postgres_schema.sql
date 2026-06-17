@@ -84,6 +84,22 @@ CREATE INDEX IF NOT EXISTS idx_notes_tsv ON notes USING gin(
 );
 
 -- ---------------------------------------------------------------------------
+-- api_keys — per-key identity + role for RBAC (MULTIUSER_PLAN P1)
+-- ---------------------------------------------------------------------------
+-- key_hash: SHA-256(raw_key).hexdigest() — plaintext never stored.
+-- role: 'reader' | 'writer' | 'admin'
+-- revoked_at IS NOT NULL → key rejected.
+CREATE TABLE IF NOT EXISTS api_keys (
+    key_hash   TEXT        PRIMARY KEY,
+    user_id    TEXT        NOT NULL,
+    role       TEXT        NOT NULL DEFAULT 'reader',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    revoked_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
+
+-- ---------------------------------------------------------------------------
 -- Vector similarity index (HNSW — sub-linear cosine ANN)
 -- ---------------------------------------------------------------------------
 -- Build after sync_all so the index is not rebuilt per-row during import.
