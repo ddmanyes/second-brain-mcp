@@ -1,7 +1,7 @@
 """Tests for PostgresStore backend.
 
 Requires a running Postgres instance. Set SB_PG_TEST_DSN to override.
-Default: postgresql://postgres:sbpassword@localhost:5432/sb_test
+Default: postgresql://postgres:postgres@localhost:5432/sb_test
 
 ⚠️ The fixture DELETEs all rows for a clean slate, so the default DSN MUST point
 at a throwaway database (sb_test), NEVER the live sb_personal / sb_lab index.
@@ -22,7 +22,7 @@ import pytest
 
 TEST_DSN = os.environ.get(
     "SB_PG_TEST_DSN",
-    "postgresql://postgres:sbpassword@localhost:5432/sb_test",
+    "postgresql://postgres:postgres@localhost:5432/sb_test",
 )
 
 # Hard guard: never let the destructive fixture run against the live indexes.

@@ -14,7 +14,8 @@ set -uo pipefail
 CONTAINER="${SB_PG_CONTAINER:-sb-pg}"
 DATABASES="${SB_PG_DATABASES:-sb_personal sb_lab}"
 KEEP="${SB_BACKUP_KEEP:-7}"
-DEFAULT_DIR="/Users/zhanqiru/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/backups/second-brain-pg"
+_SD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_DIR="$(cd "$_SD/../../.." && pwd)/backups/second-brain-pg"
 BACKUP_DIR="${SB_BACKUP_DIR:-$DEFAULT_DIR}"
 
 DOCKER="${DOCKER_BIN:-/usr/local/bin/docker}"

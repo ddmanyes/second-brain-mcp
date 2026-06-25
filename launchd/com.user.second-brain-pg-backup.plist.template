@@ -14,7 +14,7 @@
 	<key>ProgramArguments</key>
 	<array>
 		<string>/bin/bash</string>
-		<string>/Users/zhanqiru/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/mcp-tools/second-brain/launchd/run_pg_backup.sh</string>
+		<string>__PJ_SAVE__/mcp-tools/second-brain/launchd/run_pg_backup.sh</string>
 	</array>
 	<key>RunAtLoad</key>
 	<false/>

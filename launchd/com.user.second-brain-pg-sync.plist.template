@@ -5,20 +5,20 @@
 	<key>EnvironmentVariables</key>
 	<dict>
 		<key>PATH</key>
-		<string>/Users/zhanqiru/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+		<string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
 		<key>SB_DB_BACKEND</key>
 		<string>postgres</string>
 		<key>SB_PG_DSN</key>
 		<string>postgresql://postgres:CHANGEME@localhost:5432/sb_personal</string>
 		<key>SECOND_BRAIN_PATH</key>
-		<string>/Users/zhanqiru/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/second-brain</string>
+		<string>__PJ_SAVE__/second-brain</string>
 	</dict>
 	<key>Label</key>
 	<string>com.user.second-brain-pg-sync</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/Users/zhanqiru/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/mcp-tools/second-brain/.venv/bin/python</string>
-		<string>/Users/zhanqiru/Library/CloudStorage/GoogleDrive-u9013039@gmail.com/我的雲端硬碟/PJ_save/mcp-tools/second-brain/launchd/run_pg_sync.py</string>
+		<string>__PJ_SAVE__/mcp-tools/second-brain/.venv/bin/python</string>
+		<string>__PJ_SAVE__/mcp-tools/second-brain/launchd/run_pg_sync.py</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
