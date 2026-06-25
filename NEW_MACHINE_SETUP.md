@@ -71,6 +71,25 @@ claude mcp add --scope user --transport http second-brain \
 
 ⌘Q and relaunch Desktop. That's it — the client now reads/writes the central brain over Tailscale.
 
+**Antigravity (and Windsurf / Cursor — Codeium-lineage IDEs)** — edit `~/.gemini/antigravity/mcp_config.json`.
+These IDEs' `mcp_config.json` is primarily stdio (`command`/`args`), so use the same `mcp-remote`
+proxy to bridge stdio → the central HTTP server and inject `X-API-Key` (needs Node / npx):
+
+```json
+{
+  "mcpServers": {
+    "second-brain": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://100.81.161.16:9100/mcp", "--header", "X-API-Key: <the-key>"]
+    }
+  }
+}
+```
+
+> ⚠️ Do **not** point Antigravity at a local `python -m mcp_second_brain` stdio server — that lands on a
+> **per-machine DuckDB** (a brain out of sync with the central Postgres). For a single source of truth,
+> use the HTTP (mcp-remote) form above. Restart Antigravity to apply.
+>
 > Prerequisite: the client is a member of the same Tailscale tailnet (so the
 > `100.81.161.16` address is reachable). Without a valid `X-API-Key` the server returns `401`.
 

@@ -418,6 +418,25 @@ claude mcp add --scope user second-brain \
 }
 ```
 
+**Antigravity / Windsurf / Cursor (Codeium-lineage IDEs)** — edit `~/.gemini/antigravity/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "second-brain": {
+      "command": "python",
+      "args": ["-m", "mcp_second_brain"],
+      "env": { "SECOND_BRAIN_PATH": "/Users/yourname/second-brain" }
+    }
+  }
+}
+```
+
+> Connecting to a **remote / self-hosted central server** (not a local vault)? These IDEs read stdio
+> configs, so bridge through the `mcp-remote` proxy:
+> `npx -y mcp-remote http://<host>:9100/mcp --header "X-API-Key: <key>"`.
+> Full multi-machine + API-key setup is in [`NEW_MACHINE_SETUP.md`](NEW_MACHINE_SETUP.md).
+
 #### Step 3 — First run
 
 Start your agent and say:

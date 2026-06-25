@@ -69,6 +69,23 @@ claude mcp add --scope user --transport http second-brain \
 
 ⌘Q 重開桌面版即可——這台 client 就能透過 Tailscale 讀寫中央活腦。
 
+**Antigravity（及 Windsurf / Cursor 等 Codeium 系 IDE）** — 編輯 `~/.gemini/antigravity/mcp_config.json`。
+這類 IDE 的 `mcp_config.json` 主要吃 stdio（`command`/`args`），所以同樣用 `mcp-remote` 代理把
+stdio 橋接到中央 HTTP server 並注入 `X-API-Key`（需 Node / npx）：
+
+```json
+{
+  "mcpServers": {
+    "second-brain": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://100.81.161.16:9100/mcp", "--header", "X-API-Key: <金鑰>"]
+    }
+  }
+}
+```
+
+> ⚠️ **不要**在 Antigravity 用 `command: python -m mcp_second_brain` 直跑本機 stdio——那會落在**各機獨立 DuckDB**（一顆和中央 Postgres 不同步的腦）。要單一真相，務必用上面的 HTTP(mcp-remote) 形式。改完重啟 Antigravity 生效。
+>
 > 前提：client 在同一個 Tailscale tailnet（才連得到 `100.81.161.16`）。沒帶有效 `X-API-Key` 會回 `401`。
 
 ---
