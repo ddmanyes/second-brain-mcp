@@ -101,14 +101,22 @@ class APIKeyMiddleware:
         app,
         keys: set[str],
         lookup_fn: KeyLookupFn | None = None,
+        exempt_paths: set[str] | None = None,
     ):
         self.app = app
         self.keys = keys
         self.lookup_fn = lookup_fn
+        # Read-only HTTP routes that a browser opens directly (can't send X-API-Key).
+        # Exempting them relies on the Tailscale boundary alone — the same fallback as
+        # when no key is configured. Only use for non-mutating, non-sensitive routes.
+        self.exempt_paths = exempt_paths or set()
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             await self.app(scope, receive, send)
+            return
+        if scope.get("path") in self.exempt_paths:
+            await self.app(scope, receive, send)  # Tailscale-only route; no identity bound
             return
         key = _provided_key(scope)
         if not _key_accepted(key, self.keys):
@@ -138,14 +146,18 @@ class APIKeyMiddleware:
 def maybe_add_api_key_auth(
     app,
     lookup_fn: KeyLookupFn | None = None,
+    exempt_paths: set[str] | None = None,
 ) -> int:
     """Install API-key auth on the Starlette app if any key env is set.
 
     lookup_fn: optional DB-backed key→Identity callable (see MULTIUSER_PLAN P1).
+    exempt_paths: HTTP paths that skip the key check (Tailscale-only; read-only routes
+      a browser opens directly, e.g. '/graph').
     Returns the number of configured keys (0 = auth disabled, middleware not added).
     """
     keys = configured_keys()
     if not keys:
         return 0
-    app.add_middleware(APIKeyMiddleware, keys=keys, lookup_fn=lookup_fn)
+    app.add_middleware(APIKeyMiddleware, keys=keys, lookup_fn=lookup_fn,
+                       exempt_paths=exempt_paths)
     return len(keys)

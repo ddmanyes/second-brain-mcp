@@ -69,8 +69,8 @@ class TestTextExtractionPymupdf4llm:
         pdf = _make_text_pdf(tmp_path / "paper.pdf")
         body = server._extract_pdf_body(str(pdf))
 
-        # markdown heading present (font-size heuristic → ##)
-        assert "##" in body
+        # markdown heading present (level depends on pymupdf4llm font-size heuristic / version)
+        assert re.search(r"^#+ ", body, re.MULTILINE)
         # clean output: no run of 3+ consecutive spaces (pdftotext -layout noise)
         assert not re.search(r"   ", body)
         assert len(body.strip()) > 100
@@ -120,10 +120,12 @@ class TestFigureExtractionRender:
         pdf = _make_pdf_with_drawing(vault / "src.pdf", n_pages=1, draw_on=0)
         note_path = _make_note_with_pdf(vault, pdf)
 
-        detect = lambda png, num: [  # noqa: E731
-            {"bbox": [100, 150, 900, 900], "caption": "Figure 1. A vector chart.",
-             "type": "figure"}
-        ]
+        # _detect_figures_on_page 回傳 (detections, usage_dict)
+        detect = lambda png, num: (  # noqa: E731
+            [{"bbox": [100, 150, 900, 900], "caption": "Figure 1. A vector chart.",
+              "type": "figure"}],
+            {},
+        )
         analyse = lambda p, caption="": {"ocr_text": "axis labels", "description": "a chart"}  # noqa: E731
 
         with patch.object(figures, "_detect_figures_on_page", side_effect=detect), \
@@ -151,9 +153,10 @@ class TestFigureExtractionRender:
         note_path = _make_note_with_pdf(vault, pdf)
 
         def detect(png, num):
+            # _detect_figures_on_page 回傳 (detections, usage_dict)
             if num == 0:
-                return [{"bbox": [100, 150, 900, 900], "caption": "Fig 1", "type": "figure"}]
-            return []
+                return [{"bbox": [100, 150, 900, 900], "caption": "Fig 1", "type": "figure"}], {}
+            return [], {}
 
         mock_detect = MagicMock(side_effect=detect)
         analyse = lambda p, caption="": {"ocr_text": "", "description": "d"}  # noqa: E731

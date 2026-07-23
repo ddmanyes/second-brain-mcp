@@ -22,6 +22,8 @@ from . import vault_db
 from .vault_db import KNOWLEDGE_EXCLUDE
 from . import vault_sleep as _vs
 from . import figures as _fig
+from . import llm_cli
+from . import frontmatter as _fm
 from .store import get_store
 from .identity import check_admin_permission, check_write_permission, get_current_identity
 
@@ -53,7 +55,7 @@ def _log_write(tool: str, target: str = "") -> None:
 # stdio server（桌面版 Claude、Claude Code）是 per-client、短命、不綁 port，
 # 必須能彼此並存，也能與 HTTP server 並存 —— 它們絕不呼叫 _kill_old_server()。
 # 因此本函式只在 __main__ 的 HTTP 分支被呼叫，不在 import 時無條件執行。
-_PID_FILE = Path.home() / ".second-brain" / "server.pid"
+_PID_FILE = Path(os.environ.get("SB_PID_FILE", str(Path.home() / ".second-brain" / "server.pid")))
 
 def _kill_old_server() -> None:
     _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -219,28 +221,21 @@ def _validate_source(source: str) -> str | None:
 
 
 def _extract_semantic_keywords_via_gemini(content: str) -> list[str]:
-    """Call Gemini CLI to extract up to 10 semantic keywords from content.
+    """Extract up to 10 semantic keywords from content via the LLM CLI.
 
-    Returns empty list if CLI unavailable or extraction fails — never raises.
+    Routes through ``llm_cli`` (Claude CLI 主，Gemini 已死備援) since Gemini free
+    tier was deprecated. Returns empty list if extraction fails — never raises.
+    （函式名保留向後相容，實際後端已非 Gemini。）
     """
-    gemini_cli = shutil.which("gemini")
-    if not gemini_cli:
-        return []
     prompt = (
         "從以下文章中提取最多10個繁體中文語義關鍵字（同義詞、概念、主題），"
         "以JSON array格式回傳，例如：[\"關鍵字1\",\"關鍵字2\"]，只輸出JSON array，不要其他文字。\n\n"
         + content[:2000]
     )
     try:
-        env = os.environ.copy()
-        env["GEMINI_CLI_TRUST_WORKSPACE"] = "false"
-        result = subprocess.run(
-            [gemini_cli, "-"],
-            input=prompt,
-            capture_output=True, text=True, timeout=60, env=env,
-            cwd=str(Path.home()),
-        )
-        output = result.stdout.strip()
+        output = llm_cli.llm_text(prompt, timeout=90)
+        if not output:
+            return []
         m = re.search(r"\[.*?\]", output, re.DOTALL)
         if m:
             keywords = json.loads(m.group())
@@ -254,19 +249,9 @@ def _extract_semantic_keywords_via_gemini(content: str) -> list[str]:
 
 def _inject_semantic_keywords(note_path: Path, keywords: list[str]) -> None:
     """Write semantic_keywords into the frontmatter of an existing note file."""
-    text = note_path.read_text(encoding="utf-8")
-    fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
-    if not fm_match:
-        return
-    fm_text = fm_match.group(1)
-    kw_line = f"semantic_keywords: {json.dumps(keywords, ensure_ascii=False)}"
-    if "semantic_keywords:" in fm_text:
-        fm_text = re.sub(r"^semantic_keywords:.*$", kw_line, fm_text, flags=re.MULTILINE)
-    else:
-        fm_text += f"\n{kw_line}"
-    new_text = f"---\n{fm_text}\n---\n\n" + text[fm_match.end():]
-    if new_text != text:
-        note_path.write_text(new_text, encoding="utf-8")
+    _fm.set_fields_in_file(note_path, {
+        "semantic_keywords": json.dumps(keywords, ensure_ascii=False),
+    })
 
 
 def _run_keyword_enrichment_async(dest: Path, content: str) -> None:
@@ -288,46 +273,22 @@ def _run_keyword_enrichment_async(dest: Path, content: str) -> None:
 
 def _inject_neighbor_keywords(note_path: Path, data: dict) -> None:
     """Write neighbor_keywords and cluster_topic into the frontmatter of a note file."""
-    text = note_path.read_text(encoding="utf-8")
-    fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
-    if not fm_match:
-        return
-    fm_text = fm_match.group(1)
-    nk_line = f"neighbor_keywords: {json.dumps(data['neighbor_keywords'], ensure_ascii=False)}"
-    ct_line = f"cluster_topic: {json.dumps(data['cluster_topic'], ensure_ascii=False)}"
-    for field, line in (("neighbor_keywords:", nk_line), ("cluster_topic:", ct_line)):
-        if field in fm_text:
-            fm_text = re.sub(f"^{field}.*$", line, fm_text, flags=re.MULTILINE)
-        else:
-            fm_text += f"\n{line}"
-    new_text = f"---\n{fm_text}\n---\n\n" + text[fm_match.end():]
-    if new_text != text:
-        note_path.write_text(new_text, encoding="utf-8")
+    _fm.set_fields_in_file(note_path, {
+        "neighbor_keywords": json.dumps(data["neighbor_keywords"], ensure_ascii=False),
+        "cluster_topic": json.dumps(data["cluster_topic"], ensure_ascii=False),
+    })
 
 
 def _maybe_sync(vault: Path) -> None:
-    """Sync vault index at startup if the index is empty or stale.
+    """Sync the vault index at startup if it is empty or the backend deems it stale.
 
-    DuckDB backend: throttled to 30 min by DB file mtime.
-    Postgres backend: full sync on first use (has_index() False), then skips.
+    Empty index → full sync. Otherwise the backend decides staleness itself
+    (DuckDB throttles on its DB-file mtime; Postgres relies on its scheduled sync).
     """
     if not _store.has_index():
         _store.sync_all(vault)
         return
-    # DuckDB-only throttle: skip if DB file was written within the last 30 min
-    db_path = vault_db.DB_PATH
-    if not db_path.exists():
-        return  # Postgres backend — index already populated, skip
-    db_mtime = db_path.stat().st_mtime
-    if time.time() - db_mtime > 1800:
-        try:
-            latest_md = max(
-                (f.stat().st_mtime for f in vault.rglob("*.md")), default=0
-            )
-        except Exception:
-            return
-        if latest_md > db_mtime:
-            _store.sync_incremental(vault)
+    _store.sync_if_stale(vault)
 
 
 def _inject_related_links(note_path: Path, rel: str) -> int:
@@ -340,22 +301,65 @@ def _inject_related_links(note_path: Path, rel: str) -> int:
         return 0
 
     links = ", ".join(f"[[{r.removesuffix('.md')}]]" for r in related)
-    text = note_path.read_text(encoding="utf-8")
-
-    fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
-    if not fm_match:
-        return 0
-
-    fm_text = fm_match.group(1)
-    if "related:" in fm_text:
-        fm_text = re.sub(r"^related:.*$", f"related: [{links}]", fm_text, flags=re.MULTILINE)
-    else:
-        fm_text += f"\nrelated: [{links}]"
-
-    new_text = f"---\n{fm_text}\n---\n\n" + text[fm_match.end():]
-    if new_text != text:
-        note_path.write_text(new_text, encoding="utf-8")
+    _fm.set_fields_in_file(note_path, {"related": f"[{links}]"})
     return len(related)
+
+
+def _spawn_figure_extract(rel: str) -> None:
+    """Fire-and-forget figure extraction for an article, syncing figures into the store."""
+    def _worker():
+        try:
+            _fig.process_article(rel, VAULT)
+            # Sync figures written to DuckDB cache into the primary store (postgres when SB_DB_BACKEND=postgres)
+            for fig in vault_db.get_figures_for_note(rel):
+                try:
+                    _store.upsert_figure(**fig)
+                except Exception as fe:
+                    print(f"[second-brain] figure sync to store failed: {fe}", file=sys.stderr)
+        except Exception as e:
+            print(f"[second-brain] figure extraction failed for {rel}: {e}", file=sys.stderr)
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def after_write(
+    dest: Path,
+    rel: str,
+    *,
+    register_label: str | None = None,
+    relink: bool = True,
+    enrich: str | None = None,
+    extract_figures: bool = False,
+) -> int:
+    """Post-write index + enrichment tail shared by every note write path.
+
+    Invariant: whenever a note's bytes change on disk, the store is re-indexed —
+    skipping it silently drops the note from search. Everything else is an optional
+    variation the caller opts into:
+
+        register_label   register a NEW note into the project index (label shown there)
+        relink           refresh the frontmatter `related` links (returns the count)
+        enrich           fire-and-forget semantic-keyword enrichment over this content
+        extract_figures  fire-and-forget figure extraction (articles only)
+
+    Never raises: index/relink failures warn to stderr (the write already landed);
+    background threads contain their own exceptions. Returns the number of related
+    links written (0 on failure or when relink is False).
+    """
+    if register_label is not None:
+        _append_to_index(rel, register_label, date.today().isoformat())
+    n_links = 0
+    try:
+        _store.index_file(VAULT, dest)
+        if relink:
+            n_links = _inject_related_links(dest, rel)
+    except Exception as e:
+        print(f"[second-brain] warning: index/link failed for {rel}: {e}", file=sys.stderr)
+    if enrich is not None:
+        _run_keyword_enrichment_async(dest, enrich)
+    if extract_figures:
+        _spawn_figure_extract(rel)
+    return n_links
 
 
 @mcp.tool()
@@ -467,17 +471,7 @@ def new_note(note_type: str, title: str, content: str = "", tags: str = "") -> s
 
     dest.write_text(filled, encoding="utf-8")
     rel = str(dest.relative_to(VAULT))
-    _append_to_index(rel, rel, today)
-
-    # Index immediately, then enrich keywords in background (avoids blocking on Gemini CLI)
-    try:
-        _store.index_file(VAULT, dest)
-        n_links = _inject_related_links(dest, rel)
-    except Exception as e:
-        print(f"[second-brain] warning: index/link failed for {rel}: {e}", file=sys.stderr)
-        n_links = 0
-
-    _run_keyword_enrichment_async(dest, filled)
+    n_links = after_write(dest, rel, register_label=rel, enrich=filled)
 
     route_msg = f" [project:{matched_slug}→{folder}]" if matched_slug and nt in _PROJECT_SUBTYPE_MAP else ""
     link_msg = f" ({n_links} related links added)" if n_links else ""
@@ -520,6 +514,425 @@ def search_notes(query: str) -> str:
 
     lines = [f"- [{h['title']}]({h['path']}) (score: {h['score']:.2f})" for h in hits]
     return f"Found {len(hits)} note(s):\n\n" + "\n".join(lines)
+
+
+@mcp.tool()
+def search_snippets(query: str, top_k: int = 8) -> str:
+    """Precise localization: return the VERBATIM source sentence from each of the most relevant
+    notes, with its citation. The sentence is quoted exactly from the paper, never rewritten —
+    ideal for 'what does the literature say about X' or 'a factor's role': jumps to the passage.
+
+    Args:
+        query: keyword or phrase, e.g. 'TGF-beta fibrosis', 'hair follicle stem cell niche'.
+        top_k: how many notes to pull snippets from (default 8).
+    """
+    from . import snippets
+    _log_write("search_snippets", query)
+    try:
+        hits = _store.hybrid_search(query, limit=top_k, exclude_types=KNOWLEDGE_EXCLUDE)
+    except Exception:
+        hits = []
+    out, logged = [], []
+    for h in hits:
+        full = VAULT / h["path"]
+        if not full.is_relative_to(VAULT) or not full.exists():
+            continue
+        raw = full.read_text(encoding="utf-8", errors="ignore")
+        snip = snippets.best_snippet(raw, h.get("title", ""), query)
+        if not snip:
+            continue
+        fm = raw.split("---")[1] if raw.startswith("---") and "---" in raw[3:] else ""
+        dm = re.search(r'^doi:\s*"?(.+?)"?\s*$', fm, re.MULTILINE)
+        src = f" · doi:{dm.group(1)}" if dm else ""
+        out.append(f"- **{h.get('title','')}** (score {h['score']:.2f}){src}\n"
+                   f"  > {snip}\n  [{h['path']}]({h['path']})")
+        logged.append(h["path"])
+    try:  # eval hook: query log (jsonl) for the future relevance loop
+        from datetime import datetime as _dt
+        (VAULT / ".query-log.jsonl").open("a", encoding="utf-8").write(
+            json.dumps({"ts": _dt.now().isoformat(timespec="seconds"),
+                        "query": query, "results": logged}, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    if not out:
+        return f"No verbatim snippet found for: {query}"
+    return f"{len(out)} snippet(s) for '{query}':\n\n" + "\n\n".join(out)
+
+
+# ── Knowledge graph (C-layer): canonical typed-edge store lives INSIDE the vault
+#    (VAULT/.graph/statements.jsonl) so the read-only query tool has a stable home;
+#    batch extraction (lcdda-ingest/extract_statements.py) promotes validated
+#    statements here.  query_graph is dual-path: typed edges (precision) + snippet
+#    full-text recall net (無遺漏), per the C-layer spec.
+_GRAPH_SYN = {  # whole-string canonicalisation (applied last)
+    "transforming growth factor beta": "tgfb", "transforming growth factor beta 1": "tgfb1",
+    "pf": "pulmonary fibrosis", "ckd": "chronic kidney disease",
+}
+_GREEK = {"α": "alpha", "β": "beta", "γ": "gamma", "δ": "delta", "κ": "kappa"}
+
+
+def _graph_norm(name: str) -> str:
+    """Ground an entity string so variant spellings of the same concept collapse:
+    lowercase, Greek→latin, TGF-β/TGFβ/TGF beta→tgfb, British 'signalling'→'signaling',
+    then a small whole-string synonym/abbreviation map. Keeps distinct concepts distinct
+    (e.g. 'renal fibrosis' ≠ 'liver fibrosis') — only unifies genuine variants."""
+    n = (name or "").strip().lower()
+    for g, r in _GREEK.items():
+        n = n.replace(g, r)
+    n = re.sub(r"\s+", " ", n).strip()
+    n = re.sub(r"tgf[-\s]?beta", "tgfb", n)   # TGF-β / TGFβ / TGF beta → tgfb (incl. tgfb1)
+    n = n.replace("signalling", "signaling")
+    return _GRAPH_SYN.get(n, n)
+
+
+def _graph_path() -> Path:
+    p = os.environ.get("SB_GRAPH_PATH")
+    return Path(p) if p else (VAULT / ".graph" / "statements.jsonl")
+
+
+def _load_edges() -> list[dict]:
+    gp = _graph_path()
+    if not gp.exists():
+        return []
+    edges = []
+    for line in gp.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            edges.append(json.loads(line))
+        except Exception:
+            continue
+    return edges
+
+
+# --- browser-openable graph view (served by the /graph HTTP route) ------------------------
+_REL_COLORS = {
+    "ACTIVATES": "#3fb950", "PROMOTES": "#2ea043", "CAUSES": "#d29922",
+    "INHIBITS": "#f85149", "PREVENTS": "#da3633", "ASSOCIATED_WITH": "#8b949e",
+}
+
+# Self-contained interactive force graph. Data is injected at /*__DATA__*/; layout runs
+# client-side (no server-side networkx), so it stays vault-agnostic and always current.
+_GRAPH_TEMPLATE = r"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>LitNet graph</title>
+<style>
+ html,body{margin:0;height:100%;background:#0e1116;color:#c9d1d9;font:13px system-ui,sans-serif;overflow:hidden}
+ #hud,#legend,#readout{position:fixed;z-index:2;background:rgba(20,24,31,.88);padding:8px 10px;border-radius:8px}
+ #hud{top:8px;left:8px;max-width:46vw}#hud h1{font-size:13px;margin:0 0 4px}
+ #legend{bottom:8px;left:8px}#legend span{display:inline-block;margin-right:10px}
+ #readout{top:8px;right:8px;max-width:34vw;max-height:82vh;overflow:auto;display:none}
+ #readout h2{font-size:13px;margin:0 0 6px}.rel{margin:2px 0}
+ .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:middle}
+ canvas{display:block;position:fixed;inset:0;cursor:grab}canvas.drag{cursor:grabbing}
+</style></head><body>
+<div id="hud"><h1 id="title"></h1><div id="stat"></div>
+<div style="margin-top:4px;opacity:.65">滾輪縮放 · 拖曳平移 · 游標移到節點看關係</div></div>
+<div id="legend"></div><div id="readout"></div><canvas id="c"></canvas>
+<script>
+const DATA = /*__DATA__*/;
+const N=DATA.nodes,E=DATA.edges,COL=DATA.colors,cv=document.getElementById('c'),ctx=cv.getContext('2d');
+let W,H,DPR=devicePixelRatio||1;
+function resize(){W=innerWidth;H=innerHeight;cv.width=W*DPR;cv.height=H*DPR;cv.style.width=W+'px';cv.style.height=H+'px';}
+resize();addEventListener('resize',resize);
+for(const n of N){n.x=W/2+(Math.random()-.5)*Math.min(W,H)*.8;n.y=H/2+(Math.random()-.5)*Math.min(W,H)*.8;n.vx=0;n.vy=0;}
+const maxd=Math.max(1,...N.map(n=>n.d));
+function R(n){return 3+Math.sqrt(n.d/maxd)*13;}
+let cool=1,ticks=N.length>600?70:(N.length>250?140:220),simF=0;
+function step(){const k=Math.max(.02,cool);
+ for(let i=0;i<N.length;i++){const a=N[i];for(let j=i+1;j<N.length;j++){const b=N[j];
+  let dx=a.x-b.x,dy=a.y-b.y,d2=dx*dx+dy*dy||.01,d=Math.sqrt(d2),f=1400/d2,ux=dx/d,uy=dy/d;
+  a.vx+=ux*f*k;a.vy+=uy*f*k;b.vx-=ux*f*k;b.vy-=uy*f*k;}}
+ for(const e of E){const a=N[e.s],b=N[e.t];let dx=b.x-a.x,dy=b.y-a.y,d=Math.sqrt(dx*dx+dy*dy)||.01;
+  let f=(d-70)*.01*k,ux=dx/d,uy=dy/d;a.vx+=ux*f;a.vy+=uy*f;b.vx-=ux*f;b.vy-=uy*f;}
+ for(const n of N){n.vx+=(W/2-n.x)*.0022*k;n.vy+=(H/2-n.y)*.0022*k;n.vx*=.85;n.vy*=.85;n.x+=n.vx;n.y+=n.vy;}
+ cool*=.985;}
+let view={x:0,y:0,z:1};
+function draw(){ctx.setTransform(DPR,0,0,DPR,0,0);ctx.clearRect(0,0,W,H);
+ ctx.save();ctx.translate(view.x,view.y);ctx.scale(view.z,view.z);ctx.lineWidth=.7;
+ for(const e of E){const a=N[e.s],b=N[e.t];ctx.strokeStyle=(COL[e.r]||'#555')+'99';
+  ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();}
+ for(const n of N){ctx.beginPath();ctx.arc(n.x,n.y,R(n),0,7);ctx.fillStyle='#58a6ff';ctx.fill();}
+ if(view.z>1.3){ctx.fillStyle='#c9d1d9';ctx.font='10px system-ui';
+  for(const n of N){if(n.d>=2||view.z>2.2)ctx.fillText(n.l,n.x+R(n)+2,n.y+3);}}
+ ctx.restore();}
+function fit(){if(!N.length)return;
+ const xs=N.map(n=>n.x).sort((a,b)=>a-b),ys=N.map(n=>n.y).sort((a,b)=>a-b);
+ const lo=Math.floor(N.length*.05),hi=Math.min(N.length-1,Math.ceil(N.length*.95));// central 90% (ignore outliers)
+ const x0=xs[lo],x1=xs[hi],y0=ys[lo],y1=ys[hi],sx=(x1-x0)||1,sy=(y1-y0)||1;
+ view.z=Math.max(.15,Math.min(3,Math.min(W/sx,H/sy)*.82));
+ view.x=W/2-(x0+x1)/2*view.z;view.y=H/2-(y0+y1)/2*view.z;}
+function loop(){if(simF<ticks){step();simF++;if(simF>=ticks)fit();}draw();requestAnimationFrame(loop);}loop();
+function esc(s){return(s+'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+let drag=false,px,py;
+cv.addEventListener('mousedown',ev=>{drag=true;px=ev.clientX;py=ev.clientY;cv.classList.add('drag');});
+addEventListener('mouseup',()=>{drag=false;cv.classList.remove('drag');});
+addEventListener('mousemove',ev=>{
+ if(drag){view.x+=ev.clientX-px;view.y+=ev.clientY-py;px=ev.clientX;py=ev.clientY;return;}
+ const mx=(ev.clientX-view.x)/view.z,my=(ev.clientY-view.y)/view.z;let hit=-1;
+ for(let i=N.length-1;i>=0;i--){const n=N[i],dx=mx-n.x,dy=my-n.y;if(dx*dx+dy*dy<=Math.pow(R(n)+3,2)){hit=i;break;}}
+ const ro=document.getElementById('readout');
+ if(hit<0){ro.style.display='none';return;}
+ const n=N[hit],rels=[];
+ for(const e of E){if(e.s===hit)rels.push([n.l,e.r,N[e.t].l]);else if(e.t===hit)rels.push([N[e.s].l,e.r,n.l]);}
+ ro.style.display='block';
+ ro.innerHTML='<h2>'+esc(n.l)+'</h2><div style="opacity:.65">degree '+n.d+'</div>'+
+  rels.slice(0,40).map(x=>'<div class="rel"><span class="sw" style="background:'+(COL[x[1]]||'#555')+'"></span>'+
+   esc(x[0])+' <b>'+x[1]+'</b> '+esc(x[2])+'</div>').join('');});
+cv.addEventListener('wheel',ev=>{ev.preventDefault();const f=ev.deltaY<0?1.1:1/1.1,mx=ev.clientX,my=ev.clientY;
+ view.x=mx-(mx-view.x)*f;view.y=my-(my-view.y)*f;view.z*=f;},{passive:false});
+document.getElementById('title').textContent='LitNet · '+DATA.meta.title;
+document.getElementById('stat').textContent=DATA.meta.n+' nodes · '+DATA.meta.e+' edges';
+document.getElementById('legend').innerHTML=Object.entries(COL).map(x=>
+ '<span><span class="sw" style="background:'+x[1]+'"></span>'+x[0]+'</span>').join('');
+if(!N.length)document.getElementById('stat').textContent='（此範圍沒有機制邊；換個 entity 或先跑 promote_litnet）';
+</script></body></html>"""
+
+
+def _render_graph_html(entity: str = "") -> str:
+    """Build a self-contained interactive force-graph HTML from the live edge store.
+
+    Reused by the /graph HTTP route (Tailscale-only). vault-agnostic — reads the same
+    SB_GRAPH_PATH edge store as query_graph, so the view is always current (no static file).
+    entity: optional filter — keep only edges whose subject/object grounds to it.
+    """
+    q = _graph_norm(entity) if entity.strip() else ""
+    idx: dict[str, int] = {}
+    nodes: list[dict] = []
+
+    def _nid(label: str) -> int:
+        k = _graph_norm(label)
+        if k not in idx:
+            idx[k] = len(nodes)
+            nodes.append({"id": len(nodes), "l": label, "d": 0})
+        return idx[k]
+
+    jedges: list[dict] = []
+    for e in _load_edges():
+        s, o, r = e.get("subject", ""), e.get("object", ""), e.get("relation", "")
+        if not (s and o and r):
+            continue
+        if q and q not in _graph_norm(s) and q not in _graph_norm(o):
+            continue
+        si, oi = _nid(s), _nid(o)
+        nodes[si]["d"] += 1
+        nodes[oi]["d"] += 1
+        jedges.append({"s": si, "t": oi, "r": r})
+
+    meta = {"title": (f"filter: {entity}" if entity.strip() else "full graph"),
+            "n": len(nodes), "e": len(jedges)}
+    data = {"nodes": nodes, "edges": jedges, "meta": meta, "colors": _REL_COLORS}
+    return _GRAPH_TEMPLATE.replace("/*__DATA__*/", json.dumps(data, ensure_ascii=False))
+
+
+@mcp.custom_route("/graph", methods=["GET"])
+async def _graph_route(request):  # Tailscale-only (auth-exempt); read-only visualization
+    from starlette.responses import HTMLResponse
+    try:
+        html = _render_graph_html(request.query_params.get("entity", ""))
+    except Exception as ex:  # never 500 the browser — show the error inline
+        html = f"<pre>graph render error: {ex}</pre>"
+    return HTMLResponse(html)
+
+
+@mcp.tool()
+def query_graph(entity: str, mode: str = "both", top_k: int = 12) -> str:
+    """Dual-path knowledge-graph query for an entity (gene / factor / phenotype / …).
+
+    Path 1 — structured typed edges (ACTIVATES / INHIBITS / PROMOTES / CAUSES /
+    PREVENTS / ASSOCIATED_WITH) mentioning the entity, aggregated ACROSS papers with
+    verbatim evidence + source note.  Cross-paper agreement = stronger (shown as ×N).
+    Path 2 — full-text verbatim snippet recall net (same engine as search_snippets),
+    so a relation the edge extractor missed is still surfaced (goal: 無遺漏).
+
+    Args:
+        entity: e.g. 'TXNDC5', 'TGF-beta', 'pulmonary fibrosis'.
+        mode:  'edges' | 'snippets' | 'both' (default 'both').
+        top_k: snippet notes to pull for the recall net (default 12).
+    """
+    q = _graph_norm(entity)
+    parts: list[str] = []
+
+    # ---- Path 1: structured edges ----
+    if mode in ("edges", "both"):
+        matched = []
+        for e in _load_edges():
+            # re-ground from raw strings so grounding improvements apply without re-extraction
+            e["_sn"], e["_on"] = _graph_norm(e.get("subject", "")), _graph_norm(e.get("object", ""))
+            if q in e["_sn"] or q in e["_on"]:
+                matched.append(e)
+        agg: dict = {}
+        for e in matched:  # aggregate identical (subj, relation, obj) across papers
+            key = (e["_sn"], e.get("relation", ""), e["_on"])
+            g = agg.setdefault(key, {"subject": e.get("subject", ""),
+                                     "relation": e.get("relation", ""),
+                                     "object": e.get("object", ""), "notes": {}})
+            g["notes"].setdefault(e.get("note", ""), e.get("evidence", ""))
+        rows = sorted(agg.values(), key=lambda g: (-len(g["notes"]), g["relation"]))
+        if rows:
+            lines = [f"### Structured edges for '{entity}' "
+                     f"({len(rows)} relations from {len(matched)} raw statements)"]
+            for g in rows:
+                tag = f"  ×{len(g['notes'])} papers" if len(g["notes"]) > 1 else ""
+                lines.append(f"- **{g['subject']} →{g['relation']}→ {g['object']}**{tag}")
+                for n, ev in g["notes"].items():
+                    lines.append(f"    - _{n}_: “{ev}”")
+            parts.append("\n".join(lines))
+        elif mode == "edges":
+            parts.append(f"### Structured edges for '{entity}'\n"
+                         "(none — graph empty or entity absent; run extract_statements.py)")
+
+    # ---- Path 2: snippet full-text recall net ----
+    if mode in ("snippets", "both"):
+        from . import snippets
+        try:
+            hits = _store.hybrid_search(entity, limit=top_k, exclude_types=KNOWLEDGE_EXCLUDE)
+        except Exception:
+            hits = []
+        snips = []
+        for h in hits:
+            full = VAULT / h["path"]
+            if not full.is_relative_to(VAULT) or not full.exists():
+                continue
+            snip = snippets.best_snippet(full.read_text(encoding="utf-8", errors="ignore"),
+                                         h.get("title", ""), entity)
+            if snip:
+                snips.append(f"- **{h.get('title', '')}**\n  > {snip}\n  [{h['path']}]({h['path']})")
+        if snips:
+            parts.append(f"### Full-text recall net ({len(snips)} notes)\n" + "\n".join(snips))
+
+    # browser-openable interactive graph (Tailscale-only /graph route; no key on the tailnet).
+    # Only advertise when bound to a real remote host (HTTP transport), not stdio/loopback.
+    if mode in ("edges", "both") and mcp.settings.host not in ("", "127.0.0.1", "localhost"):
+        from urllib.parse import quote
+        parts.append(f"🌐 互動圖（瀏覽器開，tailnet 內免 key）："
+                     f"http://{mcp.settings.host}:{mcp.settings.port}/graph?entity={quote(entity)}")
+
+    try:  # eval hook: query log for the future relevance loop
+        from datetime import datetime as _dt
+        (VAULT / ".query-log.jsonl").open("a", encoding="utf-8").write(
+            json.dumps({"ts": _dt.now().isoformat(timespec="seconds"),
+                        "tool": "query_graph", "query": entity, "mode": mode},
+                       ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+    return "\n\n".join(parts) if parts else f"No graph data or snippets for: {entity}"
+
+
+# --- litnet_answer: retrieve (query_graph) → synthesize (Claude) → cited note --------------
+_LA_ENT_PROMPT = (
+    "從下面這個生醫研究問題，抽出要在知識圖譜查詢的核心實體（基因/蛋白/因子/細胞型/表型/疾病），"
+    "最多 3 個，用英文正規名、逗號分隔，只輸出實體、不要其他字。\n\n問題："
+)
+_LA_MIDDLE = {
+    "auto": "  - 依問題類型自行選最合適的中段結構（機制清單 / 比較表 / 分組列舉 / 方法對照）。",
+    "mechanism": "  - 中段用 `## 機制與證據`：逐條 bullet，每條一個機制關係 + 來源（+可選逐字證據）。",
+    "compare": "  - 中段用 `## 比較`：Markdown 表格，列＝被比較對象、欄＝面向（方法/樣本/機制/結論），格內掛來源。",
+    "list": "  - 中段用 `## 清單`：把符合的因子/機制分組或排序列出，每項掛來源論文。",
+    "methods": "  - 中段用 `## 如何證明`：逐研究列實驗手法（敲除/模型/assay）+ 來源。",
+}
+_LA_PROMPT = """你是生醫文獻綜合者。以下是從 LitNet 知識圖譜檢索到的**接地素材**（結構化機制邊 ×N 跨論文 + 逐字證據 + 全文片段），回答使用者的問題，寫成一則**帶引用的綜合筆記**。
+
+鐵律：
+1) 只用素材裡出現的事實；**不得加入素材沒有的內容**，不確定就不寫。
+2) 每條主張後**標來源論文**（素材裡的 note 名，如 2020_Lee_...）；跨論文用 ×N 標佐證強度。
+3) 這是 AI 綜合、非一手文獻——語氣客觀、不誇大。
+4) 誠實缺口：明講素材**沒涵蓋**的面向。
+
+輸出格式（繁體中文 Markdown）：
+- 固定開頭 `## 核心答案`（2–3 句直接回答問題）。
+- **中段依問題調整**：
+{middle_hint}
+- 固定結尾三段：`## 跨論文佐證強度`（×N 強 / 單篇待補）、`## 誠實缺口`、`## 來源清單`（逐列出現過的論文 note）。
+不要加格式外的段落。
+
+---
+問題：{question}
+
+檢索素材：
+{grounding}
+"""
+
+
+def _la_synth(prompt: str, model: str) -> str:
+    """Claude synthesis; key from env else Keychain (-s ANTHROPIC_API_KEY), same as figures.py."""
+    import anthropic
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        key = subprocess.run(["security", "find-generic-password", "-s", "ANTHROPIC_API_KEY", "-w"],
+                             capture_output=True, text=True).stdout.strip()
+        if key:
+            os.environ["ANTHROPIC_API_KEY"] = key
+    msg = anthropic.Anthropic().messages.create(
+        model=model, max_tokens=4096, stream=False,   # synthesis can be long; avoid mid-note cutoff
+        messages=[{"role": "user", "content": prompt}])
+    try:  # token ledger: litnet_answer is the LitNet Claude-cost hotspot (grounding[:24000] + synth)
+        from datetime import datetime as _dt
+        u = getattr(msg, "usage", None)
+        (VAULT / ".litnet-token-log.jsonl").open("a", encoding="utf-8").write(json.dumps(
+            {"ts": _dt.now().isoformat(timespec="seconds"), "tool": "litnet_answer", "model": model,
+             "input_tokens": getattr(u, "input_tokens", None),
+             "output_tokens": getattr(u, "output_tokens", None),
+             "prompt_chars": len(prompt)}, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text").strip()
+
+
+@mcp.tool()
+def litnet_answer(question: str, entity: str = "", fmt: str = "auto",
+                  save: bool = False, model: str = "claude-sonnet-5") -> str:
+    """Answer a literature question as a fixed-format, CITED synthesis note (retrieve → synthesize).
+
+    Retrieves grounded material via query_graph (LitNet 正本 edges + full-text net), then Claude
+    writes a cited summary. GENERATED prose (not raw literature): every claim is anchored to a
+    source note in the retrieval; tagged type: synthesis; a synthesis is NEVER re-extracted into
+    the 正本 (saved outside 20-areas/research/).
+
+    Args:
+        entity: comma-separated entities to look up; if empty, extracted from the question.
+        fmt: middle-section shape — auto | mechanism | compare | list | methods (auto = model picks).
+        save: if true, write the note into VAULT/20-areas/syntheses/ (else just return it).
+        model: Claude synthesis model.
+    """
+    ents = [e.strip() for e in entity.split(",") if e.strip()]
+    if not ents:
+        raw = llm_cli.llm_text(_LA_ENT_PROMPT + question, timeout=60) or ""
+        ents = [e.strip() for e in re.split(r"[,，、\n]", raw) if e.strip()][:3] or [question]
+    # per-entity: keep only entities that actually returned material (one empty entity must not
+    # abort a multi-entity query where others have data).
+    blocks = []
+    for e in ents:
+        out = query_graph(e, "both", 10)
+        if out and "No graph data" not in out:
+            blocks.append(f"# 查詢實體：{e}\n{out}")
+    grounding = "\n\n".join(blocks)
+    if not grounding.strip():
+        return f"no LitNet material for: {ents}"
+
+    prompt = _LA_PROMPT.format(middle_hint=_LA_MIDDLE.get(fmt, _LA_MIDDLE["auto"]),
+                               question=question, grounding=grounding[:24000])
+    body = _la_synth(prompt, model)
+    # note names look like 2020_Lee_Title; no \b — they're often wrapped in markdown italics (_..._)
+    srcs = sorted(set(re.findall(r"\d{4}_[A-Z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*", grounding)))
+    today = date.today().isoformat()
+    ent_list = ", ".join('"' + _safe_yaml(e) + '"' for e in ents)  # entities are free-text → escape
+    note = (
+        "---\n" f'title: "{_safe_yaml(question)}"\n' "type: synthesis\ngenerated: true\n"
+        "evidence_origin: synthesis\n" f"date: {today}\nmodel: {model}\n"
+        f"entities: [{ent_list}]\nsources: [{', '.join(srcs)}]\n"
+        "tags: [litnet, synthesis]\n---\n\n"
+        f"# {question}\n\n"
+        "> ⚠️ 本筆記為 AI 綜合（synthesis）自 LitNet 正本邊 + 全文檢索；**非原始文獻**。"
+        "事實錨在來源論文，勿當一手來源、勿回灌 LitNet 正本。\n\n"
+        + body + "\n"
+    )
+    if save:
+        d = VAULT / "20-areas" / "syntheses"       # OUTSIDE 20-areas/research (never re-extracted)
+        d.mkdir(parents=True, exist_ok=True)
+        slug = _slugify(question)[:60].strip("-") or "litnet-answer"  # unify with vault-wide naming
+        (d / f"{today}-{slug}.md").write_text(note, encoding="utf-8")
+    return note
 
 
 @mcp.tool()
@@ -630,12 +1043,7 @@ def update_note(path: str, content: str) -> str:
     if not full_path.exists():
         return f"Note not found: {path}. Use new_note to create it."
     full_path.write_text(content, encoding="utf-8")
-    try:
-        _store.index_file(VAULT, full_path)
-        n_links = _inject_related_links(full_path, path)
-    except Exception as e:
-        print(f"[second-brain] warning: index/link failed for {path}: {e}", file=sys.stderr)
-        n_links = 0
+    n_links = after_write(full_path, path)
     link_msg = f" ({n_links} related links refreshed)" if n_links else ""
     return f"Updated: {path}{link_msg}"
 
@@ -661,11 +1069,7 @@ def append_to_note(path: str, content: str) -> str:
     existing = full_path.read_text(encoding="utf-8")
     separator = "\n" if existing.endswith("\n") else "\n\n"
     full_path.write_text(existing + separator + content, encoding="utf-8")
-    try:
-        _store.index_file(VAULT, full_path)
-        _inject_related_links(full_path, path)
-    except Exception as e:
-        print(f"[second-brain] warning: index/link failed for {path}: {e}", file=sys.stderr)
+    after_write(full_path, path)
     return f"Appended to: {path}"
 
 
@@ -691,12 +1095,7 @@ def mark_note_status(path: str, status: str) -> str:
     if not full_path.exists():
         return f"Note not found: {path}"
 
-    text = full_path.read_text(encoding="utf-8")
-    if re.search(r"^status\s*:", text, re.MULTILINE):
-        updated = re.sub(r"(?m)^(status\s*:).*", rf"\1 {status}", text)
-    else:
-        updated = re.sub(r"(^---\n)", rf"\1status: {status}\n", text, count=1)
-    full_path.write_text(updated, encoding="utf-8")
+    _fm.set_fields_in_file(full_path, {"status": status})
 
     try:
         _store.set_note_status(path, status)
@@ -1136,33 +1535,9 @@ def save_article(
     )
     dest.write_text(frontmatter + body, encoding="utf-8")
 
-    _append_to_index(rel, title, today)
-
-    # Index immediately, then enrich keywords in background (avoids blocking on Gemini CLI)
-    try:
-        _store.index_file(VAULT, dest)
-    except Exception as e:
-        print(f"[second-brain] warning: index failed for {rel}: {e}", file=sys.stderr)
-
-    _run_keyword_enrichment_async(dest, body)
-
-    # Auto-link: find related notes and write into frontmatter
-    n_links = _inject_related_links(dest, rel)
-
-    # Trigger figure extraction in background (non-blocking)
-    def _bg_extract():
-        try:
-            _fig.process_article(rel, VAULT)
-            # Sync figures written to DuckDB cache into the primary store (postgres when SB_DB_BACKEND=postgres)
-            for fig in vault_db.get_figures_for_note(rel):
-                try:
-                    _store.upsert_figure(**fig)
-                except Exception as fe:
-                    print(f"[second-brain] figure sync to store failed: {fe}", file=sys.stderr)
-        except Exception as e:
-            print(f"[second-brain] figure extraction failed for {rel}: {e}", file=sys.stderr)
-
-    threading.Thread(target=_bg_extract, daemon=True).start()
+    n_links = after_write(
+        dest, rel, register_label=title, enrich=body, extract_figures=True
+    )
 
     link_msg = f", {n_links} related links added" if n_links else ""
     return f"Saved: {rel} (figure extraction started in background{link_msg})"
@@ -1464,6 +1839,7 @@ def annotate_figure(note_path: str, fig_index: int, insight: str) -> str:
 
     today = date.today().isoformat()
     paper_link = note_path.removesuffix(".md")
+    register_label = None
     if dest.exists():
         with open(dest, "a", encoding="utf-8") as f:
             f.write(f"- {today}: {insight}\n")
@@ -1481,14 +1857,11 @@ def annotate_figure(note_path: str, fig_index: int, insight: str) -> str:
             f"- {today}: {insight}\n"
         )
         dest.write_text(frontmatter + body, encoding="utf-8")
-        _append_to_index(rel, title, today)
+        register_label = title
         action = "Created insight note"
 
     # Index so search_notes finds it (content_hash change triggers embedding/FTS).
-    try:
-        _store.index_file(VAULT, dest)
-    except Exception as e:
-        print(f"[second-brain] warning: index failed for {rel}: {e}", file=sys.stderr)
+    after_write(dest, rel, register_label=register_label, relink=False)
 
     _add_figure_insight_backlink(note_path, fig_index, rel)
     return f"{action}: {rel}"
@@ -1680,8 +2053,17 @@ def get_agent_instructions() -> str:
     def _read(path: Path) -> str:
         return path.read_text(encoding="utf-8")
 
-    base = Path(__file__).parent / "AGENTS.md"
-    result = _read(base) if base.exists() else "⚠️ 找不到 AGENTS.md"
+    # Canonical base manual lives at the repo root — one level ABOVE this package
+    # (mcp-tools/second-brain/AGENTS.md), not inside mcp_second_brain/. Probe known
+    # locations so a layout change surfaces loudly instead of silently shipping the
+    # "not found" placeholder to remote agents.
+    _here = Path(__file__).resolve()
+    _candidates = [
+        _here.parent.parent / "AGENTS.md",  # repo root (canonical)
+        _here.parent / "AGENTS.md",         # packaged copy, if ever added
+    ]
+    base = next((p for p in _candidates if p.exists()), None)
+    result = _read(base) if base else "⚠️ 找不到 AGENTS.md"
 
     # Append personal rules from vault AGENTS.md if present.
     # The vault file is intentionally not in the public repo — it stays on Drive
@@ -1961,6 +2343,7 @@ def _run_http_with_auth(transport: str) -> None:
     n_keys = maybe_add_api_key_auth(
         app,
         lookup_fn=lambda raw: _store.get_identity_for_key(_hash_key(raw)),
+        exempt_paths={"/graph"},  # read-only browser viz; Tailscale-only (see AskUserQuestion)
     )
     if n_keys:
         print(f"[second-brain] API-key auth ENABLED ({n_keys} key(s))", file=sys.stderr)

@@ -21,6 +21,8 @@ from pathlib import Path
 
 from . import vault_db
 from . import figures as _fig
+from . import frontmatter
+from . import llm_cli
 
 # Resolution tiers: token estimates imported from figures to avoid duplication
 TIERS = _fig.SNAPSHOT_TIERS
@@ -120,18 +122,11 @@ def _compress_with_gemini(content: str) -> str | None:
 
 
 def _compress_with_claude(content: str) -> str | None:
-    """Fallback: Claude API via claude CLI."""
-    try:
-        result = subprocess.run(
-            ["claude", "-"],
-            input=f"{COMPRESS_PROMPT}\n\n---\n\n{content[:_MAX_COMPRESS_CHARS]}",
-            capture_output=True, text=True, timeout=180,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    return None
+    """Primary（Gemini tier 失效後）：Claude CLI via llm_cli（PATH 防呆，launchd 可用）。"""
+    return llm_cli.llm_text(
+        f"{COMPRESS_PROMPT}\n\n---\n\n{content[:_MAX_COMPRESS_CHARS]}",
+        timeout=180,
+    )
 
 
 def _naive_compress(content: str) -> str:
@@ -191,21 +186,14 @@ def _yaml_val(val: str) -> str:
 
 
 def _update_frontmatter(content: str, updates: dict) -> str:
-    fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content, re.DOTALL)
-    if not fm_match:
-        header = "---\n" + "\n".join(f"{k}: {_yaml_val(str(v))}" for k, v in updates.items()) + "\n---\n\n"
-        return header + content
+    """Set frontmatter fields, YAML-quoting each value via :func:`_yaml_val` first.
 
-    fm_text = fm_match.group(1)
-    for key, val in updates.items():
-        safe_val = _yaml_val(str(val))
-        if re.search(rf"^{re.escape(key)}:", fm_text, re.MULTILINE):
-            replacement = f"{key}: {safe_val}"
-            fm_text = re.sub(rf"^{re.escape(key)}:.*$", lambda _: replacement, fm_text, flags=re.MULTILINE)
-        else:
-            fm_text += f"\n{key}: {safe_val}"
-
-    return f"---\n{fm_text}\n---\n\n" + content[fm_match.end():]
+    The block surgery itself lives in :mod:`frontmatter`; this wrapper only owns the
+    value serialization (bare vs. quoted scalar) that ``vault_sleep`` writes.
+    """
+    return frontmatter.set_fields(
+        content, {k: _yaml_val(str(v)) for k, v in updates.items()}
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -431,8 +419,11 @@ RULE: FastMCP Image type cannot be used in Union return annotations — Pydantic
 """
 
 
-_RULE_LINE_RE = re.compile(r"^RULE:\s+[A-Za-z].{5,300}$")
-_RULE_SHELL_CHARS = re.compile(r"[`$(){}|;&<>]")
+_RULE_LINE_RE = re.compile(r"^RULE:\s+[A-Za-z].{5,400}$")
+# 規則只寫進 memory/rules.md（markdown，不經 shell/eval），故只擋真正罕見的注入字元；
+# 放行技術規則常見的 markdown 字元（反引號、括號、大括號、管線），否則 Claude 的
+# 格式化輸出（`code`、(註)）會被整批濾掉 ⇒ 規則提取永遠空手。
+_RULE_SHELL_CHARS = re.compile(r"[$;&<>]")
 
 
 def _sanitize_rule(rule: str) -> str | None:
@@ -446,21 +437,14 @@ def _sanitize_rule(rule: str) -> str | None:
 
 
 def _extract_rules_with_gemini(content: str) -> list[str]:
-    """Call Gemini CLI to extract declarative rules from note content."""
-    try:
-        env = os.environ.copy()
-        env["GEMINI_CLI_TRUST_WORKSPACE"] = "false"
-        result = subprocess.run(
-            ["gemini", "-p", f"{_RULES_PROMPT}\n\n---\n\n{content[:8000]}"],
-            capture_output=True, text=True, timeout=90, env=env,
-            cwd=str(Path.home()),
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            return []
-        lines = result.stdout.strip().splitlines()
-        return [r for l in lines if (r := _sanitize_rule(l)) is not None]
-    except Exception:
+    """Extract declarative rules from note content via the LLM CLI.
+
+    Routes through ``llm_cli`` (Claude 主、Gemini 已死備援)。函式名保留向後相容。
+    """
+    out = llm_cli.llm_text(f"{_RULES_PROMPT}\n\n---\n\n{content[:8000]}", timeout=90)
+    if not out:
         return []
+    return [r for l in out.splitlines() if (r := _sanitize_rule(l)) is not None]
 
 
 def extract_rules_for(note_path: str, vault: Path) -> list[str]:
@@ -619,19 +603,9 @@ def consolidate_cluster(cluster: list[str], vault: Path) -> str | None:
         return None
 
     combined = "\n\n".join(contents)
-    try:
-        env = os.environ.copy()
-        env["GEMINI_CLI_TRUST_WORKSPACE"] = "false"
-        result = subprocess.run(
-            ["gemini", "-p", f"{_CONSOLIDATION_PROMPT}\n\n---\n\n{combined}"],
-            capture_output=True, text=True, timeout=180, env=env,
-            cwd=str(Path.home()),
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    except Exception:
-        pass
-    return None
+    return llm_cli.llm_text(
+        f"{_CONSOLIDATION_PROMPT}\n\n---\n\n{combined}", timeout=180,
+    )
 
 
 def run_consolidation(

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -79,7 +80,16 @@ class PostgresStore:
 
     def _apply_schema(self) -> None:
         schema_path = Path(__file__).parent / "postgres_schema.sql"
-        sql = schema_path.read_text(encoding="utf-8")
+        local_cache = Path.home() / ".local/share/second-brain/postgres_schema.sql"
+        try:
+            sql = schema_path.read_text(encoding="utf-8")
+            local_cache.parent.mkdir(parents=True, exist_ok=True)
+            local_cache.write_text(sql, encoding="utf-8")
+        except OSError:
+            if local_cache.exists():
+                sql = local_cache.read_text(encoding="utf-8")
+            else:
+                raise
         with self._pool.connection() as conn:
             conn.execute(sql)
             conn.commit()
@@ -230,9 +240,27 @@ class PostgresStore:
         count = 0
         batch: list[Path] = []
 
+        # Google Drive's virtual filesystem occasionally raises EDEADLK on a full
+        # recursive walk (same quirk sync_incremental guards against below); retry
+        # a few times with backoff before giving up, since this is a manually
+        # triggered full rebuild and silently returning 0 would be misleading.
+        all_md: list[Path] | None = None
+        last_err: OSError | None = None
+        for attempt, delay in enumerate((0.5, 1.0, 2.0, 4.0, 8.0)):
+            try:
+                all_md = list(vault.rglob("*.md"))
+                break
+            except OSError as e:
+                last_err = e
+                print(f"[pg-sync] rglob attempt {attempt + 1} failed (Drive deadlock?): {e}", file=sys.stderr)
+                time.sleep(delay)
+        if all_md is None:
+            assert last_err is not None
+            raise last_err
+
         all_files = [
             f
-            for f in vault.rglob("*.md")
+            for f in all_md
             if not any(p in f.parts for p in (".obsidian", ".claude", "templates"))
         ]
 
@@ -276,20 +304,41 @@ class PostgresStore:
         # Use vault.db mtime as reference if DuckDB file exists; else compare to a fixed old time
         db_path = _vdb.DB_PATH
         db_mtime = db_path.stat().st_mtime if db_path.exists() else 0
-        changed = [
-            f
-            for f in vault.rglob("*.md")
-            if not any(p in f.parts for p in (".obsidian", ".claude", "templates"))
-            and f.stat().st_mtime > db_mtime
-        ]
+        try:
+            candidates = list(vault.rglob("*.md"))
+        except OSError as e:
+            # Google Drive FUSE deadlock — non-fatal, backfill handled next run
+            print(f"[pg-sync] rglob failed (Drive deadlock?): {e}", file=sys.stderr)
+            return {"updated": 0, "skipped": "drive_unavailable"}
+        changed = []
+        for f in candidates:
+            if any(p in f.parts for p in (".obsidian", ".claude", "templates")):
+                continue
+            try:
+                if f.stat().st_mtime > db_mtime:
+                    changed.append(f)
+            except OSError:
+                pass
         if not changed:
             return {"updated": 0, "skipped": "all fresh"}
+        updated, skipped = 0, 0
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
                 for f in changed:
-                    self._upsert_note_row(cur, vault, f)
+                    try:
+                        self._upsert_note_row(cur, vault, f)
+                        updated += 1
+                    except OSError as e:
+                        print(f"[pg-sync] skip {f.name}: {e}", file=sys.stderr)
+                        skipped += 1
             conn.commit()
-        return {"updated": len(changed)}
+        return {"updated": updated, "skipped": skipped}
+
+    def sync_if_stale(self, vault: Path) -> None:
+        # No-op: the central Postgres index is kept fresh by the scheduled
+        # `second-brain-pg-sync` job (30-min incremental), so a live query is
+        # always current. Startup does not trigger its own re-scan.
+        return
 
     def sync_embeddings(self, vault: Path | None = None) -> dict:
         with self._pool.connection() as conn:
@@ -303,8 +352,27 @@ class PostgresStore:
         for path, title, snippet, tags in rows:
             if vault:
                 md_file = vault / path
+                full_text = None
                 if md_file.exists():
-                    full_text = md_file.read_text(encoding="utf-8", errors="ignore")
+                    # Google Drive's virtual filesystem occasionally raises EDEADLK on
+                    # an individual read_text (same quirk as the rglob walk in sync_all).
+                    # Retry briefly; on persistent failure, skip this note for now — it
+                    # stays embedding=NULL and gets picked up on the next sync round.
+                    for delay in (0.3, 1.0):
+                        try:
+                            full_text = md_file.read_text(encoding="utf-8", errors="ignore")
+                            break
+                        except OSError as e:
+                            print(f"[pg_store] read_text retry for {path}: {e}", file=sys.stderr)
+                            time.sleep(delay)
+                    else:
+                        try:
+                            full_text = md_file.read_text(encoding="utf-8", errors="ignore")
+                        except OSError as e:
+                            print(f"[pg_store] skip embedding {path} (Drive deadlock?): {e}", file=sys.stderr)
+                            failed += 1
+                            continue
+                if full_text is not None:
                     prose = _vdb._embed_text_for(full_text)
                     text = f"{title or ''} {tags or ''} {prose}".strip()
                 else:

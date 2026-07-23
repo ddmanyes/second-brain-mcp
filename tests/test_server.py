@@ -2,7 +2,7 @@
 
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -312,3 +312,80 @@ class TestNewNoteProjectRouting:
              patch("mcp_second_brain.vault_db._connect"):
             result = server.new_note("resource", "一般參考資料")
         assert result.startswith("Created: 30-resources/") or "30-resources" in result
+
+
+# ---------------------------------------------------------------------------
+# after_write — the shared post-write index+enrichment tail
+# ---------------------------------------------------------------------------
+
+
+class TestAfterWrite:
+    """Contract of the tail every note write path funnels through."""
+
+    def _patched(self, server, monkeypatch, *, index_raises=False):
+        store = MagicMock()
+        if index_raises:
+            store.index_file.side_effect = RuntimeError("boom")
+        monkeypatch.setattr(server, "_store", store)
+        append = MagicMock()
+        relink = MagicMock(return_value=3)
+        enrich = MagicMock()
+        figures = MagicMock()
+        monkeypatch.setattr(server, "_append_to_index", append)
+        monkeypatch.setattr(server, "_inject_related_links", relink)
+        monkeypatch.setattr(server, "_run_keyword_enrichment_async", enrich)
+        monkeypatch.setattr(server, "_spawn_figure_extract", figures)
+        return store, append, relink, enrich, figures
+
+    def test_invariant_always_indexes(self, vault, monkeypatch):
+        from mcp_second_brain import server
+        monkeypatch.setattr(server, "VAULT", vault)
+        store, *_ = self._patched(server, monkeypatch)
+        server.after_write(vault / "10-projects" / "test-note.md", "10-projects/test-note.md")
+        assert store.index_file.called
+
+    def test_register_label_none_skips_registration(self, vault, monkeypatch):
+        from mcp_second_brain import server
+        monkeypatch.setattr(server, "VAULT", vault)
+        _, append, *_ = self._patched(server, monkeypatch)
+        server.after_write(vault / "10-projects" / "test-note.md", "10-projects/test-note.md")
+        assert not append.called
+
+    def test_register_label_triggers_registration(self, vault, monkeypatch):
+        from mcp_second_brain import server
+        monkeypatch.setattr(server, "VAULT", vault)
+        _, append, *_ = self._patched(server, monkeypatch)
+        server.after_write(vault / "n.md", "n.md", register_label="My Label")
+        assert append.called
+        assert append.call_args[0][1] == "My Label"
+
+    def test_relink_false_skips_and_returns_zero(self, vault, monkeypatch):
+        from mcp_second_brain import server
+        monkeypatch.setattr(server, "VAULT", vault)
+        _, _, relink, *_ = self._patched(server, monkeypatch)
+        n = server.after_write(vault / "n.md", "n.md", relink=False)
+        assert n == 0
+        assert not relink.called
+
+    def test_relink_returns_count(self, vault, monkeypatch):
+        from mcp_second_brain import server
+        monkeypatch.setattr(server, "VAULT", vault)
+        self._patched(server, monkeypatch)
+        n = server.after_write(vault / "n.md", "n.md")
+        assert n == 3
+
+    def test_enrich_and_figures_are_opt_in(self, vault, monkeypatch):
+        from mcp_second_brain import server
+        monkeypatch.setattr(server, "VAULT", vault)
+        _, _, _, enrich, figures = self._patched(server, monkeypatch)
+        server.after_write(vault / "n.md", "n.md")
+        assert not enrich.called and not figures.called
+        server.after_write(vault / "n.md", "n.md", enrich="body text", extract_figures=True)
+        assert enrich.called and figures.called
+
+    def test_index_failure_never_raises_and_returns_zero(self, vault, monkeypatch):
+        from mcp_second_brain import server
+        monkeypatch.setattr(server, "VAULT", vault)
+        self._patched(server, monkeypatch, index_raises=True)
+        n = server.after_write(vault / "n.md", "n.md")  # must not raise
+        assert n == 0

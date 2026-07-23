@@ -42,6 +42,16 @@ class VaultStore(Protocol):
         """
         ...
 
+    def sync_if_stale(self, vault: Path) -> None:
+        """Sync the index only if this backend considers it stale.
+
+        Called on startup once ``has_index()`` is already True. Each backend owns
+        its own staleness policy — the server must not know how staleness is decided
+        (e.g. DuckDB throttles on the DB-file mtime; Postgres relies on a scheduled
+        incremental sync and treats a live query as always fresh).
+        """
+        ...
+
     def sync_embeddings(self, vault: Path | None = None) -> dict:
         """Backfill embeddings for notes that are missing them.
 

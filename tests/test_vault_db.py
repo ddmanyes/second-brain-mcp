@@ -766,42 +766,29 @@ class TestServerHelpers:
         assert text.count("semantic_keywords:") == 1
 
     def test_extract_semantic_keywords_no_gemini(self, monkeypatch):
-        """When gemini CLI is absent, extraction returns empty list without raising."""
-        import sys
-        
-        from mcp_second_brain import server
-        monkeypatch.setattr(server.shutil, "which", lambda _: None)
+        """When no LLM CLI is available, extraction returns empty list without raising."""
+        from mcp_second_brain import server, llm_cli
+        # Gemini tier 失效後改走 llm_cli；模擬「無任何 LLM CLI」需 null 掉解析後的後端，
+        # 而非舊的 server.shutil.which（後端在 llm_cli import 時就解析好了）。
+        monkeypatch.setattr(llm_cli, "_CLAUDE_CLI", None)
+        monkeypatch.setattr(llm_cli, "_GEMINI_CLI", None)
+        monkeypatch.setattr(llm_cli, "_LOCAL_BASE", "")  # disable local Gemma backend too
         result = server._extract_semantic_keywords_via_gemini("some content")
         assert result == []
 
-    def test_extract_semantic_keywords_gemini_mock(self, monkeypatch, tmp_path):
-        """Mock subprocess to return fixed JSON; verify correct parse."""
-        import sys
-        
-        from mcp_second_brain import server
-        monkeypatch.setattr(server.shutil, "which", lambda _: "/usr/bin/gemini")
-
-        class _Result:
-            stdout = '["股市下跌", "金融危機", "熊市"]'
-            returncode = 0
-
-        monkeypatch.setattr(server.subprocess, "run", lambda *a, **k: _Result())
+    def test_extract_semantic_keywords_gemini_mock(self, monkeypatch):
+        """Mock the LLM CLI to return fixed JSON; verify correct parse."""
+        from mcp_second_brain import server, llm_cli
+        # Post-refactor the subprocess call lives in llm_cli, so mock at that boundary.
+        monkeypatch.setattr(llm_cli, "llm_text", lambda *a, **k: '["股市下跌", "金融危機", "熊市"]')
         result = server._extract_semantic_keywords_via_gemini("市場大跌，投資人恐慌")
         assert result == ["股市下跌", "金融危機", "熊市"]
 
     def test_extract_semantic_keywords_gemini_fallback(self, monkeypatch):
-        """When Gemini returns comma-separated plain text, fallback parsing still works."""
-        import sys
-        
-        from mcp_second_brain import server
+        """When the LLM returns comma-separated plain text, fallback parsing still works."""
+        from mcp_second_brain import server, llm_cli
 
-        monkeypatch.setattr(server.shutil, "which", lambda _: "/usr/bin/gemini")
-
-        class _Result:
-            stdout = "股市下跌, 熊市, 崩盤"
-            returncode = 0
-
-        monkeypatch.setattr(server.subprocess, "run", lambda *a, **k: _Result())
+        monkeypatch.setattr(llm_cli, "llm_text", lambda *a, **k: "股市下跌, 熊市, 崩盤")
         result = server._extract_semantic_keywords_via_gemini("content")
         assert "股市下跌" in result
         assert "熊市" in result

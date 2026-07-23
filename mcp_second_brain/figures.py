@@ -24,6 +24,7 @@ from urllib.parse import urljoin, urlparse
 import requests
 
 from . import vault_db
+from . import llm_cli
 
 # RFC-1918, loopback, link-local, AWS metadata — all off-limits for outbound fetches
 _BLOCKED_NETS = [
@@ -214,7 +215,11 @@ def _analyse_with_claude(image_path: Path, caption: str = "") -> dict:
 
 
 def _analyse_with_gemini(image_path: Path, caption: str = "") -> dict:
-    """Fallback: Gemini CLI with image passed via stdin prompt + positional path."""
+    """Fallback（無 ANTHROPIC_API_KEY 時）：Claude CLI 讀圖（@path）。
+
+    Gemini tier 失效後改走 ``llm_cli.llm_image``（claude --print -p，訂閱授權、無需 key）。
+    函式名保留向後相容。
+    """
     try:
         caption_ctx = f"Caption: {caption} " if caption else ""
         prompt = (
@@ -224,15 +229,9 @@ def _analyse_with_gemini(image_path: Path, caption: str = "") -> dict:
             '{"ocr_text": "all text visible in figure including labels axes legends values", '
             '"description": "one sentence describing what this figure shows"}'
         )
-        result = subprocess.run(
-            ["gemini", "--output-format", "text", "-", str(image_path)],
-            input=prompt,
-            capture_output=True, text=True, timeout=60,
-            cwd=str(FIGURES_DIR.parent),
-        )
-        if result.returncode == 0 and result.stdout.strip():
+        raw = llm_cli.llm_image(prompt, image_path, timeout=120)
+        if raw:
             import json
-            raw = result.stdout.strip()
             json_match = re.search(r"\{.*\}", raw, re.DOTALL)
             if json_match:
                 data = json.loads(json_match.group())
@@ -883,9 +882,10 @@ def read_snapshot_with_ollama(
 
 
 def read_snapshot_with_gemini(snapshot_path: Path, vault: Path) -> str | None:
-    """Pass a PNG snapshot to Gemini CLI and return the note summary.
+    """Pass a PNG snapshot to the Claude CLI and return the note summary.
 
-    Uses @filepath syntax so Gemini reads the image directly (not via file tools).
+    Uses @filepath syntax so the model reads the image directly (not via file tools).
+    （函式名保留向後相容；Gemini tier 失效後後端已改 Claude CLI。）
     """
     try:
         # Reject DB-sourced paths that escape the vault
@@ -899,8 +899,9 @@ def read_snapshot_with_gemini(snapshot_path: Path, vault: Path) -> str | None:
             rel = resolved
 
         prompt = f"@{rel} {_SNAPSHOT_READ_PROMPT}"
+        claude = llm_cli._CLAUDE_CLI or "claude"  # PATH 防呆（launchd 精簡環境）
         result = subprocess.run(
-            ["gemini", "--output-format", "text", "-p", prompt],
+            [claude, "--print", "-p", prompt],
             capture_output=True, text=True, timeout=90,
             cwd=str(vault),
         )

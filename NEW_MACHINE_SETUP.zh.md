@@ -18,10 +18,10 @@
             Postgres (sb-pg, Docker)        ← 只綁 127.0.0.1:5432，絕不對外
                   ▲ localhost
    中央 host ─────┤ MCP server :9100（streamable-http，綁 Tailscale IP）
-   （always-on）   │   SB_DB_BACKEND=postgres、SB_API_KEY=…
-                  │   + pg-sync（每 30 分）+ pg-backup（每日）
+   lab_center     │   SB_DB_BACKEND=postgres、SB_API_KEY=<key>…
+   100.87.59.15   │   + pg-sync（每 30 分）+ pg-backup（每日）
                   ▼ Tailscale
-   client Mac ─────── 連 http://<tailscale-ip>:9100/mcp + X-API-Key header
+   client Mac ─────── 連 http://100.87.59.15:9100/mcp + X-API-Key header
                       （免 venv、免 DuckDB、免 sync — 只要 MCP 設定）
 ```
 
@@ -40,62 +40,177 @@
 
 ## A. Client 機器設定（最常見，約 2 分鐘）
 
-只是要「用」這個腦的新 Mac。**免 Python、免 venv、免 DuckDB、免建索引。**
+只是要「用」這個腦的新 Mac。**免 Python、免 venv、免 DuckDB、免建索引、免 llama-server、免 Ollama。**
 
-跟中央 host 拿 API key（存在 `~/Library/LaunchAgents/com.user.second-brain-remote.plist` 的
-`SB_API_KEY`，以及現有 client 的設定裡）。
+> embedding 和 LLM（Gemma）都跑在中央 host（100.87.59.15），client 完全不知道也不在乎。
 
-**Claude Code（CLI）：**
+### 連線資訊（直接複製，不需修改）
 
-```bash
-claude mcp add --scope user --transport http second-brain \
-  "http://100.81.161.16:9100/mcp" \
-  --header "X-API-Key: <金鑰>"
+```
+Server URL : http://100.87.59.15:9100/mcp
+X-API-Key  : <SB_API_KEY>
 ```
 
-**Claude 桌面版** — 編輯 `~/Library/Application Support/Claude/claude_desktop_config.json`
-（桌面版透過 `mcp-remote` 代理連 HTTP server）：
-
-```json
-{
-  "mcpServers": {
-    "second-brain": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote", "http://100.81.161.16:9100/mcp", "--header", "X-API-Key: <金鑰>"]
-    }
-  }
-}
-```
-
-⌘Q 重開桌面版即可——這台 client 就能透過 Tailscale 讀寫中央活腦。
-
-**Antigravity（及 Windsurf / Cursor 等 Codeium 系 IDE）** — 編輯 `~/.gemini/antigravity/mcp_config.json`。
-這類 IDE 的 `mcp_config.json` 主要吃 stdio（`command`/`args`），所以同樣用 `mcp-remote` 代理把
-stdio 橋接到中央 HTTP server 並注入 `X-API-Key`（需 Node / npx）：
-
-```json
-{
-  "mcpServers": {
-    "second-brain": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote", "http://100.81.161.16:9100/mcp", "--header", "X-API-Key: <金鑰>"]
-    }
-  }
-}
-```
-
-> ⚠️ **不要**在 Antigravity 用 `command: python -m mcp_second_brain` 直跑本機 stdio——那會落在**各機獨立 DuckDB**（一顆和中央 Postgres 不同步的腦）。要單一真相，務必用上面的 HTTP(mcp-remote) 形式。改完重啟 Antigravity 生效。
->
-> 前提：client 在同一個 Tailscale tailnet（才連得到 `100.81.161.16`）。沒帶有效 `X-API-Key` 會回 `401`。
+前提：這台 client 已加入同一個 Tailscale tailnet（連不到 100.87.59.15 = Tailscale 未登入）。
 
 ---
 
-## B. 中央 host 設定（一次性，擁有資料的那台）
+### A1 — Claude Code（CLI）
 
-只有**一台**扮演此角色（你的 always-on 個人主機）。先設每台不同的路徑：
+**second-brain（HTTP transport）：**
 
 ```bash
-PJ="$HOME/Library/CloudStorage/GoogleDrive-<你的帳號>/我的雲端硬碟/PJ_save"
+claude mcp add --scope user --transport http second-brain \
+  "http://100.87.59.15:9100/mcp" \
+  --header "X-API-Key: <SB_API_KEY>"
+```
+
+**finance-kit（stdio，可選，只在這台機器是 FK 排程主機時需要）：**
+
+```bash
+claude mcp add --scope user finance-kit \
+  -e "PATH=/Users/lab_center/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+  -e "HOME=/Users/lab_center" \
+  -- /Users/lab_center/.venvs/finance-kit/bin/python \
+     /Users/lab_center/.local/finance-kit/server.py
+```
+
+驗證：
+
+```bash
+claude mcp list        # 應看到 second-brain ✔ Connected、finance-kit ✔ Connected
+```
+
+> ⚠️ **重要陷阱**：`claude mcp add --scope user` 寫入 `~/.claude.json`。
+> 若曾手動在 `~/.claude/settings.json` 裡加 `mcpServers` 欄位，**Claude Code 會完全忽略**——
+> 必須用上面的 CLI 指令才能生效。
+
+---
+
+### A2 — Claude 桌面版
+
+編輯 `~/Library/Application Support/Claude/claude_desktop_config.json`（⌘Q 重開生效）：
+
+```json
+{
+  "mcpServers": {
+    "second-brain": {
+      "command": "npx",
+      "args": [
+        "-y", "mcp-remote",
+        "http://100.87.59.15:9100/mcp",
+        "--allow-http",
+        "--header", "X-API-Key: <SB_API_KEY>"
+      ]
+    }
+  }
+}
+```
+
+> 桌面版不支援 HTTP transport，透過 `mcp-remote` 橋接（需 Node / npx）。
+> npx 找不到時（nvm 安裝），改用絕對路徑 `"command": "/Users/<你的帳號>/.local/bin/npx"`。
+
+---
+
+### A3 — Antigravity
+
+編輯 `~/.gemini/antigravity/mcp_config.json`（若不存在就新建）：
+
+```json
+{
+  "mcpServers": {
+    "second-brain": {
+      "command": "/Users/<你的帳號>/.local/bin/npx",
+      "args": [
+        "-y", "mcp-remote",
+        "http://100.87.59.15:9100/mcp",
+        "--allow-http",
+        "--header", "X-API-Key: <SB_API_KEY>"
+      ]
+    }
+  }
+}
+```
+
+改完重啟 Antigravity 生效。
+
+> `command` 用絕對路徑是因為 GUI app 不讀 `~/.zshrc`，找不到 nvm 的 npx。
+> 安裝 Node 步驟：`curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash`，
+> 重開終端後 `nvm install --lts`，再 `ln -sf $(which npx) ~/.local/bin/npx`。
+>
+> ⚠️ **不要**用 `command: python -m mcp_second_brain` 直跑本機 stdio——那會走各機獨立 DuckDB，
+> 和中央 Postgres 完全脫節。必須用 mcp-remote 形式才能走單一真相。
+
+---
+
+### A4 — Gemini CLI（`gemini` 指令）
+
+編輯 `~/.gemini/config/mcp_config.json`（若不存在就新建）：
+
+```json
+{
+  "mcpServers": {
+    "second-brain": {
+      "command": "/Users/<你的帳號>/.local/bin/npx",
+      "args": [
+        "-y", "mcp-remote",
+        "http://100.87.59.15:9100/mcp",
+        "--allow-http",
+        "--header", "X-API-Key: <SB_API_KEY>"
+      ]
+    }
+  }
+}
+```
+
+---
+
+### A5 — Windsurf / Cursor（Codeium 系 IDE）
+
+在各 IDE 的 MCP 設定（通常在設定 → MCP Servers 或 `mcp_config.json`）加入同樣的 mcp-remote 設定：
+
+```json
+{
+  "mcpServers": {
+    "second-brain": {
+      "command": "/Users/<你的帳號>/.local/bin/npx",
+      "args": [
+        "-y", "mcp-remote",
+        "http://100.87.59.15:9100/mcp",
+        "--allow-http",
+        "--header", "X-API-Key: <SB_API_KEY>"
+      ]
+    }
+  }
+}
+```
+
+---
+
+### 快速驗證（client）
+
+```bash
+curl -s http://100.87.59.15:9100/mcp \
+  -H "X-API-Key: <SB_API_KEY>" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}' \
+  | head -c 200
+```
+
+成功回傳 `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":...` 表示 OK。
+
+---
+
+## B. 中央 host（lab_center，100.87.59.15）— 已設定完成
+
+> **這台機器已於 2026-06-26 完成全部設定，通常不需要重做 B 段。**
+> 僅在換機或重裝時參考。
+
+只有**一台**扮演此角色（always-on 個人主機）。路徑：
+
+```bash
+PJ="$HOME/Library/CloudStorage/GoogleDrive-<you>@gmail.com/我的雲端硬碟/PJ_save"
 SB="$PJ/mcp-tools/second-brain"
 VAULT="$PJ/second-brain"
 ```
@@ -116,37 +231,99 @@ docker exec -i sb-pg psql -U postgres -d sb_personal < "$SB/mcp_second_brain/sto
 - ⚠️ **data dir 在本機 SSD，絕不放 Google Drive**（Drive 同步會毀掉 Postgres data dir）。
 - 驗證：`docker exec sb-pg psql -U postgres -d sb_personal -c "SELECT extname FROM pg_extension;"` 應有 `vector` + `pg_trgm`。
 
-### B2 — venv + 依賴（本機，**不要建在 Drive 目錄裡**）
+### B2 — Python（pyenv，若系統 Python < 3.11）
+
+若無 Homebrew sudo 權限：
 
 ```bash
-python3 -m venv ~/.venvs/second-brain
-~/.venvs/second-brain/bin/pip install -r "$SB/requirements.txt"   # 含 psycopg[binary,pool]
-~/.venvs/second-brain/bin/playwright install chromium             # PNG 快照渲染用
+curl https://pyenv.run | bash   # 或 brew install pyenv
+pyenv install 3.12.10
+pyenv global 3.12.10
 ```
 
-> **PDF 轉換依賴** — `save_article` 三層管線：
-> 1. **Marker**（ML，品質最佳）— 來自 `requirements.txt`；~1.35 GB 模型首次存 PDF 時自動下載到 `~/.cache/datalab/`。
-> 2. **pdftotext / pdfinfo**（fallback）— `brew install poppler`。
-> 3. **MarkItDown**（最後 fallback）— 已在 requirements。
+建 venv（**不要建在 Drive 目錄裡**）：
+
+```bash
+python -m venv ~/.venvs/second-brain
+~/.venvs/second-brain/bin/pip install -r "$SB/requirements.txt"
+```
+
+> **已知衝突**：`marker-pdf ≤1.10.2` 要求 `anthropic<0.47`，與專案的 `>=0.109.1` 衝突。
+> 排除安裝：`pip install -r requirements.txt --constraint <(echo "marker-pdf==0")`，
+> 或直接從 requirements 移除 marker-pdf / pymupdf4llm / pymupdf。PDF 仍有 MarkItDown fallback。
+>
+> **mcp 版本**：mcp 2.x 移除了 fastmcp，必須用 `mcp[cli]>=1.27.2,<2.0.0`。
 
 ### B3 — Embedding server
 
-`nomic-embed-text` 經 llama-server 跑 `:11435`（server 偵測到會自動啟動），或 Ollama：
-`ollama pull nomic-embed-text` 並設 `EMBED_URL`/`EMBED_PORT`。embedding 為 768 維。
+embedding 模型：`nomic-embed-text`，768 維。有兩種方案：
+
+**方案 A：llama-server（推薦，若已有 llama.cpp）**
+
+直接用 llama.cpp 的 llama-server 跑 nomic-embed-text，port 11435，不需要 Ollama：
+
+```bash
+# nomic-embed-text gguf（若有 Ollama blob 可直接用，否則自行下載）
+NOMIC_GGUF="$HOME/.ollama/models/blobs/sha256-970aa74c0a90ef7482477cf803618e776e173c007bf957f635f1015bfcfef0e6"
+
+/path/to/llama-server \
+  --model "$NOMIC_GGUF" \
+  --host 127.0.0.1 --port 11435 \
+  --embedding --pooling mean --ctx-size 2048 --no-warmup
+```
+
+launchd plist 範例：`~/Library/LaunchAgents/com.llama-server-embed.plist`（RunAtLoad + KeepAlive）。
+
+plist 需設：
+```
+EMBED_URL=http://localhost:11435/v1/embeddings
+EMBED_MODEL=nomic-embed-text
+```
+
+> ⚠️ 若同機另有 llama-server 跑 LLM（如 Gemma）在 port 11434，embedding 必須用不同 port（11435），否則衝突。
+
+**方案 B：Ollama（較簡單，沒有自己 llama.cpp 的情況）**
+
+```bash
+curl -L https://ollama.com/download/Ollama-darwin.zip -o /tmp/Ollama.zip
+ditto -xk /tmp/Ollama.zip /Applications/
+/Applications/Ollama.app/Contents/MacOS/ollama serve &
+ollama pull nomic-embed-text
+```
+
+plist 需設：
+```
+EMBED_URL=http://localhost:11434/v1/embeddings
+EMBED_MODEL=nomic-embed-text
+```
+
+> ⚠️ 若同機有其他服務也綁 11434，Ollama 會衝突 → 改用方案 A。
 
 ### B4 — 中央 HTTP server（launchd，KeepAlive）
 
-launchd job `com.user.second-brain-remote` 把 server 綁到 Tailscale IP，環境：
+Start script `~/.local/bin/second-brain-start-remote.sh`：
+- 從 macOS Keychain 讀 `ANTHROPIC_API_KEY`（`security find-generic-password -a $USER -s ANTHROPIC_API_KEY -w`）
+- 偵測 Tailscale IP：`/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4`
+- 啟動：`python -m mcp_second_brain --transport streamable-http --host <tailscale-ip> --port 9100`
+
+launchd plist `~/Library/LaunchAgents/com.user.second-brain-remote.plist` 環境：
 
 ```text
 SB_DB_BACKEND=postgres
 SB_PG_DSN=postgresql://postgres:<pw>@localhost:5432/sb_personal
-SB_API_KEY=<產生一把強金鑰>          # client 要以 X-API-Key 帶上
+SB_API_KEY=<強金鑰>          # client 以 X-API-Key 帶上
 SECOND_BRAIN_PATH=<VAULT>
+EMBED_URL=http://localhost:11435/v1/embeddings   # 方案A: llama-server；方案B(Ollama)改為 11434
+EMBED_MODEL=nomic-embed-text
 ```
 
-start script 綁 `--host <tailscale-ip> --port 9100 --transport streamable-http`。改完 plist 的
-`EnvironmentVariables` 後要**完整重載**（env 變更不能只 `kickstart`）：
+⚠️ ANTHROPIC_API_KEY **不寫進 plist**（安全），由 start script 從 Keychain 讀取：
+
+```bash
+security add-generic-password -a $USER -s ANTHROPIC_API_KEY -w "sk-ant-..."
+```
+
+改完 plist 後完整重載（env 變更不能只 `kickstart`）：
 
 ```bash
 launchctl bootout  gui/$(id -u)/com.user.second-brain-remote
@@ -164,15 +341,14 @@ SB_DB_BACKEND=postgres SB_PG_DSN=… SECOND_BRAIN_PATH="$VAULT" \
    print(get_store().sync_all(Path(os.environ['SECOND_BRAIN_PATH'])))"
 ```
 
-預期 `{'synced': N, 'embed_failed': 0}`。（~900 篇 ≈ 35 秒，embedding 修正後很快。）
+預期 `{'synced': N, 'embed_failed': 0}`。若 embed_failed > 0：先跑 `sync_all` 再跑 `store.sync_embeddings(vault)`。
 
 ### B6 — 維護排程（launchd）
 
 | Job | 頻率 | 用途 |
 | --- | --- | --- |
-| `com.user.second-brain-pg-sync` | 每 30 分 | 對 Postgres 跑 `sync_incremental`，撿回 cron 改的 markdown，防索引脫節（`launchd/run_pg_sync.py`）。 |
-| `com.user.second-brain-pg-backup` | 每日 04:00 | `pg_dump \| gzip` `sb_personal`/`sb_lab` 到 `PJ_save/backups/`，保留近 7 份（`launchd/run_pg_backup.sh`）。 |
-| `com.user.vault-janitor` / `com.user.vault-sleep` | 每週 | vault 清理 + Ebbinghaus 壓縮。⚠️ 仍只寫 DuckDB、繞過 store 抽象層；其 markdown 變更由 `pg-sync` 撿進 Postgres。 |
+| `com.user.second-brain-pg-sync` | 每 30 分 | 對 Postgres 跑 `sync_incremental`，撿回 cron 改的 markdown，防索引脫節。 |
+| `com.user.second-brain-pg-backup` | 每日 04:00 | `pg_dump \| gzip` 到 `PJ_save/backups/second-brain-pg/`，保留近 7 份。 |
 
 ---
 
@@ -191,7 +367,8 @@ SB_DB_BACKEND=postgres SB_PG_DSN=… SECOND_BRAIN_PATH="$VAULT" \
 | Vault markdown 筆記 | Google Drive | ✅ 所有機器 |
 | 程式碼（`mcp_second_brain/`） | Google Drive | ✅ 所有機器 |
 | Postgres 索引 | 中央 host（Docker，本機 SSD） | ❌ 僅中央 — 唯一的線上索引 |
-| Python venv / Docker / embedding | 中央 host | ❌ 僅 host（client 都不用） |
+| Python venv / Docker / Postgres | 中央 host | ❌ 僅 host（client 都不用） |
+| llama-server / Ollama（embedding + LLM） | 中央 host | ❌ 僅 host — embedding 在 host 算完再回傳，client 不需安裝任何 AI runtime |
 | MCP 設定 + API key | 各 client | ❌ 每台各自 |
 
 ---
@@ -200,12 +377,15 @@ SB_DB_BACKEND=postgres SB_PG_DSN=… SECOND_BRAIN_PATH="$VAULT" \
 
 | 症狀 | 原因 | 解法 |
 | --- | --- | --- |
-| Client `401 unauthorized` | 缺 / 錯 `X-API-Key` | 補 `--header "X-API-Key: <金鑰>"`（Code）或 `mcp-remote` 的 `--header` 參數（桌面版）。 |
+| Client `401 unauthorized` | 缺 / 錯 `X-API-Key` | 確認 header 值與 `SB_API_KEY` plist 值完全相同（見 A 段連線資訊）。 |
 | Client 完全連不上 | 不在 tailnet，或中央 server / Tailscale 掛了 | `tailscale status`；在 host 查 `pgrep -f streamable-http` 與 `/tmp/second-brain-remote.log`。 |
 | server log 設了金鑰卻顯示 `API-key auth DISABLED` | `kickstart` 不會重載 plist env | 改用 `launchctl bootout` + `bootstrap`（見 B4）。 |
 | host 設定後查詢空結果 | 索引未建 | 跑 B5 的 `sync_all`。 |
-| `sync_all` 龜速 / embed server 一堆 HTTP 500 | embed 截斷未對齊 token batch（已修） | 確認跑的是最新 Drive 原始碼（`_call_embed_api` 有 256 字 tier、deterministic 500 不退避）。 |
+| `sync_all` embed_failed 不歸零 | embeddings 沒有初次補填 | `sync_all` 建索引後，另跑 `store.sync_embeddings(vault)` 補 NULL embeddings。 |
+| `sync_all` 龜速 / embed HTTP 500 | embed 截斷未對齊 token batch（已修） | 確認跑最新 Drive 原始碼（`_call_embed_api` 有 256 字 tier、deterministic 500 不退避）。 |
 | Postgres 索引與 markdown 脫節 | `pg-sync` job 沒載入 | `launchctl list \| grep pg-sync`；bootstrap `com.user.second-brain-pg-sync`。 |
-| 跑 pytest 清空了正式索引 | 舊測試預設 DSN 指向 `sb_personal`（已修） | 測試現預設 `sb_test` 且有硬 guard；`SB_PG_TEST_DSN` 絕不可指向 `sb_personal`/`sb_lab`。 |
+| Resource deadlock OSError（host sync） | Google Drive streaming 未快取的檔案 | 非 fatal — 背景執行緒錯誤，server 繼續跑；`sync_embeddings` 會補回成功載入的筆記。 |
+| `mcp 2.x` ImportError fastmcp | 裝到 mcp 2.0 pre-release | `pip install "mcp[cli]>=1.27.2,<2.0.0"` 覆蓋。 |
+| Claude Code `claude mcp list` 看不到 second-brain | 誤把 MCP 寫進 `~/.claude/settings.json` | 用 `claude mcp add --scope user` 寫入 `~/.claude.json`（見 A1 ⚠️ 說明）。 |
+| 跑 pytest 清空了正式索引 | 舊測試 DSN 指向 `sb_personal`（已修） | 測試現預設 `sb_test`，`SB_PG_TEST_DSN` 絕不可指向 `sb_personal`。 |
 | 快照 `read_note_as_image` 失敗（host） | playwright chromium 沒裝 | `~/.venvs/second-brain/bin/playwright install chromium`。 |
-| 桌面版 `Operation not permitted`（若跑本機 stdio host） | `command` 指向 Drive 內 `.venv/bin/python` | 改成本機 `~/.venvs/second-brain/bin/python`。 |

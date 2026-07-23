@@ -184,7 +184,7 @@ flowchart TD
 
 - [x] **0.1** 確認 embedding 維度：讀 `vault_db.py` embedding 產生處，確認 nomic-embed-text 維度（預期 **768**）→ 決定 `vector(N)`
 - [x] **0.2** 主機架 Postgres 16 + pgvector（Docker）
-  - `docker run -d --name sb-pg -e POSTGRES_PASSWORD=... -p 127.0.0.1:5432:5432 -v /Users/zhanqiru/sb-pgdata:/var/lib/postgresql/data pgvector/pgvector:pg16`
+  - `docker run -d --name sb-pg -e POSTGRES_PASSWORD=... -p 127.0.0.1:5432:5432 -v $HOME/sb-pgdata:/var/lib/postgresql/data pgvector/pgvector:pg16`
   - ⚠️ **`-p` 必須是 `127.0.0.1:5432:5432`，不是 `5432:5432`**：後者會綁 0.0.0.0（對外開放），違反 0.4 的 localhost-only。
   - ⚠️ **data volume 必須在本機 SSD，絕不可放 Google Drive**（Drive 同步會毀掉 Postgres data dir）
   - `CREATE EXTENSION vector; CREATE EXTENSION pg_trgm;`

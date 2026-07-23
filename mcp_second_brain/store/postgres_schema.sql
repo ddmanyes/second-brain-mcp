@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS notes (
     cluster_topic       TEXT,
     violations          TEXT,
     rules_extracted_at  TIMESTAMP,
-    embedding           vector(768)      -- nomic-embed-text-v1.5, 768 dims
+    embedding           vector(768)      -- nomic-embed-text / bge-m3, both return 768d on this host
 );
 
 -- ---------------------------------------------------------------------------

@@ -36,11 +36,21 @@ def main() -> int:
     store = get_store()
     backend = type(store).__name__
     t0 = time.time()
-    try:
-        result = store.sync_incremental(Path(vault))
-    except Exception as e:  # never crash the scheduler; log and exit non-zero
-        print(f"[pg-sync] sync_incremental failed ({backend}): {e}", file=sys.stderr)
-        return 1
+    result: dict = {}
+    for attempt in range(1, 4):
+        try:
+            result = store.sync_incremental(Path(vault))
+            break
+        except OSError as e:
+            if attempt < 3:
+                print(f"[pg-sync] OSError (attempt {attempt}/3): {e} — retrying in 30s", file=sys.stderr)
+                time.sleep(30)
+            else:
+                print(f"[pg-sync] sync_incremental failed after 3 attempts ({backend}): {e}", file=sys.stderr)
+                return 1
+        except Exception as e:
+            print(f"[pg-sync] sync_incremental failed ({backend}): {e}", file=sys.stderr)
+            return 1
     print(f"[pg-sync] {backend} sync_incremental -> {result} in {time.time() - t0:.1f}s", flush=True)
     return 0
 

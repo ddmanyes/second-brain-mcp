@@ -28,6 +28,20 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+
+def _import_vault_db():
+    """Import vault_db in both run modes (lazy, so DB isn't touched at load).
+
+    Works as a package (`python -m mcp_second_brain.vault_janitor`) via the
+    relative import, and as a bare script (`python vault_janitor.py`) via the
+    top-level name — the parent dir is already on sys.path above.
+    """
+    try:
+        from . import vault_db
+    except ImportError:
+        import vault_db  # type: ignore[no-redef]
+    return vault_db
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -42,6 +56,7 @@ INBOX_DIR = VAULT / "00-inbox"
 CODING_DIR = VAULT / "20-areas" / "coding"
 
 INBOX_OVERDUE_DAYS = 7
+BRIEFING_KEEP_DAYS = 14  # keep recent daily briefings active; archive older by month
 NAMING_VIOLATION_PATTERNS = [
     r"^stock-analyzer-",  # old slug
 ]
@@ -73,23 +88,32 @@ def _send_telegram(message: str) -> None:
 # Task 1: Archive old stock analyses
 # ---------------------------------------------------------------------------
 
+# Ticker may be followed by an optional human-readable name segment, e.g.
+# "2890.TW_永豐金_analysis_20260722.md". Capture only the leading ticker token
+# so every naming variant of the same ticker shares one "keep newest" bucket.
+# Both the .md report and its .json snapshot are archived (grouped per ticker+ext,
+# each keeping its own newest).
 _STOCK_ANALYSIS_RE = re.compile(
-    r"^([A-Z0-9\.\-]+)_analysis_(\d{8})\.md$", re.IGNORECASE
+    r"^([A-Z0-9\.\-]+?)(?:_.+?)?_analysis_(\d{8})\.(md|json)$", re.IGNORECASE
 )
 
 
 def archive_old_stock_analyses(dry_run: bool = True) -> list[str]:
-    """Keep newest analysis per ticker; move older ones to 40-archive/finance/YYYYMM/."""
-    by_ticker: dict[str, list[tuple[str, Path]]] = defaultdict(list)
+    """Keep newest analysis per ticker; move older ones to 40-archive/finance/YYYYMM/.
 
-    for f in STOCK_ANALYSIS_DIR.glob("*.md"):
+    Handles both the `.md` report and its paired `.json` snapshot — grouped by
+    (ticker, extension) so each keeps its own newest copy in the active folder.
+    """
+    by_ticker: dict[tuple[str, str], list[tuple[str, Path]]] = defaultdict(list)
+
+    for f in STOCK_ANALYSIS_DIR.glob("*"):
         m = _STOCK_ANALYSIS_RE.match(f.name)
         if m:
-            ticker, date_str = m.group(1).upper(), m.group(2)
-            by_ticker[ticker].append((date_str, f))
+            ticker, date_str, ext = m.group(1).upper(), m.group(2), m.group(3).lower()
+            by_ticker[(ticker, ext)].append((date_str, f))
 
     archived: list[str] = []
-    for ticker, entries in by_ticker.items():
+    for _key, entries in by_ticker.items():
         if len(entries) <= 1:
             continue
         entries.sort(key=lambda x: x[0], reverse=True)  # newest first
@@ -106,6 +130,37 @@ def archive_old_stock_analyses(dry_run: bool = True) -> list[str]:
                     continue
                 shutil.move(str(path), str(dest))
                 archived.append(f"archived: {path.name} → 40-archive/finance/{ym}/")
+    return archived
+
+
+# ---------------------------------------------------------------------------
+# Task 1b: Archive old daily briefings (keep recent, month-bucket the rest)
+# ---------------------------------------------------------------------------
+
+_BRIEFING_RE = re.compile(r"^00_Daily_Briefing_(US|TW)_(\d{8})\.md$", re.IGNORECASE)
+
+
+def archive_old_briefings(keep_days: int = BRIEFING_KEEP_DAYS, dry_run: bool = True) -> list[str]:
+    """Keep briefings from the last `keep_days`; move older ones to 40-archive/finance/YYYYMM/."""
+    cutoff = (date.today() - timedelta(days=keep_days)).strftime("%Y%m%d")
+    archived: list[str] = []
+
+    for f in STOCK_ANALYSIS_DIR.glob("00_Daily_Briefing_*.md"):
+        m = _BRIEFING_RE.match(f.name)
+        if not m or m.group(2) >= cutoff:  # keep recent (and anything unparseable)
+            continue
+        ym = m.group(2)[:6]
+        dest_dir = ARCHIVE_BASE / ym
+        dest = dest_dir / f.name
+        if dry_run:
+            archived.append(f"[dry-run] would archive: {f.name} → 40-archive/finance/{ym}/")
+        else:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            if dest.exists():
+                archived.append(f"⚠️ skip (already exists): {dest.name}")
+                continue
+            shutil.move(str(f), str(dest))
+            archived.append(f"archived: {f.name} → 40-archive/finance/{ym}/")
     return archived
 
 
@@ -167,7 +222,7 @@ def check_schema_violations(top_n: int = 10) -> list[dict]:
 def get_sleep_candidates(top_n: int = 5) -> list[dict]:
     """Return top sleep candidates from vault_db (read-only, never compresses)."""
     try:
-        from . import vault_db
+        vault_db = _import_vault_db()
         return vault_db.sleep_candidates(min_age_days=90, max_score=0.5)[:top_n]
     except Exception as e:
         return [{"error": str(e)}]
@@ -176,6 +231,14 @@ def get_sleep_candidates(top_n: int = 5) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Report assembly
 # ---------------------------------------------------------------------------
+
+# Tasks 5–6 maintain the LOCAL DuckDB fallback index (~/.second-brain/vault.db).
+# Production runs SB_DB_BACKEND=postgres, whose live index is kept fresh by
+# com.user.second-brain-pg-sync — so DuckDB upkeep here is redundant, and it has
+# aborted the whole janitor via an uncatchable DuckDB C++ FatalException. Only run
+# it when the operator explicitly opts in.
+_DUCKDB_MAINT_ENABLED = os.environ.get("SB_DB_BACKEND", "").strip().lower() == "duckdb"
+
 
 def build_report(dry_run: bool = True) -> str:
     today = date.today().isoformat()
@@ -188,6 +251,14 @@ def build_report(dry_run: bool = True) -> str:
         lines.extend(f"  • {a}" for a in archived)
     else:
         lines.append("\n📦 個股舊版：無需 archive")
+
+    # Task 1b: Daily briefings
+    briefings = archive_old_briefings(dry_run=dry_run)
+    if briefings:
+        lines.append(f"\n🗞 <b>每日簡報 archive（保留近 {BRIEFING_KEEP_DAYS}d，{'dry-run' if dry_run else '已執行'}）</b>")
+        lines.extend(f"  • {b}" for b in briefings)
+    else:
+        lines.append(f"\n🗞 每日簡報：近 {BRIEFING_KEEP_DAYS}d 內，無需 archive")
 
     # Task 2
     overdue = check_inbox_overdue()
@@ -205,38 +276,47 @@ def build_report(dry_run: bool = True) -> str:
     else:
         lines.append("\n✅ 命名規範：無違規")
 
-    # Task 4: Schema violations
-    schema_viols = check_schema_violations()
-    if schema_viols and "error" not in schema_viols[0]:
-        lines.append(f"\n⚠️ <b>Schema 違規（{len(schema_viols)} 筆）</b>")
-        for v in schema_viols:
-            lines.append(f"  • {v['path']} — {v['violations']}")
-    elif schema_viols and "error" in schema_viols[0]:
-        lines.append(f"\n⚠️ Schema 違規查詢失敗：{schema_viols[0]['error']}")
-    else:
-        lines.append("\n✅ Schema 違規：無")
+    # Tasks 4–6: DuckDB-backed checks — opt-in only (see _DUCKDB_MAINT_ENABLED).
+    # Schema/sleep/sync all read or write the DuckDB index; gating them together keeps
+    # the report from surfacing stale rows when DuckDB isn't the maintained backend.
+    if _DUCKDB_MAINT_ENABLED:
+        # Task 4: Schema violations
+        schema_viols = check_schema_violations()
+        if schema_viols and "error" not in schema_viols[0]:
+            lines.append(f"\n⚠️ <b>Schema 違規（{len(schema_viols)} 筆）</b>")
+            for v in schema_viols:
+                lines.append(f"  • {v['path']} — {v['violations']}")
+        elif schema_viols and "error" in schema_viols[0]:
+            lines.append(f"\n⚠️ Schema 違規查詢失敗：{schema_viols[0]['error']}")
+        else:
+            lines.append("\n✅ Schema 違規：無")
 
-    # Task 5: Sleep candidates
-    candidates = get_sleep_candidates()
-    if candidates and "error" not in candidates[0]:
-        lines.append(f"\n💤 <b>Sleep 候選（top {len(candidates)}，請人工決定是否執行 vault_sleep）</b>")
-        for c in candidates:
-            lines.append(f"  • {Path(c['path']).name}  score={c['score']}  age={c['age_days']}d")
-    elif candidates and "error" in candidates[0]:
-        lines.append(f"\n💤 Sleep 候選：無法取得（{candidates[0]['error']}）")
-    else:
-        lines.append("\n💤 Sleep 候選：無")
+        # Task 5: Sleep candidates
+        candidates = get_sleep_candidates()
+        if candidates and "error" not in candidates[0]:
+            lines.append(f"\n💤 <b>Sleep 候選（top {len(candidates)}，請人工決定是否執行 vault_sleep）</b>")
+            for c in candidates:
+                lines.append(f"  • {Path(c['path']).name}  score={c['score']}  age={c['age_days']}d")
+        elif candidates and "error" in candidates[0]:
+            lines.append(f"\n💤 Sleep 候選：無法取得（{candidates[0]['error']}）")
+        else:
+            lines.append("\n💤 Sleep 候選：無")
 
-    # Task 6: Sync vault index (Phase 12)
-    try:
-        from . import vault_db
-        sync_result = vault_db.sync_all(VAULT)
+        # Task 6: Sync vault index (Phase 12)
+        try:
+            vault_db = _import_vault_db()
+            sync_result = vault_db.sync_all(VAULT)
+            lines.append(
+                f"\n🗂 <b>Vault 索引同步</b> — {sync_result['synced']} 筆"
+                + (f"（⚠️ {sync_result['embed_failed']} 筆缺 embedding）" if sync_result['embed_failed'] else "")
+            )
+        except Exception as e:
+            lines.append(f"\n🗂 Vault 索引同步失敗：{e}")
+    else:
         lines.append(
-            f"\n🗂 <b>Vault 索引同步</b> — {sync_result['synced']} 筆"
-            + (f"（⚠️ {sync_result['embed_failed']} 筆缺 embedding）" if sync_result['embed_failed'] else "")
+            "\n⚠️💤🗂 DuckDB 檢查（schema 違規 + sleep 候選 + 索引同步）已略過 — 非 DuckDB 後端；"
+            "production 索引由 Postgres pg-sync 維護（如需啟用請設 SB_DB_BACKEND=duckdb）"
         )
-    except Exception as e:
-        lines.append(f"\n🗂 Vault 索引同步失敗：{e}")
 
     return "\n".join(lines)
 

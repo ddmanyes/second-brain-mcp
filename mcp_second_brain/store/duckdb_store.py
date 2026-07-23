@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from .. import vault_db
+
+# Skip an incremental re-scan if the DuckDB file was written within this window.
+_SYNC_THROTTLE_SECONDS = 1800
 
 
 class DuckDBStore:
@@ -29,6 +33,24 @@ class DuckDBStore:
 
     def sync_incremental(self, vault: Path) -> dict:
         return vault_db.sync_incremental(vault)
+
+    def sync_if_stale(self, vault: Path) -> None:
+        # Throttle: skip if the DB file was written within the last 30 min, and even
+        # then only re-scan when a markdown file is newer than the index.
+        db_path = vault_db.DB_PATH
+        if not db_path.exists():
+            return
+        db_mtime = db_path.stat().st_mtime
+        if time.time() - db_mtime <= _SYNC_THROTTLE_SECONDS:
+            return
+        try:
+            latest_md = max(
+                (f.stat().st_mtime for f in vault.rglob("*.md")), default=0
+            )
+        except Exception:
+            return
+        if latest_md > db_mtime:
+            vault_db.sync_incremental(vault)
 
     def sync_embeddings(self, vault: Path | None = None) -> dict:
         return vault_db.sync_embeddings(vault)

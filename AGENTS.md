@@ -6,7 +6,7 @@
 >
 > **When adding documentation**: modify the relevant section here, then update the Last updated date.
 >
-> **Last updated:** 2026-06-16
+> **Last updated:** 2026-07-23
 
 ---
 
@@ -14,7 +14,7 @@
 
 Second Brain is a personal knowledge management server that exposes vault read/write, search, archiving, and maintenance via MCP.
 
-- **MCP server**: `server.py` (27 tools)
+- **MCP server**: `server.py` (38 tools — see Tool Reference; keep this count in sync when adding/removing tools)
 - **Index backend**: pluggable `VaultStore` (`store/`), selected by `SB_DB_BACKEND`:
   - `postgres` (central brain) — `store/postgres_store.py`, Postgres 16 + pgvector + pg_trgm, connection-pooled, multi-machine concurrent read/write via MVCC.
   - `duckdb` (default / offline fallback) — `store/duckdb_store.py` wrapping `vault_db.py`.
@@ -82,7 +82,16 @@ Postgres directly.
 | "Remember this about figure N" | `annotate_figure(note_path, fig_index, insight)` | Saves a read-time insight as an atomic note so next time text answers (no re-load) |
 | "Snapshot this note" | `snapshot_note_tool(note_path, tier)` | tier: "base" or "detail" |
 | "Initialize vault / fix directory structure" | `init_vault()` | Safe to re-run, only creates missing items |
-| "Agent instructions" (remote session start) | `get_agent_instructions()` | Returns this document |
+| "Agent instructions" (remote session start) | `get_agent_instructions()` | Returns this document (base + personal layer) |
+| "Set / change note status" | `mark_note_status(path, status)` | Updates frontmatter status + syncs DB |
+| "Exact source sentence / precise citation" | `search_snippets(query)` | Returns VERBATIM source sentences, not summaries |
+| "Answer a literature question (cited)" | `litnet_answer(question)` | Retrieve → synthesize → fixed-format cited note |
+| "Graph query for a gene / factor / entity" | `query_graph(entity)` | Dual-path knowledge-graph lookup |
+| "Refresh semantic keywords" | `expand_semantic_keywords_tool()` | Batch (re)extract `semantic_keywords` via Gemini CLI |
+| "Enrich neighbor keywords / cluster topic" | `enrich_neighbor_keywords_tool()` | Derives `neighbor_keywords` + `cluster_topic` from embeddings |
+| "System health check" | `health_check()` | DB / index / vault / embedding-server diagnostics |
+| "Manage remote API keys" | `manage_api_key(action, …)` | create / list / revoke `X-API-Key` (admin) |
+| "Show audit log" | `query_audit_log(user_id, tool_name, …)` | Multi-user tool-call audit trail (admin) |
 
 ---
 
@@ -182,6 +191,32 @@ When answering a question that *might* need a figure, climb only as far as neede
 5. Clean old archive          → prune_archive_tool(dry_run=True) → (dry_run=False)
 ```
 
+### C-bis. Finance report housekeeping (`vault_janitor.py` CLI)
+
+Daily stock reports pile up in `20-areas/personal/finance/`. The janitor keeps the
+**newest analysis per ticker** and moves older ones to `40-archive/finance/YYYYMM/`.
+It is a **CLI script**, not an MCP tool. See [HOUSEKEEPING.md](HOUSEKEEPING.md) for the
+full record and outstanding TODOs.
+
+```bash
+# MUST export the vault path, else it scans nonexistent ~/second-brain and falsely
+# reports "無需 archive". Default = dry-run; pass --execute to actually move.
+export SECOND_BRAIN_PATH="<abs path to vault>"
+python mcp_second_brain/vault_janitor.py            # dry-run
+python mcp_second_brain/vault_janitor.py --execute  # move files
+```
+
+- **Filename regex** groups by leading ticker token; tolerates an optional human-name
+  segment (`2890.TW_永豐金_analysis_YYYYMMDD.md`) so all variants share one bucket.
+- **Gaps (handle separately):** `*_analysis_*.json` snapshots and
+  `00_Daily_Briefing_*.md` are NOT covered by the janitor.
+- **⚠️ Schedules currently `.disabled`** — no auto-maintenance runs until the
+  `com.user.*` launchd jobs are re-enabled (paused during mac-mini host migration).
+- **DuckDB upkeep is opt-in:** Tasks 5–6 (sleep candidates + `sync_all`) touch the local
+  DuckDB fallback index and run **only** when `SB_DB_BACKEND=duckdb`. In the Postgres-central
+  setup they are skipped (pg-sync owns freshness); this avoids an uncatchable DuckDB C++ abort.
+  The bare-script `import` bug is fixed (lazy dual-mode `_import_vault_db()`).
+
 ### D. Code changes
 
 ```text
@@ -276,3 +311,7 @@ second-brain/
 - [`CLAUDE.md`](CLAUDE.md) — Security rules, run commands, environment variables
 - [`README.md`](README.md) — Feature overview, tool index
 - [`NEW_MACHINE_SETUP.md`](NEW_MACHINE_SETUP.md) — Multi-machine deployment guide (Drive source code model)
+- [`HOUSEKEEPING.md`](HOUSEKEEPING.md) — Vault maintenance record, `vault_janitor.py` mechanism + TODOs (see §C-bis)
+- [`MIGRATION_PLAN_POSTGRES.md`](MIGRATION_PLAN_POSTGRES.md) — DuckDB → Postgres central-brain migration
+- [`MULTIUSER_PLAN.md`](MULTIUSER_PLAN.md) — Multi-user / dual-vault (personal + lab) design
+- [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) — PDF figure/text pipeline plan
