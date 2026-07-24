@@ -134,6 +134,12 @@ def _is_lock_conflict(err: Exception) -> bool:
         or "could not set lock" in msg
         or "set lock on file" in msg
         or ("lock" in msg and "held" in msg)
+        # 同機多個 server（second-brain :9100 + lcdda :9104，共用同一
+        # ~/.second-brain/vault.db）撞鎖時，OS 可能回 OSError(errno 11)
+        # "Resource deadlock avoided"。這仍是鎖衝突（DB 沒壞），必須走退避重試，
+        # 絕不可誤判成資料損毀而觸發破壞性重建。（2026-07-24 實測踩過）
+        or "resource deadlock avoided" in msg
+        or "deadlock avoided" in msg
     )
 
 
