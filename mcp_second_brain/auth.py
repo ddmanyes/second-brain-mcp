@@ -70,8 +70,13 @@ def _provided_key(scope) -> str | None:
 def _key_accepted(provided: str | None, valid: set[str]) -> bool:
     if not provided:
         return False
+    # hmac.compare_digest raises TypeError on non-ASCII str, which would surface as a
+    # 500 (plus a traceback per attempt) instead of a clean 401. No valid key contains
+    # non-ASCII, so reject such input up front.
+    if not provided.isascii():
+        return False
     # constant-time compare against each valid key
-    return any(hmac.compare_digest(provided, k) for k in valid)
+    return any(hmac.compare_digest(provided, k) for k in valid if k.isascii())
 
 
 def _resolve_identity(key: str, lookup_fn: KeyLookupFn | None) -> Identity:

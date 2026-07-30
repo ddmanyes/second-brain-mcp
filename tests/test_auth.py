@@ -196,3 +196,36 @@ class TestIdentityHelpers:
         raw = "supersecret"
         assert raw not in hash_key(raw)
         assert len(hash_key(raw)) == 64  # SHA-256 hex = 64 chars
+
+class TestNonAsciiKey:
+    """hmac.compare_digest 對非 ASCII str 拋 TypeError → 未擋會變 500 而非 401。
+
+    實測（2026-07-30）：X-API-Key: 鑰匙 對 9100 回 HTTP 500，並在 log 留下
+    traceback（每次嘗試一份，可被用來灌爆磁碟）。
+    """
+
+    def test_non_ascii_key_returns_401_not_500(self, monkeypatch):
+        client = _client(monkeypatch, single="alpha")
+        # 以 bytes 傳入：httpx 不接受非 ASCII str header，而真實 client（curl）
+        # 送的就是 raw bytes，server 端再以 latin-1 解碼 —— 這才是 500 的重現路徑。
+        resp = client.get("/mcp", headers={"X-API-Key": "鑰匙".encode()})
+        assert resp.status_code == 401
+
+    def test_non_ascii_bearer_returns_401(self, monkeypatch):
+        client = _client(monkeypatch, single="alpha")
+        resp = client.get("/mcp", headers={"Authorization": "Bearer 鑰匙".encode()})
+        assert resp.status_code == 401
+
+    def test_ascii_prefix_with_non_ascii_tail_rejected(self, monkeypatch):
+        client = _client(monkeypatch, single="alpha")
+        assert client.get("/mcp", headers={"X-API-Key": "alpha鑰".encode()}).status_code == 401
+
+    def test_unit_level_no_raise(self):
+        assert auth._key_accepted("鑰匙", {"alpha"}) is False
+
+    def test_non_ascii_configured_key_does_not_raise(self):
+        assert auth._key_accepted("alpha", {"金鑰"}) is False
+
+    def test_valid_key_still_accepted(self, monkeypatch):
+        client = _client(monkeypatch, single="alpha")
+        assert client.get("/mcp", headers={"X-API-Key": "alpha"}).status_code == 200
