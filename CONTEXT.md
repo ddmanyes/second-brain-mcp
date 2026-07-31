@@ -15,6 +15,7 @@
 - **Enrichment（充實）**：note 寫入後在背景對它做的增益——semantic keyword 抽取、neighbor keyword、related links、figure 抽取——結果**寫回 frontmatter**（透過 surgical set）。
 - **Write tail（寫後尾巴）**：任何 note 的位元組落地後必跑的「index + enrichment」收尾。**不變式**：內容一變 → store 重索引（漏了 note 就從搜尋消失）。其餘（註冊新 note、relink、keyword enrich、figure 抽取）是各寫入路徑自選的變化點。由 `server.after_write(dest, rel, *, register_label, relink, enrich, extract_figures)` 獨家擁有；new_note / save_article / update_note / append_to_note / annotate_figure 皆只剩一行呼叫它。永不 raise（寫已落地，index 失敗只警告）。
 - **Figure（圖）**：從 PDF/文章抽出的圖，存 DuckDB figures cache（刻意獨立於可插拔 store）。
+- **Vision answer（視覺答覆）**：向 VLM 送一張圖要一份 JSON 的結果。由 [`llm_cli.vision_json`](mcp_second_brain/llm_cli.py) 獨家擁有（Anthropic SDK → CLI 備援、base64/media-type、code-fence 裡撈 JSON、token usage）。**鐵律：`None`（沒得到答覆）與空的 `data`（模型看過且說沒有）是兩件不同的事**——前者必須重試或出聲，後者才可以寫進 negative cache。`analyse_figure` 回 `None`、`_detect_figures_on_page` 丟 `VisionUnavailable`，都是這條線的兩端。文字問答的對應物是 `llm_cli.llm_text` / `llm_image`。
 - **Tool boundary（工具邊界）**：MCP tool 的守衛前言所在之處——權限判定、稽核紀錄、路徑錯誤轉成回傳字串。由 [`server.write_tool`](mcp_second_brain/server.py) / `admin_tool` 兩個裝飾器**獨家擁有**；tool body 內不得再手抄任何一段。工具名一律取自 `__name__`，不得以字串字面值重複。
   - **Write tool（寫入 tool）**：任何會改動 vault 位元組或 index 的 tool。「哪些是寫入 tool」是**從程式碼導出的事實**（`server.WRITE_TOOLS` 登記表），不是手抄清單——測試列舉它，不複製它。
   - **Audit target（稽核目標）**：稽核紀錄裡代表「動了什麼」的字串。由裝飾器的 `target=`（參數名）或 `target_const=`（固定目標，如 update_goals → memory/goals.md）指定。

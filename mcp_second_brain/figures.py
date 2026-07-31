@@ -152,104 +152,52 @@ def _image_to_base64(path: Path) -> str:
 # VLM analysis via Claude API
 # ---------------------------------------------------------------------------
 
-def _analyse_with_claude(image_path: Path, caption: str = "") -> dict:
-    """Send image to Claude via anthropic SDK and get OCR + description.
+def analyse_figure(image_path: Path, caption: str = "") -> dict | None:
+    """OCR + one-sentence description for one figure image, via the VLM seam.
 
-    When `caption` is provided (from Phase 2 page detection) it is given as
-    context so the OCR/description is more accurate.
+    ``caption`` (from Phase 2 page detection) is threaded in as context so the
+    OCR/description is more accurate.
+
+    Returns:
+        ``{"ocr_text", "description", "_usage"}``, or **None when the VLM gave no
+        answer** (backend down, or reply with no parsable JSON). None and "the
+        figure genuinely has no text" are different facts: a figure row written
+        from a None result would claim we looked at the image when we did not.
     """
-    try:
-        import anthropic
-        client = anthropic.Anthropic()
-        ext = image_path.suffix.lower().lstrip(".")
-        media_type = f"image/{'jpeg' if ext in ('jpg', 'jpeg') else ext}"
-        if ext not in ("png", "jpg", "jpeg", "gif", "webp"):
-            media_type = "image/png"
+    caption_ctx = f"Caption: {caption}\n" if caption else ""
+    prompt = (
+        f"{caption_ctx}"
+        "Analyse this scientific figure. Respond in JSON with two fields:\n"
+        '{"ocr_text": "all text visible in the figure (labels, axes, legends, values)", '
+        '"description": "one sentence describing what this figure shows"}'
+    )
+    answer = llm_cli.vision_json(prompt, image_path, expect="object")
+    if answer is None:
+        return None
+    data = answer.data if isinstance(answer.data, dict) else {}
+    return {
+        "ocr_text": data.get("ocr_text", ""),
+        "description": data.get("description", ""),
+        "_usage": answer.usage,
+    }
 
-        caption_ctx = f"Caption: {caption}\n" if caption else ""
-        message = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=1024,
-            stream=False,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": _image_to_base64(image_path),
-                        },
-                    },
-                    {
-                        "type": "text",
-                        "text": (
-                            f"{caption_ctx}"
-                            "Analyse this scientific figure. Respond in JSON with two fields:\n"
-                            '{"ocr_text": "all text visible in the figure (labels, axes, legends, values)", '
-                            '"description": "one sentence describing what this figure shows"}'
-                        ),
-                    },
-                ],
-            }],
-        )
-        import json
-        raw = message.content[0].text.strip()
-        usage = {
-            "input": getattr(message.usage, "input_tokens", 0),
-            "output": getattr(message.usage, "output_tokens", 0),
-        }
-        # Extract JSON even if wrapped in markdown code block
-        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if json_match:
-            data = json.loads(json_match.group())
-            return {
-                "ocr_text": data.get("ocr_text", ""),
-                "description": data.get("description", ""),
-                "_usage": usage,
-            }
-    except Exception:
-        pass
+
+def _analysis_or_warn(image_path: Path, caption: str = "") -> dict:
+    """analyse_figure with the "VLM said nothing" case handled in exactly one place.
+
+    The cropped PNG is real and worth keeping even when the VLM is unreachable, so
+    the figure is still recorded — but the failure is announced instead of being
+    laundered into an empty-string row that looks like a successful analysis.
+    """
+    analysis = analyse_figure(image_path, caption)
+    if analysis is not None:
+        return analysis
+    print(
+        f"[figures] VLM analysis unavailable for {image_path.name} — "
+        "figure saved without OCR/description",
+        file=sys.stderr,
+    )
     return {"ocr_text": "", "description": "", "_usage": {"input": 0, "output": 0}}
-
-
-def _analyse_with_gemini(image_path: Path, caption: str = "") -> dict:
-    """Fallback（無 ANTHROPIC_API_KEY 時）：Claude CLI 讀圖（@path）。
-
-    Gemini tier 失效後改走 ``llm_cli.llm_image``（claude --print -p，訂閱授權、無需 key）。
-    函式名保留向後相容。
-    """
-    try:
-        caption_ctx = f"Caption: {caption} " if caption else ""
-        prompt = (
-            f'{caption_ctx}'
-            'Analyse this scientific figure. '
-            'Reply ONLY in JSON with two fields: '
-            '{"ocr_text": "all text visible in figure including labels axes legends values", '
-            '"description": "one sentence describing what this figure shows"}'
-        )
-        raw = llm_cli.llm_image(prompt, image_path, timeout=120)
-        if raw:
-            import json
-            json_match = re.search(r"\{.*\}", raw, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group())
-                return {
-                    "ocr_text": data.get("ocr_text", ""),
-                    "description": data.get("description", ""),
-                }
-    except Exception:
-        pass
-    return {"ocr_text": "", "description": ""}
-
-
-def analyse_figure(image_path: Path, caption: str = "") -> dict:
-    """Claude → Gemini fallback. caption (if any) threads into BOTH paths."""
-    result = _analyse_with_claude(image_path, caption)
-    if result["ocr_text"] or result["description"]:
-        return result
-    return _analyse_with_gemini(image_path, caption)
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +209,14 @@ def analyse_figure(image_path: Path, caption: str = "") -> dict:
 # ---------------------------------------------------------------------------
 
 _DETECT_MODEL = "claude-sonnet-4-6"
+
+
+class VisionUnavailable(RuntimeError):
+    """The VLM produced no usable answer for an image.
+
+    Distinct from an empty result: "the model looked and found nothing" is a fact
+    worth caching, "we never got an answer" must be retried.
+    """
 
 
 def _render_pdf_pages(pdf_path: str, dpi: int = 150, max_pages: int = 20) -> list[Path]:
@@ -291,15 +247,17 @@ def _detect_figures_on_page(page_png: Path, page_num: int) -> tuple[list[dict], 
     Returns a list of {"bbox": [x0,y0,x1,y1] in PIXELS, "caption": str, "type": str}.
     The VLM is asked for NORMALISED 0–1000 coordinates (VLMs calibrate relative
     coords far better than absolute pixels); we convert back to pixels here.
+
+    Raises:
+        VisionUnavailable: the VLM gave no answer. The caller must NOT mark the
+            page processed on this path — an empty return means "the model looked
+            and found nothing", which is cached permanently.
     """
-    import json
-    import anthropic
     from PIL import Image as _PILImage
 
     with _PILImage.open(page_png) as im:
         w, h = im.size
 
-    client = anthropic.Anthropic()
     prompt = (
         f"This is page {page_num} of a scientific paper.\n"
         "Identify all figures, charts, diagrams, and tables.\n"
@@ -317,30 +275,13 @@ def _detect_figures_on_page(page_png: Path, page_num: int) -> tuple[list[dict], 
         "(x0,y0 = top-left, x1,y1 = bottom-right). caption is the figure/table "
         "caption text if visible, else empty string. If there are no figures, return []."
     )
-    message = client.messages.create(
-        model=_DETECT_MODEL,
-        max_tokens=1024,
-        stream=False,
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "image", "source": {
-                    "type": "base64", "media_type": "image/png",
-                    "data": _image_to_base64(page_png),
-                }},
-                {"type": "text", "text": prompt},
-            ],
-        }],
+    answer = llm_cli.vision_json(
+        prompt, page_png, expect="array", model=_DETECT_MODEL
     )
-    usage = {
-        "input": getattr(message.usage, "input_tokens", 0),
-        "output": getattr(message.usage, "output_tokens", 0),
-    }
-    raw = message.content[0].text.strip()
-    m = re.search(r"\[.*\]", raw, re.DOTALL)
-    if not m:
-        return [], usage
-    items = json.loads(m.group())
+    if answer is None:
+        raise VisionUnavailable(f"no VLM answer for page {page_num}")
+    usage = answer.usage
+    items = answer.data if isinstance(answer.data, list) else []
     # Header guard: academic papers have a header band in the top ~6% of the page
     # (journal name, article type, DOI/URL). If a bbox starts in that band, push
     # y0 down to just below it. This prevents the header from being cropped in.
@@ -506,7 +447,7 @@ def _extract_figures_pdfimages(pdf_path: str, note_path: str, fig_dir: Path) -> 
         if w > 200 and h > 200:
             local = fig_dir / f"fig-{valid_count:02d}.png"
             shutil.copy2(png, local)
-            analysis = analyse_figure(local)
+            analysis = _analysis_or_warn(local)
             vault_db.upsert_figure(
                 note_path=note_path,
                 fig_index=valid_count,
@@ -572,7 +513,7 @@ def _extract_figures_render(pdf_path: str, note_path: str, fig_dir: Path) -> lis
                 if not _crop_figure(page_png, det["bbox"], dest):
                     continue
                 caption = det.get("caption", "")
-                analysis = analyse_figure(dest, caption)
+                analysis = _analysis_or_warn(dest, caption)
                 a_usage = analysis.pop("_usage", {})
                 analyse_tok["input"] += a_usage.get("input", 0)
                 analyse_tok["output"] += a_usage.get("output", 0)
@@ -673,7 +614,7 @@ def extract_figures(note_path: str, vault: Path) -> list[dict]:
         if not _download_image(abs_url, local):
             continue
 
-        analysis = analyse_figure(local)
+        analysis = _analysis_or_warn(local)
 
         vault_db.upsert_figure(
             note_path=note_path,
@@ -822,115 +763,3 @@ def snapshot_note(note_path: str, vault: Path, tier: str = "base") -> dict:
         "token_est": SNAPSHOT_TIERS[tier]["token_est"],
         "size_kb": size_kb,
     }
-
-
-# ---------------------------------------------------------------------------
-# Phase 4 Vision API: read snapshot via Gemini
-# ---------------------------------------------------------------------------
-
-_SNAPSHOT_READ_PROMPT = (
-    "You are reading a rendered markdown note stored as a PNG image. "
-    "Summarise the note content concisely: include the title, key findings or decisions, "
-    "methods or tools mentioned, any numerical results, and next actions if present. "
-    "Do NOT describe the image as an image — treat the content as the note itself."
-)
-
-
-def read_snapshot_with_ollama(
-    snapshot_path: Path,
-    model: str = "qwen2.5vl:7b",
-    fallback_model: str = "moondream",
-    ollama_url: str = "http://localhost:11434",
-) -> str | None:
-    """Read a note snapshot via local Ollama vision model (REST API).
-
-    Tries model first; falls back to fallback_model if load fails (e.g. OOM).
-    qwen2.5vl:7b needs ~6 GB RAM; moondream needs ~1.1 GB.
-    """
-    import base64
-    import json
-    import urllib.request
-
-    img_b64 = base64.b64encode(snapshot_path.read_bytes()).decode()
-    prompt = (
-        "This is a rendered markdown note screenshot. "
-        "What is the title? List the key points, any decisions made, "
-        "tools or methods mentioned, numerical results, and next actions."
-    )
-
-    for m in [model, fallback_model]:
-        try:
-            payload = json.dumps({
-                "model": m,
-                "prompt": prompt,
-                "images": [img_b64],
-                "stream": False,
-            }).encode()
-            req = urllib.request.Request(
-                f"{ollama_url}/api/generate",
-                data=payload,
-                headers={"Content-Type": "application/json"},
-            )
-            resp = urllib.request.urlopen(req, timeout=90)
-            data = json.loads(resp.read())
-            text = data.get("response", "").strip()
-            if text:
-                return f"[via {m}]\n{text}"
-        except Exception:
-            continue
-    return None
-
-
-def read_snapshot_with_gemini(snapshot_path: Path, vault: Path) -> str | None:
-    """Pass a PNG snapshot to the Claude CLI and return the note summary.
-
-    Uses @filepath syntax so the model reads the image directly (not via file tools).
-    （函式名保留向後相容；Gemini tier 失效後後端已改 Claude CLI。）
-    """
-    try:
-        # Reject DB-sourced paths that escape the vault
-        resolved = Path(snapshot_path).resolve()
-        if not resolved.is_relative_to(vault.resolve()):
-            return None
-
-        try:
-            rel = resolved.relative_to(vault.resolve())
-        except ValueError:
-            rel = resolved
-
-        prompt = f"@{rel} {_SNAPSHOT_READ_PROMPT}"
-        claude = llm_cli._CLAUDE_CLI or "claude"  # PATH 防呆（launchd 精簡環境）
-        result = subprocess.run(
-            [claude, "--print", "-p", prompt],
-            capture_output=True, text=True, timeout=90,
-            cwd=str(vault),
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            lines = [l for l in result.stdout.splitlines()
-                     if not any(skip in l for skip in
-                                ("YOLO mode", "Ripgrep", "MCP issues", "Warning:", "Loaded"))]
-            return "\n".join(lines).strip() or None
-    except Exception:
-        pass
-    return None
-
-
-def measure_snapshot_tokens(snapshot_path: Path, vault: Path) -> int | None:
-    """Ask Gemini to count how many tokens it used reading the snapshot.
-    Returns token count or None if unavailable."""
-    try:
-        result = subprocess.run(
-            ["gemini", "--output-format", "json", "-", str(snapshot_path)],
-            input="How many visual tokens did you use to process this image? Reply with just a number.",
-            capture_output=True, text=True, timeout=60,
-            cwd=str(vault),
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            import json
-            data = json.loads(result.stdout)
-            # Gemini JSON output may include token usage
-            usage = data.get("usageMetadata", {})
-            return usage.get("totalTokenCount")
-    except Exception:
-        pass
-    return None

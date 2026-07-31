@@ -21,10 +21,14 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import shutil
 import subprocess
+import sys
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 def _resolve(cli: str) -> str | None:
@@ -138,4 +142,132 @@ def llm_image(prompt: str, image_path: Path | str, *, timeout: int = 120) -> str
                    timeout=timeout, cwd=str(p.parent))
         if out:
             return out
+    return None
+
+
+# ---------------------------------------------------------------------------
+# 視覺結構化問答（VLM → JSON）
+# ---------------------------------------------------------------------------
+#
+# 「送一張圖 + 要一份 JSON 回來」原本在 figures.py 手抄了兩遍（figure 分析、
+# 頁面 bbox 偵測），各自處理 base64/media-type、code-fence 包裹的 JSON、
+# token usage、以及「全部吞掉回空值」的錯誤處理。空值與「模型真的說沒有」
+# 無法區分——有 figure 紀錄不等於真的看過那張圖。
+#
+# 這道縫把它收成一個介面，並讓失敗**可區分**：
+#   None            → VLM 沒有給出答案（後端掛了 / 回覆解析不出 JSON）
+#   VisionAnswer    → 模型答了；data 可能是空 list（真的沒東西），那是有效答案
+
+_VISION_MODEL = os.environ.get("SB_VISION_MODEL", "claude-haiku-4-5-20251001")
+
+_IMAGE_MEDIA_TYPES = {
+    "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+    "gif": "image/gif", "webp": "image/webp",
+}
+
+
+@dataclass(frozen=True)
+class VisionAnswer:
+    """一次成功的視覺問答。``data`` 是解析後的 JSON（dict 或 list）。
+
+    ``usage`` 是 {"input": n, "output": n}；只有 Anthropic SDK 後端報得出實際
+    token 數，CLI 後端一律回 0（呼叫端據此累加成本，0 代表「沒量到」而非免費）。
+    """
+
+    data: Any
+    usage: dict
+    backend: str
+
+
+def _media_type(path: Path) -> str:
+    return _IMAGE_MEDIA_TYPES.get(path.suffix.lower().lstrip("."), "image/png")
+
+
+def _extract_json(raw: str, expect: str) -> Any | None:
+    """從可能被 markdown code fence 包住的回覆裡撈出 JSON。解析不出回 None。"""
+    pattern = r"\[.*\]" if expect == "array" else r"\{.*\}"
+    m = re.search(pattern, raw, re.DOTALL)
+    if not m:
+        return None
+    try:
+        return json.loads(m.group())
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+def _anthropic_vision(
+    prompt: str, image_path: Path, *, model: str, max_tokens: int
+) -> tuple[str, dict] | None:
+    """Anthropic SDK 後端。無套件 / 無金鑰 / 呼叫失敗一律回 None（往下備援）。"""
+    try:
+        import anthropic
+    except ImportError:
+        return None
+    try:
+        client = anthropic.Anthropic()
+        message = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            stream=False,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {
+                        "type": "base64",
+                        "media_type": _media_type(image_path),
+                        "data": base64.b64encode(image_path.read_bytes()).decode(),
+                    }},
+                    {"type": "text", "text": prompt},
+                ],
+            }],
+        )
+        usage = {
+            "input": getattr(message.usage, "input_tokens", 0),
+            "output": getattr(message.usage, "output_tokens", 0),
+        }
+        return message.content[0].text.strip(), usage
+    except Exception as e:
+        print(f"[llm_cli] anthropic vision failed: {e}", file=sys.stderr)
+        return None
+
+
+def vision_json(
+    prompt: str,
+    image_path: Path | str,
+    *,
+    expect: str = "object",
+    model: str | None = None,
+    max_tokens: int = 1024,
+    timeout: int = 120,
+) -> VisionAnswer | None:
+    """問 VLM 一張圖並要求 JSON 回覆。Anthropic SDK → CLI 備援。
+
+    Args:
+        prompt: 提示詞，應明確要求只輸出 JSON。
+        image_path: 圖檔路徑。
+        expect: ``"object"`` 撈 ``{...}``、``"array"`` 撈 ``[...]``。
+        model: 覆寫模型（預設 ``SB_VISION_MODEL``）。
+        max_tokens / timeout: 分別給 SDK 與 CLI 後端。
+
+    Returns:
+        ``VisionAnswer``，或 **None 代表沒有得到答案**——後端全掛，或回覆裡撈不出
+        合法 JSON。空的 ``data``（``[]`` / ``{}``）是有效答案，代表模型看過且說沒有。
+    """
+    p = Path(image_path)
+    if not p.exists():
+        return None
+
+    sdk = _anthropic_vision(prompt, p, model=model or _VISION_MODEL, max_tokens=max_tokens)
+    if sdk is not None:
+        data = _extract_json(sdk[0], expect)
+        if data is not None:
+            return VisionAnswer(data=data, usage=sdk[1], backend="anthropic")
+        print("[llm_cli] anthropic vision reply had no parsable JSON", file=sys.stderr)
+
+    raw = llm_image(prompt, p, timeout=timeout)
+    if raw:
+        data = _extract_json(raw, expect)
+        if data is not None:
+            return VisionAnswer(data=data, usage={"input": 0, "output": 0}, backend="cli")
+        print("[llm_cli] cli vision reply had no parsable JSON", file=sys.stderr)
     return None
