@@ -22,7 +22,12 @@ if TYPE_CHECKING:
 import psycopg
 from psycopg_pool import ConnectionPool
 
-# Import shared parsing/embedding utilities from vault_db (they don't touch the DB).
+# The markdown → index projection is shared with DuckDBStore; the seam between the
+# two backends is "how it is stored", not "what a note is".
+from ..note_row import project_note
+
+# vault_db still owns the embedding client and the vault schema validator, plus the
+# pure vector helpers (_cosine, _path_penalty). Those don't touch DuckDB.
 from .. import vault_db as _vdb
 
 _SCORE_SQL = """
@@ -107,81 +112,25 @@ class PostgresStore:
         vault: Path,
         md_file: Path,
     ) -> None:
-        """Parse md_file and upsert into Postgres notes table."""
-        if md_file.stat().st_size > _vdb._LARGE_FILE_THRESHOLD:
-            raw = md_file.read_bytes()
-            chash = _vdb._content_hash(raw.decode("utf-8", errors="ignore"))
-            text = raw[: _vdb._LARGE_FILE_READ_LIMIT].decode("utf-8", errors="ignore")
-        else:
-            text = md_file.read_text(encoding="utf-8", errors="ignore")
-            chash = _vdb._content_hash(text)
+        """Project md_file into a NoteRow and upsert it into the Postgres notes table.
 
-        fm = _vdb._parse_frontmatter(text)
+        What a note looks like in the index is owned by note_row.project_note();
+        this method only binds that projection into Postgres SQL.
+        """
         rel = str(md_file.relative_to(vault))
 
+        # Skip if unchanged — hash first so an untouched file costs no embedding call.
+        chash = _vdb._content_hash_of_file(md_file)
         row = cur.execute(
             "SELECT content_hash FROM notes WHERE path = %s", [rel]
         ).fetchone()
         if row and row[0] == chash:
             return
 
-        tags_raw = fm.get("tags", "[]")
-        tags_json = tags_raw if tags_raw.startswith("[") else json.dumps([tags_raw])
-
-        if fm.get("type") == "cnyes_archive":
-            tickers_raw = fm.get("tickers", "[]")
-            try:
-                tickers_str = " ".join(json.loads(tickers_raw))
-            except Exception:
-                tickers_str = tickers_raw
-            snippet = (tickers_str + " " + _vdb._body_snippet(text, max_chars=400))[:500]
-        else:
-            snippet = _vdb._body_snippet(text)
-
-        prose = _vdb._embed_text_for(text)
-        tags_for_embed = fm.get("tags", "")
-        embed_input = f"{fm.get('title', md_file.stem)} {tags_for_embed} {prose}".strip()
-        try:
-            vec = _vdb.embed_text(embed_input)
-            if vec is None:
-                print(f"[pg_store] embedding failed: {rel}", file=sys.stderr)
-        except ValueError as e:
-            print(f"[pg_store] embedding dim error: {rel} — {e}", file=sys.stderr)
-            vec = None
-
-        violations = _vdb.validate_note(fm, rel)
-        violations_json = json.dumps(violations) if violations else None
-
-        sk_raw = fm.get("semantic_keywords", "").strip()
-        if not sk_raw:
-            sk_json = None
-        elif sk_raw.startswith("["):
-            try:
-                sk_list = json.loads(sk_raw)
-                sk_json = json.dumps(sk_list, ensure_ascii=False)
-            except (json.JSONDecodeError, ValueError):
-                inner = sk_raw.strip("[]")
-                sk_list = [s.strip().strip('"').strip("'") for s in inner.split(",") if s.strip()]
-                sk_json = json.dumps(sk_list, ensure_ascii=False) if sk_list else None
-        else:
-            sk_list = [s.strip() for s in sk_raw.split(",") if s.strip()]
-            sk_json = json.dumps(sk_list, ensure_ascii=False) if sk_list else None
-
-        nk_raw = fm.get("neighbor_keywords", "")
-        if isinstance(nk_raw, list):
-            nk_json = json.dumps(nk_raw, ensure_ascii=False) if nk_raw else None
-        else:
-            nk_raw = str(nk_raw).strip()
-            if nk_raw.startswith("["):
-                try:
-                    nk_json = json.dumps(json.loads(nk_raw), ensure_ascii=False)
-                except (json.JSONDecodeError, ValueError):
-                    nk_json = None
-            else:
-                nk_list = [s.strip() for s in nk_raw.split(",") if s.strip()]
-                nk_json = json.dumps(nk_list, ensure_ascii=False) if nk_list else None
-
-        cluster_topic = fm.get("cluster_topic", None) or None
+        note = project_note(
+            vault, md_file, embed=_vdb.embed_text, validate=_vdb.validate_note,
+            log_prefix="pg_store",
+        )
 
         cur.execute(
             """
@@ -209,19 +158,19 @@ class PostgresStore:
                 cluster_topic      = COALESCE(EXCLUDED.cluster_topic, notes.cluster_topic)
             """,
             [
-                rel,
-                fm.get("title", md_file.stem),
-                fm.get("type", "note"),
-                fm.get("status", "active"),
-                tags_json,
-                _vdb._parse_date(fm.get("date", "")),
-                chash,
-                snippet,
-                str(vec) if vec else None,   # cast to vector via SQL ::vector
-                violations_json,
-                sk_json,
-                nk_json,
-                cluster_topic,
+                note.path,
+                note.title,
+                note.note_type,
+                note.status,
+                note.tags_json,
+                note.note_date,
+                note.content_hash,
+                note.body_snippet,
+                str(note.embedding) if note.embedding else None,  # SQL ::vector cast
+                note.violations_json,
+                note.semantic_keywords,
+                note.neighbor_keywords,
+                note.cluster_topic,
             ],
         )
 

@@ -15,9 +15,10 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import date
 from pathlib import Path
 import duckdb
+
+from . import note_row as _note_row
 
 # ---------------------------------------------------------------------------
 # Embedding config (Phase 6)
@@ -315,66 +316,25 @@ def validate_note(fm: dict, path: str) -> list[str]:
 # Parsing helpers
 # ---------------------------------------------------------------------------
 
-FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+# The markdown → index projection lives in note_row.py (it is shared with
+# PostgresStore). These aliases keep the historical vault_db names working for
+# existing callers; the definitions are not duplicated.
+FRONTMATTER_RE = _note_row.FRONTMATTER_RE
+_parse_frontmatter = _note_row.parse_frontmatter
+_body_snippet = _note_row.body_snippet
+_embed_text_for = _note_row.embed_text_for
+_content_hash = _note_row.content_hash
+_parse_date = _note_row.parse_date
 
 
-def _parse_frontmatter(text: str) -> dict:
-    m = FRONTMATTER_RE.match(text)
-    if not m:
-        return {}
-    fm: dict = {}
-    for line in m.group(1).splitlines():
-        if ":" not in line:
-            continue
-        key, _, val = line.partition(":")
-        fm[key.strip()] = val.strip().strip('"').strip("'")
-    return fm
+def _content_hash_of_file(md_file: Path) -> str:
+    """Hash a note's full bytes, without paying for the rest of the projection.
 
-
-def _body_snippet(text: str, max_chars: int = 500) -> str:
-    body = FRONTMATTER_RE.sub("", text).strip()
-    return body[:max_chars]
-
-
-_CODE_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
-_INLINE_CODE_RE = re.compile(r"`[^`\n]{1,80}`")
-_URL_RE = re.compile(r"https?://\S+")
-_MD_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
-
-
-def _embed_text_for(text: str, max_chars: int = 900) -> str:
-    """Prepare text for embedding: strip code/URLs/fullwidth chars, keep prose.
-
-    Three known llama-server crash triggers:
-    1. URLs with query strings (?param=val)
-    2. Fullwidth Unicode punctuation (U+FF00-FFEF, e.g. （）：)
-    3. Very long code blocks with shell special chars
+    Mirrors project_note's large-file handling: the hash always covers the whole
+    file even though only the head is projected, so an edit past the read cut-off
+    still invalidates the row.
     """
-    body = FRONTMATTER_RE.sub("", text).strip()
-    body = _CODE_BLOCK_RE.sub(" ", body)
-    body = _INLINE_CODE_RE.sub(" ", body)
-    body = _URL_RE.sub(" ", body)
-    body = _MD_LINK_RE.sub(r"\1", body)
-    # Keep only: ASCII printable (0x20-0x7E) + CJK Unified (U+4E00–U+9FFF) + newlines
-    # Filters out fullwidth punctuation, math symbols, and other Unicode that crashes llama-server
-    body = "".join(
-        c if (0x20 <= ord(c) <= 0x7E) or (0x4E00 <= ord(c) <= 0x9FFF) or c in "\n\t"
-        else " "
-        for c in body
-    )
-    body = re.sub(r"\s{3,}", "\n\n", body)
-    return body[:max_chars]
-
-
-def _content_hash(text: str) -> str:
-    return hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()
-
-
-def _parse_date(val: str) -> date | None:
-    try:
-        return date.fromisoformat(val)
-    except (ValueError, TypeError):
-        return None
+    return _content_hash(md_file.read_bytes().decode("utf-8", errors="ignore"))
 
 
 # ---------------------------------------------------------------------------
@@ -386,83 +346,23 @@ _LARGE_FILE_THRESHOLD = 32 * 1024
 
 
 def upsert_note(con: duckdb.DuckDBPyConnection, vault: Path, md_file: Path) -> None:
-    """Insert or update a note row from its markdown file."""
-    if md_file.stat().st_size > _LARGE_FILE_THRESHOLD:
-        raw = md_file.read_bytes()
-        chash = _content_hash(raw.decode("utf-8", errors="ignore"))
-        text = raw[:_LARGE_FILE_READ_LIMIT].decode("utf-8", errors="ignore")
-    else:
-        text = md_file.read_text(encoding="utf-8", errors="ignore")
-        chash = _content_hash(text)
-    fm = _parse_frontmatter(text)
+    """Insert or update a note row from its markdown file.
+
+    What a note looks like in the index is owned by note_row.project_note(); this
+    function only binds that projection into DuckDB's SQL.
+    """
     rel = str(md_file.relative_to(vault))
 
-    # Skip if unchanged
+    # Skip if unchanged — hash first so an untouched file costs no embedding call.
+    chash = _content_hash_of_file(md_file)
     row = con.execute("SELECT content_hash FROM notes WHERE path = ?", [rel]).fetchone()
     if row and row[0] == chash:
         return
 
-    tags_raw = fm.get("tags", "[]")
-    tags_json = tags_raw if tags_raw.startswith("[") else json.dumps([tags_raw])
-
-    # Compute embedding: title + tags + prose body (code blocks stripped to avoid server errors)
-    # For cnyes_archive, prepend tickers so FTS can find ticker mentions
-    # (body starts with US snapshot table; stock codes appear much later in the doc)
-    if fm.get("type") == "cnyes_archive":
-        tickers_raw = fm.get("tickers", "[]")
-        try:
-            tickers_str = " ".join(json.loads(tickers_raw))
-        except Exception:
-            tickers_str = tickers_raw
-        snippet = (tickers_str + " " + _body_snippet(text, max_chars=400))[:500]
-    else:
-        snippet = _body_snippet(text)          # 500 chars for DB / FTS storage
-    prose = _embed_text_for(text)          # 1600 chars, code stripped
-    tags_for_embed = fm.get("tags", "")
-    embed_input = f"{fm.get('title', md_file.stem)} {tags_for_embed} {prose}".strip()
-    try:
-        vec = embed_text(embed_input)
-        if vec is None:
-            print(f"[vault_db] embedding failed: {rel}", file=sys.stderr)
-    except ValueError as e:
-        print(f"[vault_db] embedding dim error: {rel} — {e}", file=sys.stderr)
-        vec = None
-    blob = _vec_to_blob(vec) if vec else None
-
-    violations = validate_note(fm, rel)
-    violations_json = json.dumps(violations) if violations else None
-
-    # Parse semantic_keywords from frontmatter (Phase 12)
-    sk_raw = fm.get("semantic_keywords", "").strip()
-    if not sk_raw:
-        sk_json = None
-    elif sk_raw.startswith("["):
-        try:
-            sk_list = json.loads(sk_raw)
-            sk_json = json.dumps(sk_list, ensure_ascii=False)
-        except (json.JSONDecodeError, ValueError):
-            inner = sk_raw.strip("[]")
-            sk_list = [s.strip().strip('"').strip("'") for s in inner.split(",") if s.strip()]
-            sk_json = json.dumps(sk_list, ensure_ascii=False) if sk_list else None
-    else:
-        sk_list = [s.strip() for s in sk_raw.split(",") if s.strip()]
-        sk_json = json.dumps(sk_list, ensure_ascii=False) if sk_list else None
-
-    # Parse neighbor_keywords / cluster_topic from frontmatter (Phase 13)
-    nk_raw = fm.get("neighbor_keywords", "")
-    if isinstance(nk_raw, list):
-        nk_json = json.dumps(nk_raw, ensure_ascii=False) if nk_raw else None
-    else:
-        nk_raw = str(nk_raw).strip()
-        if nk_raw.startswith("["):
-            try:
-                nk_json = json.dumps(json.loads(nk_raw), ensure_ascii=False)
-            except (json.JSONDecodeError, ValueError):
-                nk_json = None
-        else:
-            nk_list = [s.strip() for s in nk_raw.split(",") if s.strip()]
-            nk_json = json.dumps(nk_list, ensure_ascii=False) if nk_list else None
-    cluster_topic = fm.get("cluster_topic", None) or None
+    note = _note_row.project_note(
+        vault, md_file, embed=embed_text, validate=validate_note, log_prefix="vault_db"
+    )
+    blob = _vec_to_blob(note.embedding) if note.embedding else None
 
     con.execute(
         """
@@ -486,19 +386,19 @@ def upsert_note(con: duckdb.DuckDBPyConnection, vault: Path, md_file: Path) -> N
             -- snapshot fields managed by update_snapshot(), not here
         """,
         [
-            rel,
-            fm.get("title", md_file.stem),
-            fm.get("type", "note"),
-            fm.get("status", "active"),
-            tags_json,
-            _parse_date(fm.get("date", "")),
-            chash,
-            snippet,
+            note.path,
+            note.title,
+            note.note_type,
+            note.status,
+            note.tags_json,
+            note.note_date,
+            note.content_hash,
+            note.body_snippet,
             blob,
-            violations_json,
-            sk_json,
-            nk_json,
-            cluster_topic,
+            note.violations_json,
+            note.semantic_keywords,
+            note.neighbor_keywords,
+            note.cluster_topic,
         ],  # last_accessed intentionally omitted; set only by record_access()
     )
 
