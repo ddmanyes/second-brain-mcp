@@ -92,7 +92,7 @@ flowchart LR
         EMB["embedding :11435"]
     end
 
-    R1 -- "HTTP over Tailscale<br/>http://100.81.161.16:9100/mcp" --> AUTH
+    R1 -- "HTTP over Tailscale<br/>http://100.87.59.15:9100/mcp" --> AUTH
     AUTH --> GW
     GW -- localhost --> PG
     GW -- localhost --> FS
@@ -251,9 +251,9 @@ flowchart TD
 ### 目標
 所有 client（本機+遠端）改連中央 HTTP；cron 改連同一 Postgres，消滅「多進程搶 DB」。
 
-- [x] **4.1** 本機 Claude Code 改連 HTTP：已 `claude mcp remove second-brain -s user` 移除舊 stdio，改 `--transport http http://100.81.161.16:9100/mcp`（user scope，已 Connected）。
-  - ⚠️ **實際 URL 用 Tailscale IP 非 localhost**：server `--host` 綁 Tailscale IP（100.81.161.16），未綁 127.0.0.1 → 本機也走 Tailscale IP。Tailscale 為 always-on 故可接受；若要 localhost 直連需另加 127.0.0.1 listener。
-- [x] **4.2** 遠端機：`http://100.81.161.16:9100/mcp`（與本機同 URL，沿用 [[遠端-mcp-存取架構決策]]）。桌面 app 已改用 `npx mcp-remote http://100.81.161.16:9100/mcp` 代理（config 備份於 `/tmp/claude_desktop_config.backup.json`）。
+- [x] **4.1** 本機 Claude Code 改連 HTTP：已 `claude mcp remove second-brain -s user` 移除舊 stdio，改 `--transport http http://100.87.59.15:9100/mcp`（user scope，已 Connected）。
+  - ⚠️ **實際 URL 用 Tailscale IP 非 localhost**：server `--host` 綁 Tailscale IP（100.87.59.15），未綁 127.0.0.1 → 本機也走 Tailscale IP。Tailscale 為 always-on 故可接受；若要 localhost 直連需另加 127.0.0.1 listener。
+- [x] **4.2** 遠端機：`http://100.87.59.15:9100/mcp`（與本機同 URL，沿用 [[遠端-mcp-存取架構決策]]）。桌面 app 已改用 `npx mcp-remote http://100.87.59.15:9100/mcp` 代理（config 備份於 `/tmp/claude_desktop_config.backup.json`）。
 - [x] **4.3** 清理：`pkill obsidian-mcp` 清掉 **18 個洩漏進程**（fallback obsidian 由 active client 按需重生）；移除本機+桌面的舊 second-brain stdio 設定；killed 3 個殘留 stdio duckdb-writer server。
 - [x] **4.4** cron → Postgres：**採行解法 (b)，drift 風險已關閉**。
   - 🔴 **背景**：`vault_janitor`/`vault_sleep` 用 `~/.venvs/second-brain`（無 psycopg）且**直接 `vault_db._connect()`/`duckdb.connect()`，繞過 store 抽象層** → 獨立 DuckDB 寫者；`vault_sleep` 還用 `_blob_to_vec`/`_cosine` 對 DuckDB BLOB 做 Python 端向量運算（DuckDB 專屬）。cron 會**改 markdown**（封存），但無排程對 Postgres 重 sync → Postgres 會與 markdown 脫節。

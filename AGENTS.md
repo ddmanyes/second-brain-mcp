@@ -30,11 +30,17 @@ Second Brain is a personal knowledge management server that exposes vault read/w
 The production setup is **one central HTTP server + Postgres**; clients never touch
 Postgres directly.
 
+- **Central host**: the mac-mini `lab-center`, Tailscale `100.87.59.15` (SSH as `lab_center`).
 - **Central server**: launchd `com.user.second-brain-remote`, `streamable-http` bound to
   the Tailscale IP `:9100`, `SB_DB_BACKEND=postgres`. Single instance (PID guard).
+- **Sibling instances on the same host and the same package**: `lcdda` (`:9104`, a second
+  vault) and `lcdda-harvest` (`:9106`). They import the same `mcp_second_brain` from the same
+  venv, so **one `pip install` changes all three** — deploying means restarting all three, or
+  new and old code run side by side. (`finance-kit` on `:9108` is a separate codebase.)
 - **Postgres**: Docker `sb-pg`, bound to `127.0.0.1:5432` only — **never** exposed off-host.
-- **Clients connect via MCP over HTTP**: `http://<tailscale-ip>:9100/mcp` with header
+- **Clients connect via MCP over HTTP**: `http://100.87.59.15:9100/mcp` with header
   `X-API-Key: <key>` (auth is enforced when `SB_API_KEY`/`SB_API_KEYS` is set on the server).
+  Setup per client type is in [NEW_MACHINE_SETUP.md](NEW_MACHINE_SETUP.md) §A.
 - **Index freshness**: `com.user.second-brain-pg-sync` runs `sync_incremental` against
   Postgres every 30 min so cron-driven markdown edits don't let the index drift.
 - **Backups**: `com.user.second-brain-pg-backup` runs `pg_dump` daily (markdown is still
@@ -45,6 +51,11 @@ Postgres directly.
 - Client-side Obsidian is **read-only** — read synced markdown, but edit via MCP tools,
   not by typing into Obsidian on a laptop (two machines editing one file → Drive conflict
   copy → pollutes the source and index).
+- **Never configure a local stdio `python -m mcp_second_brain` client against the Drive
+  vault.** It makes that machine a second writer; concurrent Drive writes lose one side
+  **with no conflict copy**. A stale stdio entry can sit unnoticed in a client config for
+  months — if you see `args: ["-m", "mcp_second_brain..."]` anywhere, replace it with the
+  `mcp-remote` HTTP form.
 - Offline fallback: with no network, set `SB_DB_BACKEND=duckdb` + stdio for local
   read-only use; reconcile via `sync_all` when back online.
 

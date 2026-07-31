@@ -43,6 +43,16 @@ The current setup is **one central HTTP server + Postgres**, not a local server 
 
 A new Mac that just needs to *use* the brain. **No Python, no venv, no DuckDB, no indexing.**
 
+The central host is the **mac-mini (`lab-center`), Tailscale `100.87.59.15`** — SSH in as
+`lab_center` (key auth). It also serves three sibling instances off the same package:
+
+| Port | Instance | Vault / purpose |
+| --- | --- | --- |
+| 9100 | `second-brain` | the personal vault |
+| 9104 | `lcdda` | a second vault, same `mcp_second_brain` package |
+| 9106 | `lcdda-harvest` | ingest helper (`~/projects/lcdda-ingest/mcp_server.py`) |
+| 9108 | `finance-kit` | separate codebase |
+
 Get the API key from the central host (it lives in `SB_API_KEY` of
 `~/Library/LaunchAgents/com.user.second-brain-remote.plist`, and in the existing clients'
 configs).
@@ -51,7 +61,7 @@ configs).
 
 ```bash
 claude mcp add --scope user --transport http second-brain \
-  "http://100.81.161.16:9100/mcp" \
+  "http://100.87.59.15:9100/mcp" \
   --header "X-API-Key: <the-key>"
 ```
 
@@ -63,7 +73,7 @@ claude mcp add --scope user --transport http second-brain \
   "mcpServers": {
     "second-brain": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "http://100.81.161.16:9100/mcp", "--header", "X-API-Key: <the-key>"]
+      "args": ["-y", "mcp-remote", "http://100.87.59.15:9100/mcp", "--header", "X-API-Key: <the-key>"]
     }
   }
 }
@@ -80,18 +90,36 @@ proxy to bridge stdio → the central HTTP server and inject `X-API-Key` (needs 
   "mcpServers": {
     "second-brain": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "http://100.81.161.16:9100/mcp", "--header", "X-API-Key: <the-key>"]
+      "args": ["-y", "mcp-remote", "http://100.87.59.15:9100/mcp", "--header", "X-API-Key: <the-key>"]
     }
   }
 }
 ```
 
-> ⚠️ Do **not** point Antigravity at a local `python -m mcp_second_brain` stdio server — that lands on a
-> **per-machine DuckDB** (a brain out of sync with the central Postgres). For a single source of truth,
-> use the HTTP (mcp-remote) form above. Restart Antigravity to apply.
+**Gemini CLI** — `~/.gemini/settings.json`, same `mcp-remote` form under `mcpServers`.
+
+> ⚠️ **Never point any client at a local `python -m mcp_second_brain` stdio server** when the vault
+> lives on Drive. Two problems, and the second is the dangerous one:
+>
+> 1. It lands on a **per-machine DuckDB** — a brain out of sync with the central Postgres.
+> 2. It makes that machine a **second writer into the Drive-backed vault**. Concurrent writes to
+>    Drive produce a silent lost update — the losing write disappears with *no conflict copy*.
+>    All writes must go through the one central server.
+>
+> This is easy to get wrong because a stale stdio entry can sit in a config for months looking
+> harmless (found exactly that in `~/.gemini/settings.json`, 2026-07-31). If you see
+> `command: .../python`, `args: ["-m", "mcp_second_brain..."]` in any client config, replace it
+> with the `mcp-remote` form above.
 >
 > Prerequisite: the client is a member of the same Tailscale tailnet (so the
-> `100.81.161.16` address is reachable). Without a valid `X-API-Key` the server returns `401`.
+> `100.87.59.15` address is reachable). Without a valid `X-API-Key` the server returns `401`.
+
+**Verify a new client works:**
+
+```text
+health_check()      → "Vault accessible — N .md files found", "gap 0"
+read_note("../../etc/hosts")   → "Error: path must be within the vault."   (containment is live)
+```
 
 ---
 
@@ -179,6 +207,72 @@ Expect `{'synced': N, 'embed_failed': 0}`. (~900 notes ≈ 35 s once embeddings 
 | `com.user.second-brain-pg-sync` | every 30 min | `sync_incremental` against Postgres so cron-driven markdown edits don't let the index drift (`launchd/run_pg_sync.py`). |
 | `com.user.second-brain-pg-backup` | daily 04:00 | `pg_dump \| gzip` of `sb_personal`/`sb_lab` to `PJ_save/backups/`, keep last 7 (`launchd/run_pg_backup.sh`). |
 | `com.user.vault-janitor` / `com.user.vault-sleep` | weekly | Vault cleanup + Ebbinghaus compression. ⚠️ still write only DuckDB and bypass the store abstraction; `pg-sync` propagates their markdown edits into Postgres. |
+
+---
+
+## B-bis. Deploying code changes to the central host
+
+**The running server does not import the source tree.** It imports a pip-installed copy in
+`~/.venvs/second-brain/lib/python3.12/site-packages/mcp_second_brain`. Editing the source — or
+letting Drive sync it — changes nothing until you reinstall. Restarting alone silently keeps
+running the old code.
+
+The deploy source on the central host is its **own local git clone**, `~/git-repos/second-brain`
+(the `SB_DIR` variable in the start scripts is vestigial and unused).
+
+```bash
+ssh lab_center@100.87.59.15
+cd ~/git-repos/second-brain
+git log --oneline -3          # ← compare against your machine FIRST, see the warning below
+~/.venvs/second-brain/bin/python -m pip install --no-deps --force-reinstall "$PWD"
+
+# Restart ALL THREE — they share the same package (see the table in section A)
+U=$(id -u)
+for J in second-brain-remote lcdda-remote lcdda-harvest; do
+  launchctl kickstart -k gui/$U/com.user.$J
+done
+```
+
+Verify the new code is actually live (not just running):
+
+```bash
+~/.venvs/second-brain/bin/python -c \
+  "import mcp_second_brain.server as s; print(len(s.WRITE_TOOLS))"   # 0 = stale, 17 = current
+```
+
+> ⚠️ **The central host's clone can hold commits your laptop doesn't.** On 2026-07-31 it had an
+> auth fix that existed nowhere else — deploying over it would have silently reverted it. Always
+> diff the two histories before pushing. To move commits between them (the host has no GitHub
+> credentials, so GitHub can't be the intermediary):
+>
+> ```bash
+> # on your machine — pull the host's work in first
+> git fetch ssh://lab_center@100.87.59.15/Users/lab_center/git-repos/second-brain master
+> git cherry-pick <their-commit>            # then run the tests
+> # push yours over — a checked-out branch can't be pushed to directly
+> git push ssh://lab_center@.../second-brain master:refs/heads/incoming
+> ssh lab_center@... 'cd ~/git-repos/second-brain && git merge --ff-only incoming'
+> ```
+
+### Running the Postgres test suite
+
+`tests/test_postgres_store.py` needs a live Postgres, so it only runs on the central host:
+
+```bash
+ssh lab_center@100.87.59.15
+# one-time: the schema (incl. CREATE EXTENSION vector/pg_trgm) is applied automatically
+docker exec sb-pg psql -U postgres -c "CREATE DATABASE sb_test;"
+
+cd ~/git-repos/second-brain
+# same credentials as the live DSN, only the database name differs
+export SB_PG_TEST_DSN="$(python3 -c 'import plistlib,pathlib,re;print(re.sub(r"/sb_personal$","/sb_test",plistlib.loads((pathlib.Path.home()/"Library/LaunchAgents/com.user.second-brain-remote.plist").read_bytes())["EnvironmentVariables"]["SB_PG_DSN"]))')"
+~/.venvs/second-brain/bin/python -m pytest tests -q
+```
+
+> ⚠️ Two traps. The fixture opens with `DELETE FROM notes` — the DSN **must** end in `/sb_test`
+> (there is a hard guard against `sb_personal` / `sb_lab`, but check anyway). And the default DSN
+> baked into the test file uses the password `postgres`, which is wrong here: it times out after
+> 30 s and every test reports **skipped**. *17 skipped is not 17 passed.*
 
 ---
 
