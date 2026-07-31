@@ -106,7 +106,9 @@ class TestReadNoteAsImage:
         from mcp_second_brain import server
         monkeypatch.setattr(server, "VAULT", vault)
         result = server.read_note_as_image("../../etc/passwd")
-        assert "not found" in result.lower()
+        # Escape and "missing note" are distinct answers since resolve_in_vault
+        # owns the check — an escape must not be reported as a missing note.
+        assert "within the vault" in result.lower()
 
 
 # ---------------------------------------------------------------------------

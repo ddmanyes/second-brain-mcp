@@ -15,8 +15,13 @@
 - **Enrichment（充實）**：note 寫入後在背景對它做的增益——semantic keyword 抽取、neighbor keyword、related links、figure 抽取——結果**寫回 frontmatter**（透過 surgical set）。
 - **Write tail（寫後尾巴）**：任何 note 的位元組落地後必跑的「index + enrichment」收尾。**不變式**：內容一變 → store 重索引（漏了 note 就從搜尋消失）。其餘（註冊新 note、relink、keyword enrich、figure 抽取）是各寫入路徑自選的變化點。由 `server.after_write(dest, rel, *, register_label, relink, enrich, extract_figures)` 獨家擁有；new_note / save_article / update_note / append_to_note / annotate_figure 皆只剩一行呼叫它。永不 raise（寫已落地，index 失敗只警告）。
 - **Figure（圖）**：從 PDF/文章抽出的圖，存 DuckDB figures cache（刻意獨立於可插拔 store）。
+- **Tool boundary（工具邊界）**：MCP tool 的守衛前言所在之處——權限判定、稽核紀錄、路徑錯誤轉成回傳字串。由 [`server.write_tool`](mcp_second_brain/server.py) / `admin_tool` 兩個裝飾器**獨家擁有**；tool body 內不得再手抄任何一段。工具名一律取自 `__name__`，不得以字串字面值重複。
+  - **Write tool（寫入 tool）**：任何會改動 vault 位元組或 index 的 tool。「哪些是寫入 tool」是**從程式碼導出的事實**（`server.WRITE_TOOLS` 登記表），不是手抄清單——測試列舉它，不複製它。
+  - **Audit target（稽核目標）**：稽核紀錄裡代表「動了什麼」的字串。由裝飾器的 `target=`（參數名）或 `target_const=`（固定目標，如 update_goals → memory/goals.md）指定。
+- **Contained path（圍堵路徑）**：呼叫端給的 vault 相對路徑，經 join → resolve → 證明仍落在 VAULT 內（→ 存在性）之後的 `Path`。這道判定由 [`vault_paths.resolve_in_vault`](mcp_second_brain/vault_paths.py) 獨家擁有，失敗一律 `VaultPathError`（其訊息即回給呼叫端的措辭）；server 內用 `_vault_path()` 綁定當前 VAULT。**寫在 CLAUDE.md 的規則靠紀律，寫成模組的規則靠程式碼**——這條 invariant 曾散成 16 份手抄、5 種方言，其中 enrich_neighbor_keywords 漏掉圍堵那一半。
 
 ## 架構詞彙（跨層通用）
 
-- **Deep module（深模組）**：小介面藏大量行為。`frontmatter.set_fields` 即一例——一個介面收斂了原本散在 5 檔、4 種不相容手抄的 block 手術。
-- **Seam（縫）**：能在不編輯該處的情況下改變行為的位置。`store/` 是真正的雙 adapter 縫（postgres/duckdb）。
+- **Deep module（深模組）**：小介面藏大量行為。`frontmatter.set_fields` 即一例——一個介面收斂了原本散在 5 檔、4 種不相容手抄的 block 手術。`vault_paths.resolve_in_vault` 是第二例。
+- **Seam（縫）**：能在不編輯該處的情況下改變行為的位置。`store/` 是真正的雙 adapter 縫（postgres/duckdb）；**tool boundary** 是另一道縫——縫在 tool 邊界而非 body 內，所以測試能穿過它驅動真 tool（body 內的守衛，測試只能繞過）。
+- **介面就是測試面（Interface is the test surface）**：若一個不變式只能靠「讀原始碼確認每個呼叫端都有抄」來保證，它就沒有介面。把它提到一道縫上，測試才寫得出來。RBAC 前言與路徑圍堵都是這樣被提上來的。

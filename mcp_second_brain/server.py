@@ -2,6 +2,8 @@
 """Second Brain MCP Server — domain-specific tools for the personal knowledge vault. (Trigger Restart 2)"""
 
 
+import functools
+import inspect
 import json
 import os
 import re
@@ -26,6 +28,7 @@ from . import llm_cli
 from . import frontmatter as _fm
 from .store import get_store
 from .identity import check_admin_permission, check_write_permission, get_current_identity
+from .vault_paths import VaultPathError, resolve_in_vault
 
 VAULT = Path(os.environ.get(
     "SECOND_BRAIN_PATH",
@@ -48,6 +51,117 @@ def _log_write(tool: str, target: str = "") -> None:
         _store.append_audit_log(actor, tool, target)
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Tool boundary — the seam every guarded tool passes through
+# ---------------------------------------------------------------------------
+#
+# The prologue (permission guard + audit record + path-error surfacing) used to be
+# hand-copied into each tool body, with the tool's own name repeated as a string
+# literal twice per tool. Two things were only ever enforced by discipline: that a
+# new write tool remembers the prologue at all, and that the literal matches the
+# function. Both failed in practice (extract_rules_tool wrote memory/rules.md with
+# no guard and no audit trail for months).
+#
+# Hoisting the prologue to the decorator makes the tool name un-driftable (taken
+# from __name__) and makes "which tools write" a fact derived from code — see
+# WRITE_TOOLS below, which tests enumerate instead of hand-copying.
+
+WRITE_TOOLS: dict[str, str] = {}   # tool name → parameter whose value is audited
+ADMIN_TOOLS: set[str] = set()      # tool names gated on the admin role
+
+
+def _audit_target(sig: inspect.Signature, param: str | None, args, kwargs) -> str:
+    """Resolve the audit target from the call's bound arguments."""
+    if param is None:
+        return ""
+    bound = sig.bind(*args, **kwargs)
+    bound.apply_defaults()
+    return str(bound.arguments.get(param, ""))
+
+
+def write_tool(*, target: str | None = None, target_const: str = ""):
+    """Register an MCP tool that mutates the vault.
+
+    Owns the entire write-tool prologue — no tool body may hand-roll it:
+
+      1. RBAC write guard (reader blocked or audited per ``SB_RBAC_ENFORCE``);
+      2. an immutable audit record, actor taken from the identity contextvar;
+      3. ``VaultPathError`` → the caller-visible error string it carries, so
+         path validation inside the body can just raise.
+
+    Args:
+        target: name of the parameter identifying what is written (e.g. "path").
+        target_const: fixed target for tools that always write the same place
+            (e.g. update_goals → memory/goals.md). Mutually exclusive with target.
+
+    The tool name comes from ``__name__``, so it can never drift from the function
+    it guards, and the tool is registered in ``WRITE_TOOLS``.
+    """
+    if target and target_const:
+        raise TypeError("pass either target or target_const, not both")
+
+    def decorate(fn):
+        name = fn.__name__
+        sig = inspect.signature(fn)
+        if target is not None and target not in sig.parameters:
+            raise TypeError(f"{name}: audit target {target!r} is not a parameter")
+        WRITE_TOOLS[name] = target or target_const
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            if err := check_write_permission(name):
+                return err
+            _log_write(name, target_const or _audit_target(sig, target, args, kwargs))
+            try:
+                return fn(*args, **kwargs)
+            except VaultPathError as exc:
+                return str(exc)
+
+        return mcp.tool()(wrapper)
+
+    return decorate
+
+
+def admin_tool(*, target: str | None = None, audit: bool = True):
+    """Register an MCP tool gated on the admin role.
+
+    Same seam as write_tool, but the guard is always enforced (never audit-only)
+    — key management must not be reachable by non-admins even in audit mode.
+    ``audit=False`` for read-only admin tools (querying the audit log must not
+    itself append to the audit log).
+    """
+    def decorate(fn):
+        name = fn.__name__
+        sig = inspect.signature(fn)
+        if target is not None and target not in sig.parameters:
+            raise TypeError(f"{name}: audit target {target!r} is not a parameter")
+        ADMIN_TOOLS.add(name)
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            if err := check_admin_permission(name):
+                return err
+            if audit:
+                _log_write(name, _audit_target(sig, target, args, kwargs))
+            try:
+                return fn(*args, **kwargs)
+            except VaultPathError as exc:
+                return str(exc)
+
+        return mcp.tool()(wrapper)
+
+    return decorate
+
+
+def _vault_path(rel: str, *, must_exist: bool = True, missing_hint: str = "") -> Path:
+    """Resolve a caller-supplied vault-relative path (see vault_paths.py).
+
+    Binds the module-level VAULT at call time so tests can monkeypatch it.
+    Raises VaultPathError, which guarded tools surface automatically.
+    """
+    return resolve_in_vault(VAULT, rel, must_exist=must_exist, missing_hint=missing_hint)
 
 
 # ── 防止兩個 HTTP server 搶同一個 port：kill 舊的 HTTP 進程 ──────────────────
@@ -419,7 +533,7 @@ def get_context() -> str:
     return f"{rules_section}## Current Goals\n\n{goals}\n\n---\n\n{index_section}{related_section}"
 
 
-@mcp.tool()
+@write_tool(target="title")
 def new_note(note_type: str, title: str, content: str = "", tags: str = "") -> str:
     """Create a new note in the vault using the correct folder and template.
 
@@ -435,8 +549,6 @@ def new_note(note_type: str, title: str, content: str = "", tags: str = "") -> s
         content: Optional initial content to append after the template
         tags: Comma-separated tags, e.g. 'evo-prism,architecture'. Added to frontmatter.
     """
-    if err := check_write_permission("new_note"): return err
-    _log_write("new_note", title)
     nt = note_type.lower()
     registry = _load_project_registry()
     matched_slug = _detect_project_slug(title, tags, registry)
@@ -534,8 +646,9 @@ def search_snippets(query: str, top_k: int = 8) -> str:
         hits = []
     out, logged = [], []
     for h in hits:
-        full = VAULT / h["path"]
-        if not full.is_relative_to(VAULT) or not full.exists():
+        try:
+            full = _vault_path(h["path"])
+        except VaultPathError:
             continue
         raw = full.read_text(encoding="utf-8", errors="ignore")
         snip = snippets.best_snippet(raw, h.get("title", ""), query)
@@ -791,8 +904,9 @@ def query_graph(entity: str, mode: str = "both", top_k: int = 12) -> str:
             hits = []
         snips = []
         for h in hits:
-            full = VAULT / h["path"]
-            if not full.is_relative_to(VAULT) or not full.exists():
+            try:
+                full = _vault_path(h["path"])
+            except VaultPathError:
                 continue
             snip = snippets.best_snippet(full.read_text(encoding="utf-8", errors="ignore"),
                                          h.get("title", ""), entity)
@@ -990,15 +1104,13 @@ def get_decisions(project: str = "") -> str:
     return "\n".join(results)
 
 
-@mcp.tool()
+@write_tool(target_const="memory/goals.md")
 def update_goals(new_content: str) -> str:
     """Replace the contents of memory/goals.md with new content.
 
     Args:
         new_content: Full new content for goals.md (markdown format)
     """
-    if err := check_write_permission("update_goals"): return err
-    _log_write("update_goals", "memory/goals.md")
     goals_path = VAULT / "memory" / "goals.md"
     goals_path.parent.mkdir(parents=True, exist_ok=True)
     goals_path.write_text(new_content, encoding="utf-8")
@@ -1012,11 +1124,10 @@ def read_note(path: str) -> str:
     Args:
         path: Relative path from vault root, e.g. 'decisions/my-decision.md'
     """
-    full_path = (VAULT / path).resolve()
-    if not full_path.is_relative_to(VAULT):
-        return "Error: path must be within the vault."
-    if not full_path.exists():
-        return f"Note not found: {path}"
+    try:
+        full_path = _vault_path(path)
+    except VaultPathError as exc:
+        return str(exc)
     try:
         _store.record_access(path)
     except Exception:
@@ -1024,7 +1135,7 @@ def read_note(path: str) -> str:
     return full_path.read_text(encoding="utf-8")
 
 
-@mcp.tool()
+@write_tool(target="path")
 def update_note(path: str, content: str) -> str:
     """Overwrite an existing note with new content.
 
@@ -1035,20 +1146,14 @@ def update_note(path: str, content: str) -> str:
         path: Relative path from vault root, e.g. 'decisions/my-decision.md'
         content: Full new content to write (replaces the entire file)
     """
-    if err := check_write_permission("update_note"): return err
-    _log_write("update_note", path)
-    full_path = (VAULT / path).resolve()
-    if not full_path.is_relative_to(VAULT):
-        return "Error: path must be within the vault."
-    if not full_path.exists():
-        return f"Note not found: {path}. Use new_note to create it."
+    full_path = _vault_path(path, missing_hint=". Use new_note to create it.")
     full_path.write_text(content, encoding="utf-8")
     n_links = after_write(full_path, path)
     link_msg = f" ({n_links} related links refreshed)" if n_links else ""
     return f"Updated: {path}{link_msg}"
 
 
-@mcp.tool()
+@write_tool(target="path")
 def append_to_note(path: str, content: str) -> str:
     """Append content to the end of an existing note.
 
@@ -1059,13 +1164,7 @@ def append_to_note(path: str, content: str) -> str:
         path: Relative path from vault root, e.g. '10-projects/my-project.md'
         content: Text to append (added after a blank line at end of file)
     """
-    if err := check_write_permission("append_to_note"): return err
-    _log_write("append_to_note", path)
-    full_path = (VAULT / path).resolve()
-    if not full_path.is_relative_to(VAULT):
-        return "Error: path must be within the vault."
-    if not full_path.exists():
-        return f"Note not found: {path}. Use new_note to create it."
+    full_path = _vault_path(path, missing_hint=". Use new_note to create it.")
     existing = full_path.read_text(encoding="utf-8")
     separator = "\n" if existing.endswith("\n") else "\n\n"
     full_path.write_text(existing + separator + content, encoding="utf-8")
@@ -1073,7 +1172,7 @@ def append_to_note(path: str, content: str) -> str:
     return f"Appended to: {path}"
 
 
-@mcp.tool()
+@write_tool(target="path")
 def mark_note_status(path: str, status: str) -> str:
     """Update the frontmatter status field of a note and sync to DB.
 
@@ -1083,18 +1182,11 @@ def mark_note_status(path: str, status: str) -> str:
         path: Relative path from vault root, e.g. '30-resources/my-note.md'
         status: One of: active | archived | consolidated | archive_backup
     """
-    if err := check_write_permission("mark_note_status"): return err
-    _log_write("mark_note_status", path)
     allowed = {"active", "archived", "consolidated", "archive_backup"}
     if status not in allowed:
         return f"Invalid status {status!r}. Choose from: {', '.join(sorted(allowed))}"
 
-    full_path = (VAULT / path).resolve()
-    if not full_path.is_relative_to(VAULT):
-        return "Error: path must be within the vault."
-    if not full_path.exists():
-        return f"Note not found: {path}"
-
+    full_path = _vault_path(path)
     _fm.set_fields_in_file(full_path, {"status": status})
 
     try:
@@ -1139,7 +1231,7 @@ def index_stats() -> str:
         return f"Index not initialised yet. Run sync_index() first. ({e})"
 
 
-@mcp.tool()
+@write_tool()
 def vault_sleep(dry_run: bool = False) -> str:
     """Compress old low-activity notes to slim down the vault.
 
@@ -1152,8 +1244,6 @@ def vault_sleep(dry_run: bool = False) -> str:
     Args:
         dry_run: If True, show candidates without making changes.
     """
-    if err := check_write_permission("vault_sleep"): return err
-    _log_write("vault_sleep", "")
     result = _vs.run_sleep(VAULT, dry_run=dry_run)
     lines = [
         f"Candidates: {result['candidates']}",
@@ -1210,7 +1300,7 @@ def sleep_status() -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@write_tool(target="note_path")   # writes memory/rules.md — was unguarded until 2026-07-31
 def extract_rules_tool(note_path: str = "") -> str:
     """Extract L3 declarative rules from high-access notes into memory/rules.md.
 
@@ -1223,9 +1313,7 @@ def extract_rules_tool(note_path: str = "") -> str:
                    (access_count >= 5, not extracted in last 90 days).
     """
     if note_path:
-        full = (VAULT / note_path).resolve()
-        if not full.is_relative_to(VAULT) or not full.exists():
-            return f"Note not found: {note_path}"
+        _vault_path(note_path)
         rules = _vs.extract_rules_for(note_path, VAULT)
         if not rules:
             return f"No rules extracted from {note_path} (Gemini unavailable or no rules found)"
@@ -1241,7 +1329,7 @@ def extract_rules_tool(note_path: str = "") -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@write_tool(target="note_path")
 def expand_semantic_keywords_tool(note_path: str = "", force: bool = False) -> str:
     """Batch-extract or refresh semantic_keywords for notes using Gemini CLI.
 
@@ -1256,8 +1344,6 @@ def expand_semantic_keywords_tool(note_path: str = "", force: bool = False) -> s
     Returns:
         Summary dict: {"processed": N, "skipped": M, "failed": K}
     """
-    if err := check_write_permission("expand_semantic_keywords_tool"): return err
-    _log_write("expand_semantic_keywords_tool", note_path)
     gemini_cli = shutil.which("gemini")
     if not gemini_cli:
         return "Gemini CLI not found — install with `npm install -g @google/generative-ai`"
@@ -1269,8 +1355,9 @@ def expand_semantic_keywords_tool(note_path: str = "", force: bool = False) -> s
 
     processed, skipped, failed = 0, 0, 0
     for rel in paths:
-        full = (VAULT / rel).resolve()
-        if not full.exists() or not full.is_relative_to(VAULT):
+        try:
+            full = _vault_path(rel)
+        except VaultPathError:
             failed += 1
             continue
         try:
@@ -1295,7 +1382,7 @@ def expand_semantic_keywords_tool(note_path: str = "", force: bool = False) -> s
     return str({"processed": processed, "skipped": skipped, "failed": failed})
 
 
-@mcp.tool()
+@write_tool(target="note_path")
 def enrich_neighbor_keywords_tool(note_path: str = "", force: bool = False) -> str:
     """Enrich notes with neighbor_keywords and cluster_topic derived from embedding similarity.
 
@@ -1310,8 +1397,6 @@ def enrich_neighbor_keywords_tool(note_path: str = "", force: bool = False) -> s
     Returns:
         JSON-like string with {"enriched": N, "skipped": M, "no_neighbors": K}.
     """
-    if err := check_write_permission("enrich_neighbor_keywords_tool"): return err
-    _log_write("enrich_neighbor_keywords_tool", note_path)
     enriched = skipped = no_neighbors = 0
     try:
         all_data = _store.compute_neighbor_keywords()
@@ -1326,8 +1411,9 @@ def enrich_neighbor_keywords_tool(note_path: str = "", force: bool = False) -> s
         targets = _store.get_paths_for_neighbor_keywords(force)
 
     for path in targets:
-        full = VAULT / path
-        if not full.exists():
+        try:
+            full = _vault_path(path)
+        except VaultPathError:
             skipped += 1
             continue
         data = all_data.get(path)
@@ -1449,7 +1535,7 @@ def _normalise_source_url(source: str) -> str:
     return source
 
 
-@mcp.tool()
+@write_tool(target="source")
 def save_article(
     source: str,
     title: str = "",
@@ -1468,8 +1554,6 @@ def save_article(
         filename: Filename stem (without .md). If empty, auto-generated from title as kebab-slug.
                   Use 'YYYY_Author_ShortTitle' format for research papers, e.g. '2024_Bakr_ARID1A'.
     """
-    if err := check_write_permission("save_article"): return err
-    _log_write("save_article", source)
     source = _normalise_source_url(source)
     safe = _validate_source(source)
     if safe is None:
@@ -1498,10 +1582,9 @@ def save_article(
 
     today = date.today().isoformat()
 
-    # Validate dest_folder: must resolve inside vault (prevent path traversal)
-    folder = (VAULT / dest_folder).resolve()
-    if not folder.is_relative_to(VAULT.resolve()):
-        return f"dest_folder is outside vault: {dest_folder!r}"
+    # Both the folder and the final file must resolve inside the vault; the folder
+    # does not exist yet on a first save, hence must_exist=False.
+    folder = _vault_path(dest_folder, must_exist=False)
 
     # Sanitize filename: strip, forbid path separators and traversal sequences
     filename = filename.strip()
@@ -1513,10 +1596,8 @@ def save_article(
         return "Cannot determine a valid filename. Provide a title or filename."
 
     folder.mkdir(parents=True, exist_ok=True)
-    dest = (folder / f"{stem}.md").resolve()
-    if not dest.is_relative_to(VAULT.resolve()):
-        return f"Resolved path escapes vault: {dest}"
-    rel = str(dest.relative_to(VAULT.resolve()))
+    rel = str((folder / f"{stem}.md").relative_to(VAULT.resolve()))
+    dest = _vault_path(rel, must_exist=False)
 
     if dest.exists():
         return f"Already saved: {rel}"
@@ -1543,7 +1624,7 @@ def save_article(
     return f"Saved: {rel} (figure extraction started in background{link_msg})"
 
 
-@mcp.tool()
+@write_tool(target="note_path")
 def update_links_tool(note_path: str = "") -> str:
     """Refresh auto-generated related wikilinks in one note or all notes.
 
@@ -1554,12 +1635,8 @@ def update_links_tool(note_path: str = "") -> str:
         note_path: Relative path within vault (e.g. 'decisions/my-note.md').
                    Leave empty to update ALL notes that have embeddings.
     """
-    if err := check_write_permission("update_links_tool"): return err
-    _log_write("update_links_tool", note_path)
     if note_path:
-        full = (VAULT / note_path).resolve()
-        if not full.is_relative_to(VAULT) or not full.exists():
-            return f"Note not found: {note_path}"
+        full = _vault_path(note_path)
         n = _inject_related_links(full, note_path)
         return f"Updated: {note_path} — {n} related links written"
 
@@ -1568,29 +1645,27 @@ def update_links_tool(note_path: str = "") -> str:
 
     updated, skipped = 0, 0
     for rel in paths_with_emb:
-        full = (VAULT / rel).resolve()
-        if full.exists() and full.is_relative_to(VAULT):
-            n = _inject_related_links(full, rel)
-            if n:
-                updated += 1
-            else:
-                skipped += 1
+        try:
+            full = _vault_path(rel)
+        except VaultPathError:
+            continue
+        n = _inject_related_links(full, rel)
+        if n:
+            updated += 1
+        else:
+            skipped += 1
 
     return f"Updated {updated} notes with related links ({skipped} skipped — no matches above threshold)"
 
 
-@mcp.tool()
+@write_tool(target="note_path")
 def extract_figures_for(note_path: str) -> str:
     """Manually trigger figure extraction for a saved article.
 
     Args:
         note_path: Relative path within vault, e.g. '30-resources/my-article.md'
     """
-    if err := check_write_permission("extract_figures_for"): return err
-    _log_write("extract_figures_for", note_path)
-    full = (VAULT / note_path).resolve()
-    if not full.is_relative_to(VAULT) or not full.exists():
-        return f"Note not found: {note_path}"
+    _vault_path(note_path)
     result = _fig.process_article(note_path, VAULT)
     for fig in vault_db.get_figures_for_note(note_path):
         try:
@@ -1629,7 +1704,7 @@ def search_figures(query: str) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@write_tool(target="note_path")
 def snapshot_note_tool(note_path: str, tier: str = "base") -> str:
     """Render a markdown note to PNG snapshot for token-efficient storage.
 
@@ -1637,12 +1712,7 @@ def snapshot_note_tool(note_path: str, tier: str = "base") -> str:
         note_path: Relative path within vault, e.g. 'decisions/my-note.md'
         tier: Resolution tier — 'large' (400 tokens), 'base' (256), 'small' (100)
     """
-    if err := check_write_permission("snapshot_note_tool"): return err
-    _log_write("snapshot_note_tool", note_path)
-    full = (VAULT / note_path).resolve()
-    if not full.is_relative_to(VAULT) or not full.exists():
-        return f"Note not found: {note_path}"
-
+    full = _vault_path(note_path)
     result = _fig.snapshot_note(note_path, VAULT, tier)
     if not result["success"]:
         return result.get("error") or f"Rendering failed for: {note_path}"
@@ -1658,7 +1728,7 @@ def snapshot_note_tool(note_path: str, tier: str = "base") -> str:
     )
 
 
-@mcp.tool()
+@write_tool()
 def consolidate_tool(threshold: float = 0.85, dry_run: bool = True) -> str:
     """Find and consolidate clusters of semantically similar notes.
 
@@ -1672,8 +1742,6 @@ def consolidate_tool(threshold: float = 0.85, dry_run: bool = True) -> str:
         threshold: Cosine similarity threshold for clustering (default 0.85)
         dry_run: If True, show clusters without consolidating (default True)
     """
-    if err := check_write_permission("consolidate_tool"): return err
-    _log_write("consolidate_tool", "")
     result = _vs.run_consolidation(VAULT, threshold=threshold, dry_run=dry_run)
     mode = "DRY RUN" if dry_run else "EXECUTED"
     lines = [f"[{mode}] Clusters found: {result['clusters']}, Consolidated: {result['consolidated']}"]
@@ -1693,7 +1761,7 @@ def consolidate_tool(threshold: float = 0.85, dry_run: bool = True) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@write_tool()
 def prune_archive_tool(min_age_days: int = 365, dry_run: bool = True) -> str:
     """Delete archived originals older than min_age_days that have a snapshot.
 
@@ -1704,8 +1772,6 @@ def prune_archive_tool(min_age_days: int = 365, dry_run: bool = True) -> str:
         min_age_days: Minimum age of archived file to consider (default 365)
         dry_run: If True, only report what would be deleted (default True)
     """
-    if err := check_write_permission("prune_archive_tool"): return err
-    _log_write("prune_archive_tool", "")
     result = _vs.prune_archive(VAULT, min_age_days=min_age_days, dry_run=dry_run)
     mode = "DRY RUN" if dry_run else "EXECUTED"
     lines = [f"[{mode}] Archive prune: {result['deleted']} deleted, {result['skipped']} skipped"]
@@ -1724,9 +1790,10 @@ def read_note_as_image(path: str):
     Args:
         path: Relative path from vault root
     """
-    full_path = (VAULT / path).resolve()
-    if not full_path.is_relative_to(VAULT) or not full_path.exists():
-        return f"Note not found: {path}"
+    try:
+        full_path = _vault_path(path)
+    except VaultPathError as exc:
+        return str(exc)
 
     _snap = _store.get_snapshot_path(path)
     if _snap:
@@ -1775,11 +1842,12 @@ def read_figure(note_path: str, fig_index: int):
 
     # 5.8.4 — surface any prior read-time insight so next time text alone suffices.
     insight_rel = _figure_insight_rel(note_path, fig_index)
-    insight_file = (VAULT / insight_rel).resolve()
-    if insight_file.exists() and insight_file.is_relative_to(VAULT.resolve()):
-        body = insight_file.read_text(encoding="utf-8")
-        return [img, f"📝 Prior insights ([[{insight_rel.removesuffix('.md')}]]):\n\n{body}"]
-    return img
+    try:
+        insight_file = _vault_path(insight_rel)
+    except VaultPathError:
+        return img
+    body = insight_file.read_text(encoding="utf-8")
+    return [img, f"📝 Prior insights ([[{insight_rel.removesuffix('.md')}]]):\n\n{body}"]
 
 
 # ---------------------------------------------------------------------------
@@ -1794,8 +1862,9 @@ def _figure_insight_rel(note_path: str, fig_index: int) -> str:
 
 def _add_figure_insight_backlink(note_path: str, fig_index: int, insight_rel: str) -> None:
     """Add an idempotent forward link in the paper note's figure section."""
-    paper = (VAULT / note_path).resolve()
-    if not (paper.exists() and paper.is_relative_to(VAULT.resolve())):
+    try:
+        paper = _vault_path(note_path)
+    except VaultPathError:
         return
     link = f"→ insights fig {fig_index:02d}: [[{insight_rel.removesuffix('.md')}]]"
     content = paper.read_text(encoding="utf-8")
@@ -1808,7 +1877,7 @@ def _add_figure_insight_backlink(note_path: str, fig_index: int, insight_rel: st
     paper.write_text(content, encoding="utf-8")
 
 
-@mcp.tool()
+@write_tool(target="note_path")
 def annotate_figure(note_path: str, fig_index: int, insight: str) -> str:
     """Save a read-time insight about a figure as an atomic vault note.
 
@@ -1825,16 +1894,12 @@ def annotate_figure(note_path: str, fig_index: int, insight: str) -> str:
         fig_index: 0-based figure index (as shown by search_figures / read_figure)
         insight: The fact/observation to remember about this figure
     """
-    if err := check_write_permission("annotate_figure"): return err
-    _log_write("annotate_figure", note_path)
     insight = insight.strip()
     if not insight:
         return "Empty insight — nothing saved."
 
     rel = _figure_insight_rel(note_path, fig_index)
-    dest = (VAULT / rel).resolve()
-    if not dest.is_relative_to(VAULT.resolve()):
-        return f"Resolved path escapes vault: {rel}"
+    dest = _vault_path(rel, must_exist=False)
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     today = date.today().isoformat()
@@ -2025,15 +2090,13 @@ def _bootstrap_vault(vault: Path) -> list[str]:
     return actions
 
 
-@mcp.tool()
+@write_tool()
 def init_vault() -> str:
     """Initialize or repair vault directory structure and default templates.
 
     Safe to re-run: only creates missing items, never overwrites existing files.
     Call this after cloning the repo or setting up on a new machine.
     """
-    if err := check_write_permission("init_vault"): return err
-    _log_write("init_vault", "")
     actions = _bootstrap_vault(VAULT)
     if actions:
         return "Vault initialized:\n" + "\n".join(f"  + {a}" for a in actions)
@@ -2076,7 +2139,7 @@ def get_agent_instructions() -> str:
     return result
 
 
-@mcp.tool()
+@admin_tool(target="action")
 def manage_api_key(
     action: str,
     raw_key: str = "",
@@ -2092,9 +2155,6 @@ def manage_api_key(
 
     Returns a plain-text summary of the operation.
     """
-    if err := check_admin_permission("manage_api_key"):
-        return err
-
     from .identity import hash_key, VALID_ROLES
 
     if action == "register":
@@ -2139,7 +2199,7 @@ def manage_api_key(
     return f"Error: unknown action '{action}'. Use register | revoke | list"
 
 
-@mcp.tool()
+@admin_tool(audit=False)   # reading the audit log must not append to it
 def query_audit_log(
     user_id: str = "",
     tool_name: str = "",
@@ -2151,9 +2211,6 @@ def query_audit_log(
     tool_name: filter by tool (optional).
     limit: max rows to return (default 50).
     """
-    if err := check_admin_permission("query_audit_log"):
-        return err
-
     rows = _store.query_audit_log(
         user_id=user_id or None,
         tool=tool_name or None,

@@ -20,7 +20,8 @@
 
 ## 安全
 
-- `read_note` 必須用 `.resolve().is_relative_to(VAULT)` 防路徑遍歷
+- **呼叫端給的路徑一律走 `_vault_path()`（→ `vault_paths.resolve_in_vault`）**，不要手抄 `.resolve().is_relative_to(VAULT)`。手抄過一次就會漏第二次（2026-07-31 修掉的 `enrich_neighbor_keywords_tool` 即是）。
+- **會寫入的 tool 一律掛 `@write_tool(...)`，admin tool 掛 `@admin_tool(...)`**，不要在 body 內手抄權限檢查或 `_log_write`。裝飾器同時登記進 `WRITE_TOOLS`，`tests/test_permissions.py` 會列舉它並實際驅動每個 tool。
 - YAML frontmatter 的 title/source 用 `json.dumps(value.strip())[1:-1]` 做正確 escaping（不是 `.replace('"', "'")`）
 - `save_article` 的 source 必須過 `_validate_source()` — 只允許 http/https（SSRF 過濾）或白名單副檔名的本地檔案
 - 圖片下載前必須過 `_is_ssrf_safe()` — 封鎖 loopback / RFC-1918 / 169.254
