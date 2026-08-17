@@ -2487,13 +2487,23 @@ def _run_http_with_auth(transport: str) -> None:
 
     app = mcp.sse_app() if transport == "sse" else mcp.streamable_http_app()
     # auth.py passes the raw key; store expects SHA-256 hash — wrap here
+    try:
+        _db_keys = _store.count_active_api_keys()
+    except Exception as exc:  # store without api_keys support, or DB unreachable
+        print(f"[second-brain] could not count DB API keys: {exc}", file=sys.stderr)
+        _db_keys = 0
     n_keys = maybe_add_api_key_auth(
         app,
         lookup_fn=lambda raw: _store.get_identity_for_key(_hash_key(raw)),
         exempt_paths={"/graph"},  # read-only browser viz; Tailscale-only (see AskUserQuestion)
+        db_key_count=_db_keys,
     )
     if n_keys:
-        print(f"[second-brain] API-key auth ENABLED ({n_keys} key(s))", file=sys.stderr)
+        print(
+            f"[second-brain] API-key auth ENABLED ({n_keys} key(s): "
+            f"{n_keys - _db_keys} env, {_db_keys} registered)",
+            file=sys.stderr,
+        )
     else:
         print(
             "[second-brain] API-key auth DISABLED (set SB_API_KEY to enable) "

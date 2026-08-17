@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..identity import Identity
+    from ..identity import Identity, KeyState
 
 import psycopg
 from psycopg_pool import ConnectionPool
@@ -997,19 +997,33 @@ class PostgresStore:
     # API key lifecycle (MULTIUSER_PLAN P4)
     # ------------------------------------------------------------------
 
-    def get_identity_for_key(self, key_hash: str) -> Identity | None:
-        """Return Identity for an active key, or None if unknown/revoked."""
-        from ..identity import Identity  # local import to avoid circular dependency
+    def get_identity_for_key(self, key_hash: str) -> "Identity | KeyState | None":
+        """Return Identity for an active key, KeyState.REVOKED if revoked, else None.
+
+        Revoked must stay distinguishable from unknown: auth.py falls back to an
+        env-key admin identity on None, so answering None for a revoked key would
+        promote it to admin instead of denying it.
+        """
+        from ..identity import Identity, KeyState  # local import: circular dependency
 
         with self._pool.connection() as conn:
             row = conn.execute(
-                "SELECT user_id, role FROM api_keys "
-                "WHERE key_hash = %s AND revoked_at IS NULL",
+                "SELECT user_id, role, revoked_at FROM api_keys WHERE key_hash = %s",
                 [key_hash],
             ).fetchone()
         if row is None:
             return None
+        if row[2] is not None:
+            return KeyState.REVOKED
         return Identity(user_id=row[0], role=row[1])
+
+    def count_active_api_keys(self) -> int:
+        """Number of un-revoked keys — lets auth stay enabled with no env key set."""
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM api_keys WHERE revoked_at IS NULL"
+            ).fetchone()
+        return int(row[0]) if row else 0
 
     def register_api_key(self, key_hash: str, user_id: str, role: str) -> None:
         """Insert a new API key. Raises psycopg.errors.UniqueViolation if duplicate."""

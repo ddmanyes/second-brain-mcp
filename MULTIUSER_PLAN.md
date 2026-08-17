@@ -2,8 +2,31 @@
 
 > **定位**：`MIGRATION_PLAN_POSTGRES.md` 解決了「多機並發」（中央 server + Postgres MVCC）；本 plan 補上「**多人協作**」——身分、角色、唯讀強制、寫入歸屬、金鑰生命週期，外加中文 FTS 精度。
 > **建立日期**：2026-06-17
-> **狀態**：規劃中（未動工）。對應 `MIGRATION_PLAN_POSTGRES.md` 延後項 P5.2（per-key 角色）與 D（雙SB lab ACL/onboarding）。
+> **狀態（2026-08-17 更新）**：P1–P4 程式碼**已合併**，P5 未做。
+> commit：`3e2a769`(P1) / `b18e644`(P2) / `ec8ca6c`(P3) / `e5a58eb`(P4) + R1/R2 修復。
+>
+> **P4 曾有兩個阻塞缺陷，2026-08-17 已修復**（`auth.py` / `identity.py` / store）：
+> - ~~**R1**：`_key_accepted()` 只比對 `SB_API_KEY`/`SB_API_KEYS`，DB 註冊的 key 在 `lookup_fn` 執行前就被 401 擋掉 → `manage_api_key` 走 HTTP 形同虛設。~~
+> - ~~**R2**：把 key 同時寫進 env 當 workaround 後，撤銷時 `get_identity_for_key()` 回 `None`，被誤判為「未登記的 env key」而 fallback 成 `role='admin'` → 撤銷等於把成員從 reader 提升為 admin。~~
+> - **修法**：`get_identity_for_key()` 改回三態（`Identity` / `KeyState.REVOKED` / `None`=unknown）；
+>   `_key_accepted()` + `_resolve_identity()` 合併成 `auth._authenticate()`，DB key 自行認證、
+>   `REVOKED` 直接 401 且永不進入 env fallback。另加 `count_active_api_keys()`，讓拿掉共用 env key
+>   之後 auth 仍為那些 DB key 保持開啟（原本會靜默整個關閉）。
+> - 迴歸測試：`tests/test_auth.py::TestRegisteredKeyRegressions`（三項）+ `test_key_lifecycle.py` 已更新。
+>   全套 392 passed / 17 skipped；另對真實 `PostgresStore`(sb_test) 驗證過註冊→認證→撤銷→401。
+>
+> **仍未啟用**（這是設定問題，不是程式問題）：
+> - `SB_RBAC_ENFORCE` 未設 → P2 目前是 audit-only，reader 照樣寫得進去。
+> - 各實例 `api_keys` 表 0 筆，實際仍是單一共用 env key = admin。
+>
+> 完整三層盤點與 review（與 PWA 計畫的 RBAC 重疊、目標實例矛盾、:9106 缺口）見 vault 筆記
+> `10-projects/second-brain/phases/實驗室人員開放-三層盤點與計畫-review.md`。
+>
+> 對應 `MIGRATION_PLAN_POSTGRES.md` 延後項 P5.2（per-key 角色）與 D（雙SB lab ACL/onboarding）。
 > **主要適用**：**sb-lab 實例**（多人）。sb-personal 維持單人，多數階段對它是 no-op。
+> ⚠️ 注意：**目前並沒有 sb-lab 這個 SB 實例**（`sb_lab` DB 在 `bar-pg`:5433 給 BAR 用）；跑著的是
+> sb-personal(9100) / lcdda(9104) / lcdda-harvest(9106)。而 PWA 計畫把 vault 列為「personal + lcdda」，
+> 與本文「個人 DB 永不上工作主機」的硬約束衝突——見 review D2。
 > **執行順序**：P1 → P2 → P3 →（P4 / P5 可獨立）。每階段可回退。
 
 ---

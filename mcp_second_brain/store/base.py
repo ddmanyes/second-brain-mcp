@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from ..identity import Identity
+    from ..identity import Identity, KeyState
 
 
 @runtime_checkable
@@ -271,12 +271,18 @@ class VaultStore(Protocol):
     # API key lifecycle (MULTIUSER_PLAN P4)
     # ------------------------------------------------------------------
 
-    def get_identity_for_key(self, key_hash: str) -> Identity | None:
-        """Return an Identity-like object for the given key hash, or None.
+    def get_identity_for_key(self, key_hash: str) -> Identity | KeyState | None:
+        """Resolve a key hash to an Identity, KeyState.REVOKED, or None (unknown).
 
-        Returns None if the key is unknown OR has been revoked (revoked_at IS NOT NULL).
+        The three outcomes must stay distinct: auth.py falls back to an env-key
+        admin identity on None, so a revoked key reported as None would be
+        promoted to admin rather than denied.
         DuckDB (single-user) always returns None → auth.py falls back to env-key admin.
         """
+        ...
+
+    def count_active_api_keys(self) -> int:
+        """Number of un-revoked keys, so auth can stay on with no env key set."""
         ...
 
     def register_api_key(self, key_hash: str, user_id: str, role: str) -> None:
