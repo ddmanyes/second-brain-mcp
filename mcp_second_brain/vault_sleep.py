@@ -292,9 +292,27 @@ def run_sleep(
         archive.write_text(original, encoding="utf-8")
         note_path.write_text(compressed, encoding="utf-8")
 
+        # Phase 4C: render compressed note to PNG snapshot at the correct tier, then patch
+        # the frontmatter's token_est with the value measured off the actual rendered PNG.
+        # The TIERS[tier]["token_est"] baked in above is only a placeholder until this point —
+        # render_note_to_png's full_page screenshot grows taller with note length, so the
+        # fixed per-tier number can be off by several times (and even had the wrong sign on
+        # the "tokens saved" figure shown to callers). See
+        # 快照-png-的-token-經濟實測-壓縮後讀取反而更貴 (2026-08-18).
+        snapshot_path = None
+        try:
+            snap = _fig.render_note_to_png(rel, vault, tier)
+            if snap:
+                snapshot_path = str(snap)
+                real_tokens = _fig._estimate_image_tokens(snap)
+                frontmatter.set_fields_in_file(note_path, {"token_est": str(real_tokens)})
+        except Exception:
+            pass
+
         try:
             with vault_db._connect() as con:
-                # upsert compressed original (now active, with consolidation frontmatter)
+                # upsert compressed original (now active, with consolidation frontmatter,
+                # including the real token_est patched in just above)
                 vault_db.upsert_note(con, vault, note_path)
                 # mark original as archived
                 con.execute(
@@ -307,14 +325,6 @@ def run_sleep(
                     "UPDATE notes SET status = 'archive_backup' WHERE path = ?",
                     [str(archive.relative_to(vault))],
                 )
-        except Exception:
-            pass
-
-        # Phase 4C: render compressed note to PNG snapshot at the correct tier
-        snapshot_path = None
-        try:
-            snap = _fig.render_note_to_png(rel, vault, tier)
-            snapshot_path = str(snap) if snap else None
         except Exception:
             pass
 

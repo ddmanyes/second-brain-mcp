@@ -30,6 +30,38 @@ class TestSnapshotTiers:
 
 
 # ---------------------------------------------------------------------------
+# Phase 4B — _estimate_image_tokens (fix-2026-08-18: downsample cap)
+# ---------------------------------------------------------------------------
+
+class TestEstimateImageTokens:
+    def _make_png(self, tmp_path, w, h):
+        from PIL import Image
+        p = tmp_path / "snap.png"
+        Image.new("RGB", (w, h)).save(p)
+        return p
+
+    def test_small_image_uses_raw_dims(self, tmp_path):
+        # well under the cap — no downsampling, matches the naive formula
+        p = self._make_png(tmp_path, 1024, 1024)
+        assert figures._estimate_image_tokens(p) == int((1024 / 28) * (1024 / 28))
+
+    def test_tall_image_is_capped_before_estimating(self, tmp_path):
+        # a full-page snapshot's long edge (height) exceeds the API's downsample cap —
+        # raw-pixel math would overestimate by ~3x if the cap isn't applied first
+        p = self._make_png(tmp_path, 1280, 4455)
+        raw = int((1280 / 28) * (4455 / 28))
+        capped = figures._estimate_image_tokens(p)
+        assert capped < raw
+        # matches applying the cap by hand: long edge (4455) -> 2576, width scaled to match
+        k = 2576 / 4455
+        expected = max(1, int((int(1280 * k) / 28) * (int(4455 * k) / 28)))
+        assert capped == expected
+
+    def test_missing_file_falls_back_to_base_tier(self, tmp_path):
+        assert figures._estimate_image_tokens(tmp_path / "nope.png") == figures.SNAPSHOT_TIERS["base"]["token_est"]
+
+
+# ---------------------------------------------------------------------------
 # Phase 4B — Slug / path helpers
 # ---------------------------------------------------------------------------
 

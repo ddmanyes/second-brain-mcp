@@ -353,12 +353,23 @@ def make_figure_thumbnail(
         return None
 
 
-def _estimate_image_tokens(image_path: Path) -> int:
-    """Rough Anthropic-vision token estimate from pixel dims (~1 token per 28x28 patch)."""
+def _estimate_image_tokens(image_path: Path, cap: int = 2576) -> int:
+    """Rough Anthropic-vision token estimate from pixel dims (~1 token per 28x28 patch).
+
+    The vision API downsamples any image whose long edge exceeds ``cap`` pixels before
+    tokenizing it, so the cap must be applied to the dimensions *first* — estimating
+    straight off the raw pixel size overestimates a tall/narrow image by ~3x (a 1280x4455
+    full-page snapshot: 7,272 tokens off raw pixels vs. ~2,430 once resized to a 2576px
+    long edge, which is what the API actually charges for). See
+    快照-png-的-token-經濟實測-壓縮後讀取反而更貴 (2026-08-18).
+    """
     try:
         from PIL import Image as _PILImage
         with _PILImage.open(image_path) as im:
             w, h = im.size
+        if max(w, h) > cap:
+            k = cap / max(w, h)
+            w, h = int(w * k), int(h * k)
         return max(1, int((w / 28) * (h / 28)))
     except Exception:
         return SNAPSHOT_TIERS["base"]["token_est"]
@@ -708,7 +719,7 @@ def render_note_to_png(
     out_path = out_dir / f"snapshot_{tier}.png"
 
     if out_path.exists():
-        vault_db.update_snapshot(note_path, str(out_path), tier, cfg["token_est"])
+        vault_db.update_snapshot(note_path, str(out_path), tier, _estimate_image_tokens(out_path))
         return out_path
 
     md_text = md_file.read_text(encoding="utf-8")
@@ -741,7 +752,7 @@ def render_note_to_png(
         tmp_html.unlink(missing_ok=True)
 
     if out_path.exists():
-        vault_db.update_snapshot(note_path, str(out_path), tier, cfg["token_est"])
+        vault_db.update_snapshot(note_path, str(out_path), tier, _estimate_image_tokens(out_path))
         return out_path
     return None
 
@@ -760,6 +771,6 @@ def snapshot_note(note_path: str, vault: Path, tier: str = "base") -> dict:
         "success": True,
         "path": str(out),
         "tier": tier,
-        "token_est": SNAPSHOT_TIERS[tier]["token_est"],
+        "token_est": _estimate_image_tokens(out),
         "size_kb": size_kb,
     }

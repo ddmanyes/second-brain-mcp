@@ -200,6 +200,25 @@ class TestRunSleep:
         assert result["processed"] == 0
         assert result["candidates"] == 0
 
+    def test_token_est_uses_real_snapshot_measurement(self, vault, tmp_path):
+        """fix-2026-08-18: token_est in the written frontmatter must come from measuring the
+        actual rendered PNG, not the fixed per-tier placeholder — a full-page screenshot's
+        real height varies with note length, so the tier default can be off by several times."""
+        fake_png = tmp_path / "fake_snapshot.png"
+        fake_png.write_bytes(b"")  # never opened — _estimate_image_tokens is mocked below
+        real_measured_tokens = 12345  # deliberately far from any TIERS[...]["token_est"]
+
+        with patch.object(vault_sleep, "_compress_with_gemini", return_value=None), \
+             patch.object(vault_sleep, "_compress_with_claude", return_value=None), \
+             patch.object(vault_sleep, "_fig") as mock_fig:
+            mock_fig.render_note_to_png.return_value = fake_png
+            mock_fig._estimate_image_tokens.return_value = real_measured_tokens
+            vault_sleep.run_sleep(vault, min_age_days=1, dry_run=False)
+
+        note = vault / "30-resources/old-note.md"
+        assert f"token_est: {real_measured_tokens}" in note.read_text()
+        mock_fig._estimate_image_tokens.assert_called_once_with(fake_png)
+
 
 # ---------------------------------------------------------------------------
 # Phase 5 — prune_archive
