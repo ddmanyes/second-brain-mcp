@@ -43,15 +43,25 @@ def set_fields(content: str, fields: dict[str, str]) -> str:
         header = "---\n" + "\n".join(f"{k}: {v}" for k, v in fields.items()) + "\n---\n\n"
         return header + content
 
-    fm_text = match.group(1)
+    # Trailing newline guarantees the block-style pattern below always has a line ending to
+    # anchor on, even when the target field is the last line in the frontmatter block.
+    fm_text = match.group(1) + "\n"
     for key, value in fields.items():
         line = f"{key}: {value}"
         if re.search(rf"^{re.escape(key)}:", fm_text, re.MULTILINE):
-            # Replace via a callable so backreferences/metacharacters in ``value`` stay literal.
-            fm_text = re.sub(rf"^{re.escape(key)}:.*$", lambda _: line, fm_text, flags=re.MULTILINE)
+            # A field may be written YAML block-style (``key:`` on its own line, followed by
+            # indented ``- item`` lines) instead of inline (``key: [a, b]``). Replacing only
+            # the ``key:`` line left those indented items behind as orphaned, invalid YAML —
+            # this was fix-2026-08-18-update-note-破壞-block-style-related-frontmatter.
+            # Match the key line *and* any trailing block-list items, so both styles collapse
+            # to the single inline line callers pass in. Replace via a callable so
+            # backreferences/metacharacters in ``value`` stay literal.
+            block_pattern = rf"^{re.escape(key)}:[^\n]*\n(?:[ \t]+-[^\n]*\n)*"
+            fm_text = re.sub(block_pattern, lambda _: line + "\n", fm_text, count=1, flags=re.MULTILINE)
         else:
-            fm_text += f"\n{line}"
+            fm_text = fm_text.rstrip("\n") + f"\n{line}\n"
 
+    fm_text = fm_text.rstrip("\n")
     return f"---\n{fm_text}\n---\n\n" + content[match.end():]
 
 

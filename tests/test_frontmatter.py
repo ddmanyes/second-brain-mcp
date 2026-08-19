@@ -67,6 +67,32 @@ def test_body_line_starting_with_field_is_untouched():
     assert out == "---\nstatus: archived\n---\n\nstatus: this is body text\n"
 
 
+# --- block-style field replacement (fix-2026-08-18) -------------------------------------
+
+def test_block_style_field_is_fully_replaced():
+    """Regression: replacing a block-style ``key:\\n  - a\\n  - b`` must consume the list
+    items too, or they're left behind as orphaned, invalid YAML under the new inline value."""
+    content = '---\ntitle: x\nrelated:\n  - "[[a/b]]"\n  - "[[c/d]]"\nstatus: active\n---\n\nbody\n'
+    out = fm.set_fields(content, {"related": "[[[e/f]]]"})
+    assert out == '---\ntitle: x\nrelated: [[[e/f]]]\nstatus: active\n---\n\nbody\n'
+    assert "[[a/b]]" not in out
+    assert "[[c/d]]" not in out
+
+
+def test_block_style_field_at_end_of_frontmatter():
+    """Same as above but the block is the last field before the closing ``---``."""
+    content = '---\ntitle: x\nrelated:\n  - "[[a/b]]"\n---\n\nbody\n'
+    out = fm.set_fields(content, {"related": "[[[e/f]]]"})
+    assert out == '---\ntitle: x\nrelated: [[[e/f]]]\n---\n\nbody\n'
+
+
+def test_inline_field_unaffected_by_block_handling():
+    """Existing inline-style fields keep working exactly as before."""
+    content = "---\nrelated: [[[a/b]]]\n---\n\nbody\n"
+    out = fm.set_fields(content, {"related": "[[[c/d]]]"})
+    assert out == "---\nrelated: [[[c/d]]]\n---\n\nbody\n"
+
+
 # --- fidelity: unicode / verbatim list -------------------------------------------------
 
 def test_unicode_value_preserved_verbatim():
