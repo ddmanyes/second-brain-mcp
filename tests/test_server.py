@@ -285,6 +285,28 @@ class TestNewNoteProjectRouting:
             result = server.new_note("coding", "my-project phase-1", tags="my-project")
         assert "10-projects/my-project/phases" in result
 
+    def test_coding_fix_prefixed_routes_to_project_fixes(self, registry_vault, monkeypatch):
+        """E5 (fix-2026-08-18): a fix-* postmortem shouldn't land in phases/ and need a
+        manual move — it routes straight to fixes/."""
+        from mcp_second_brain import server
+        monkeypatch.setattr(server, "VAULT", registry_vault)
+        with patch.object(server, "_extract_semantic_keywords_via_gemini", return_value=[]), \
+             patch.object(server, "_inject_related_links", return_value=0), \
+             patch("mcp_second_brain.vault_db._connect"):
+            result = server.new_note("coding", "Fix update_note frontmatter bug", tags="my-project")
+        assert "10-projects/my-project/fixes" in result
+        assert "phases" not in result
+
+    def test_coding_non_fix_still_routes_to_project_phases(self, registry_vault, monkeypatch):
+        """Guard against over-matching: only a fix-* slug should divert from phases/."""
+        from mcp_second_brain import server
+        monkeypatch.setattr(server, "VAULT", registry_vault)
+        with patch.object(server, "_extract_semantic_keywords_via_gemini", return_value=[]), \
+             patch.object(server, "_inject_related_links", return_value=0), \
+             patch("mcp_second_brain.vault_db._connect"):
+            result = server.new_note("coding", "prefix-unrelated-note", tags="my-project")
+        assert "10-projects/my-project/phases" in result
+
     def test_research_routes_to_project_research(self, registry_vault, monkeypatch):
         from mcp_second_brain import server
         monkeypatch.setattr(server, "VAULT", registry_vault)

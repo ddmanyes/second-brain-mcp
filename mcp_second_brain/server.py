@@ -542,6 +542,8 @@ def new_note(note_type: str, title: str, content: str = "", tags: str = "") -> s
       coding → {project}/phases/, research/paper/finding → {project}/research/,
       resource/reference/tool → {project}/docs/
     decision/adr always go to decisions/; project always goes to 10-projects/.
+    A coding-type note whose title slug starts with "fix-" routes to {project}/fixes/
+    instead of phases/ — a postmortem isn't an in-flight phase plan.
 
     Args:
         note_type: Type of note — decision, project, research, coding, resource, or inbox
@@ -552,10 +554,17 @@ def new_note(note_type: str, title: str, content: str = "", tags: str = "") -> s
     nt = note_type.lower()
     registry = _load_project_registry()
     matched_slug = _detect_project_slug(title, tags, registry)
+    slug = _slugify(title)
 
     if matched_slug and nt in _PROJECT_SUBTYPE_MAP:
         proj_folder = registry[matched_slug]
         subfolder = _PROJECT_SUBTYPE_MAP[nt]
+        if subfolder == "phases" and slug.startswith("fix-"):
+            # A fix-* note filed under note_type="coding" is a postmortem, not an in-flight
+            # phase plan — route it straight to fixes/ so it doesn't need a manual move (and
+            # its cross-references updated by hand) afterward. See E5 in
+            # litnet-抽取稀疏的定案根因-120-秒-timeout... (2026-08-18).
+            subfolder = "fixes"
         folder = f"{proj_folder}/{subfolder}"
         _, tmpl_rel = NOTE_CONFIG.get(nt, _DEFAULT_CONFIG)
     else:
@@ -574,7 +583,6 @@ def new_note(note_type: str, title: str, content: str = "", tags: str = "") -> s
     if content:
         filled += f"\n{content}\n"
 
-    slug = _slugify(title)
     dest = VAULT / folder / f"{slug}.md"
     dest.parent.mkdir(parents=True, exist_ok=True)
 
