@@ -441,3 +441,11 @@ Task 14 前必須完成排程現況、三服務重啟與回滾條件檢查；Task 14 未通過前不建立定期
 - Skill commit: `0626260 feat: define safe article housekeeping workflow`.
 - Safety: `sync_index`, merge, archive, delete, sleep, consolidate, and prune remain recommendations only.
 - Verification: no QA FAIL; two `LANG002` warnings are reserved for Task 13; `quick_validate.py` and `git diff --check` passed.
+
+### 2026-08-29 - Task 13 completed (Skill QA gate)
+
+- [x] Task 0-13: the Skill passed structure, safety-contract, controlled-language, and semantic-preservation review.
+- [ ] Task 14-15: not started.
+- Skill commit: `5d45e89 test: validate article housekeeper skill`.
+- QA result: PASS with zero FAIL and zero WARN; `quick_validate.py` reports the Skill as valid.
+- Forward-test note: the first live manual run remains in Task 15 after deployment and service verification.
