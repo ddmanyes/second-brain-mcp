@@ -6,9 +6,13 @@ or an index, which keeps it safe to reuse from MCP tools and maintenance CLIs.
 
 from __future__ import annotations
 
+import re
+import unicodedata
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
 from .note_row import parse_frontmatter
@@ -25,6 +29,8 @@ _ISSUE_KEYS = (
     "stale_sources",
 )
 _REQUIRED_FRONTMATTER = ("date", "status", "title", "type")
+_DOI_RE = re.compile(r"10\.\d{4,9}/[-._;()/:a-z0-9]+", re.IGNORECASE)
+_TRACKING_QUERY_KEYS = {"fbclid", "gclid", "mc_cid", "mc_eid"}
 
 
 def _markdown_files(vault: Path) -> tuple[list[Path], list[str]]:
@@ -82,6 +88,65 @@ def _empty_issues() -> dict[str, list[dict]]:
     return {key: [] for key in _ISSUE_KEYS}
 
 
+def _normalize_doi(value: str) -> str | None:
+    match = _DOI_RE.search(value.strip())
+    if not match:
+        return None
+    return match.group(0).rstrip(".,;").casefold()
+
+
+def _canonical_url(value: str) -> str | None:
+    try:
+        parsed = urlsplit(value.strip())
+    except ValueError:
+        return None
+    if parsed.scheme.casefold() not in {"http", "https"} or not parsed.hostname:
+        return None
+
+    scheme = parsed.scheme.casefold()
+    host = parsed.hostname.casefold()
+    port = parsed.port
+    if port and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
+        host = f"{host}:{port}"
+
+    path = parsed.path or "/"
+    if path != "/":
+        path = path.rstrip("/")
+
+    query_items = []
+    for key, item_value in parse_qsl(parsed.query, keep_blank_values=True):
+        lowered = key.casefold()
+        if lowered.startswith("utm_") or lowered in _TRACKING_QUERY_KEYS:
+            continue
+        query_items.append((key, item_value))
+    query = urlencode(sorted(query_items))
+
+    return urlunsplit((scheme, host, path, query, ""))
+
+
+def _normalize_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    normalized = normalized.replace("_", " ")
+    return " ".join(re.sub(r"[^\w\s]", " ", normalized).split())
+
+
+def _duplicate_match_key(frontmatter: dict[str, str]) -> str | None:
+    source = frontmatter.get("source", "").strip()
+    doi = _normalize_doi(frontmatter.get("doi", "")) or _normalize_doi(source)
+    if doi:
+        return f"doi:{doi}"
+
+    canonical_url = _canonical_url(source)
+    if canonical_url:
+        return f"url:{canonical_url}"
+
+    title = _normalize_text(frontmatter.get("title", ""))
+    normalized_source = _normalize_text(source)
+    if title and normalized_source:
+        return f"title_source:{title}|{normalized_source}"
+    return None
+
+
 def audit_article_records(
     vault: Path | str,
     *,
@@ -117,6 +182,7 @@ def audit_article_records(
     article_notes = 0
     research_notes = 0
     social_notes = 0
+    duplicate_paths: dict[str, list[str]] = defaultdict(list)
 
     for markdown_file in markdown_files:
         relative_path = markdown_file.relative_to(root).as_posix()
@@ -139,20 +205,41 @@ def audit_article_records(
                 missing_frontmatter.append(
                     {"path": relative_path, "missing_fields": missing}
                 )
+            match_key = _duplicate_match_key(frontmatter)
+            if match_key:
+                duplicate_paths[match_key].append(relative_path)
+
+    exact_duplicate_groups = [
+        {
+            "match_key": match_key,
+            "paths": sorted(paths),
+            "confidence": "exact",
+        }
+        for match_key, paths in sorted(duplicate_paths.items())
+        if len(paths) > 1
+    ]
 
     safe_indexed_notes = (
         len(markdown_files) if indexed_notes is None else max(0, int(indexed_notes))
     )
     issues = _empty_issues()
     issues["missing_frontmatter"] = missing_frontmatter[:limit]
+    issues["exact_duplicate_groups"] = exact_duplicate_groups[:limit]
     totals = {key: 0 for key in _ISSUE_KEYS}
     totals["missing_frontmatter"] = len(missing_frontmatter)
-    truncated = len(missing_frontmatter) > limit
+    totals["exact_duplicate_groups"] = len(exact_duplicate_groups)
+    truncated = (
+        len(missing_frontmatter) > limit or len(exact_duplicate_groups) > limit
+    )
 
     recommended_actions: list[str] = []
     if missing_frontmatter:
         recommended_actions.append(
             "Review the reported notes and add the required frontmatter fields."
+        )
+    if exact_duplicate_groups:
+        recommended_actions.append(
+            "Review exact duplicate candidates manually before any merge or deletion."
         )
 
     return {

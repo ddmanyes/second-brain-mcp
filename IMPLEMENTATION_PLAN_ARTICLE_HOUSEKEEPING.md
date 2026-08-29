@@ -373,3 +373,10 @@ Task 14 前必須完成排程現況、三服務重啟與回滾條件檢查；Task 14 未通過前不建立定期
 - [ ] Task 4–15：尚未開始
 - 新增 DOI 優先、canonical URL 去追蹤參數、normalized title + source 與防語意誤判 fixtures。
 - Red 驗證符合預期：DOI duplicate group 仍為空，單一測試 `1 failed, 7 deselected`。
+
+### 2026-08-29 — Task 4 completed (Green)
+
+- [x] Task 0–4：exact duplicate detection 完成
+- [ ] Task 5–15：尚未開始
+- 實作 DOI → canonical URL → normalized title + source 的優先匹配，所有候選固定 `confidence=exact`。
+- 驗證：`tests/test_article_audit.py` → `8 passed`，語意相似防誤判 fixture 通過。
