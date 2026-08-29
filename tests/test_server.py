@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -195,6 +196,42 @@ class TestAuditArticleRecordsMCPContract:
 # ---------------------------------------------------------------------------
 # Phase 4 — read_note_as_image
 # ---------------------------------------------------------------------------
+
+class TestSnapshotNoteTool:
+    def test_renderer_runs_outside_asyncio_event_loop(
+        self, vault, monkeypatch, tmp_path
+    ):
+        from mcp_second_brain import server
+
+        monkeypatch.setattr(server, "VAULT", vault)
+        snapshot = tmp_path / "snapshot.png"
+        snapshot.write_bytes(b"\x89PNG\r\n\x1a\n")
+        caller_thread = threading.get_ident()
+        renderer_threads = []
+
+        def fake_snapshot(note_path, vault_path, tier):
+            renderer_threads.append(threading.get_ident())
+            with pytest.raises(RuntimeError, match="no running event loop"):
+                asyncio.get_running_loop()
+            return {
+                "success": True,
+                "path": str(snapshot),
+                "tier": tier,
+                "token_est": 100,
+                "size_kb": 0,
+            }
+
+        monkeypatch.setattr(server._fig, "snapshot_note", fake_snapshot)
+        content, _ = _call_mcp(
+            server,
+            "snapshot_note_tool",
+            {"note_path": "10-projects/test-note.md", "tier": "small"},
+        )
+
+        assert content[0].text.startswith("Snapshot saved:")
+        assert renderer_threads == [renderer_threads[0]]
+        assert renderer_threads[0] != caller_thread
+
 
 class TestReadNoteAsImage:
     def test_note_not_found_returns_error(self, vault, monkeypatch):

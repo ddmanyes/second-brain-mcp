@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 from typing import Annotated, Literal, TypedDict
@@ -1783,6 +1784,16 @@ def search_figures(query: str) -> str:
     return "\n".join(lines)
 
 
+def _snapshot_note_in_worker(note_path: str, tier: str) -> dict:
+    """Run Playwright's sync API outside FastMCP's asyncio event loop."""
+    with ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix="snapshot-note",
+    ) as executor:
+        future = executor.submit(_fig.snapshot_note, note_path, VAULT, tier)
+        return future.result()
+
+
 @write_tool(target="note_path")
 def snapshot_note_tool(note_path: str, tier: str = "base") -> str:
     """Render a markdown note to PNG snapshot for token-efficient storage.
@@ -1792,7 +1803,7 @@ def snapshot_note_tool(note_path: str, tier: str = "base") -> str:
         tier: Resolution tier — 'large' (400 tokens), 'base' (256), 'small' (100)
     """
     full = _vault_path(note_path)
-    result = _fig.snapshot_note(note_path, VAULT, tier)
+    result = _snapshot_note_in_worker(note_path, tier)
     if not result["success"]:
         return result.get("error") or f"Rendering failed for: {note_path}"
 

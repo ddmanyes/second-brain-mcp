@@ -746,7 +746,11 @@ def render_note_to_png(
             file=sys.stderr,
         )
         return None
-    except Exception:
+    except Exception as exc:
+        print(
+            f"[figures] snapshot rendering failed: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
         return None
     finally:
         tmp_html.unlink(missing_ok=True)
