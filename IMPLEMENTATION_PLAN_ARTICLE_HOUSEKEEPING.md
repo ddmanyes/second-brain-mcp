@@ -349,3 +349,12 @@ Task 14 前必須完成排程現況、三服務重啟與回滾條件檢查；Task 14 未通過前不建立定期
 - 原 worktree 保留 `mcp_second_brain/llm_cli.py` 與 `tests/test_llm_cli.py` 的未提交修改。
 - 已從 `7234342` 建立 `feat/article-housekeeping-audit`，路徑為 `/Users/lab_center/git-worktrees/sb-article-housekeeping`。
 - Windows 本機鏡像只用於 patch 準備；測試與 commit 在 mac-mini 隔離 worktree 執行。
+
+### 2026-08-29 — Task 1 completed (Red)
+
+- [x] Task 0：固化 repo 計畫與 atomic commit
+- [x] Task 1：定義 article audit 基礎契約測試
+- [ ] Task 2–15：尚未開始
+- mac-mini 非互動 SSH 的 PATH 不含 `uv`；其 lockfile 亦因 `markitdown[all]` prerelease 解析衝突無法建立完整 `.venv`。
+- 依 `NEW_MACHINE_SETUP.md` 改用既有 `/Users/lab_center/.venvs/second-brain/bin/python`，並以 `PYTHONPATH="$PWD"` 指向隔離 worktree。
+- Red 驗證符合預期：`ModuleNotFoundError: No module named 'mcp_second_brain.article_audit'`。
