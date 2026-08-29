@@ -465,3 +465,15 @@ Task 14 前必須完成排程現況、三服務重啟與回滾條件檢查；Task 14 未通過前不建立定期
 - Skill sync: Drive canonical, Windows `~/.agents/skills`, and macOS `~/.agents/skills` copies match the validated source; remote QA is PASS.
 - Scheduler precheck: `com.user.vault-janitor` is active weekly at 07:30 with `--push --execute`; this deployment did not change it.
 - Rollback artifacts: dated plist and start-script backups remain on the central host; the original dirty Git worktree was not modified.
+
+### 2026-08-29 - Task 15 completed (Manual replay and heartbeat)
+
+- [x] Task 0-15: implementation, Skill deployment, live replay, and recurring automation are complete.
+- Snapshot root cause: Playwright Sync API was invoked inside FastMCP's asyncio event loop.
+- Snapshot fix commit: `d6ac09e fix: run note snapshots outside async event loop`; the renderer now runs in a worker thread and logs content-free exception details.
+- Verification: focused snapshot/server tests -> `68 passed`; the full pytest suite completed with exit code 0.
+- Manual replay: weekly run key `article-housekeeping:2026-W35`; managed index and append-only audit log were updated through port 9100.
+- Idempotency proof: one start marker, one end marker, one weekly audit marker, and 133 unique candidate rows after two consecutive runs.
+- Safety: `index_gap=44`; `sync_index` remained recommendation-only, and no merge, archive, delete, sleep, consolidate, prune, or index rebuild ran.
+- Automation: active heartbeat `weekly-second-brain-article-housekeeping`, every Monday at 13:30 in the local Asia/Taipei schedule.
+- Final live probe: ports 9100 and 9104 expose 39 tools with distinct vault IDs and unchanged read-only audit hashes; port 9106 still rejects unauthenticated access with 401.
