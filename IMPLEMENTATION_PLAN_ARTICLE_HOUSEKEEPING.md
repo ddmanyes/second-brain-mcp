@@ -433,3 +433,11 @@ Task 14 前必須完成排程現況、三服務重啟與回滾條件檢查；Task 14 未通過前不建立定期
 - Skill source branch: `feat/sb-article-housekeeper` in `antigravity-skills-zht`.
 - Skill commit: `5b06d65 feat: add second brain article housekeeper skill`.
 - Verification: `lint_skill.py` -> PASS with no warnings; `quick_validate.py` -> valid; `git diff --check` passed.
+
+### 2026-08-29 - Task 12 completed (Safe workflow contract)
+
+- [x] Task 0-12: the idempotent index and append-only audit workflow is defined.
+- [ ] Task 13-15: not started.
+- Skill commit: `0626260 feat: define safe article housekeeping workflow`.
+- Safety: `sync_index`, merge, archive, delete, sleep, consolidate, and prune remain recommendations only.
+- Verification: no QA FAIL; two `LANG002` warnings are reserved for Task 13; `quick_validate.py` and `git diff --check` passed.
