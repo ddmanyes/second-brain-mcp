@@ -257,7 +257,7 @@ flowchart TD
 - [x] **4.3** 清理：`pkill obsidian-mcp` 清掉 **18 個洩漏進程**（fallback obsidian 由 active client 按需重生）；移除本機+桌面的舊 second-brain stdio 設定；killed 3 個殘留 stdio duckdb-writer server。
 - [x] **4.4** cron → Postgres：**採行解法 (b)，drift 風險已關閉**。
   - 🔴 **背景**：`vault_janitor`/`vault_sleep` 用 `~/.venvs/second-brain`（無 psycopg）且**直接 `vault_db._connect()`/`duckdb.connect()`，繞過 store 抽象層** → 獨立 DuckDB 寫者；`vault_sleep` 還用 `_blob_to_vec`/`_cosine` 對 DuckDB BLOB 做 Python 端向量運算（DuckDB 專屬）。cron 會**改 markdown**（封存），但無排程對 Postgres 重 sync → Postgres 會與 markdown 脫節。
-  - ✅ **已做 (b) 最小可行**：新增 launchd `com.user.second-brain-pg-sync`（`launchd/run_pg_sync.py`，每 1800s 對 Postgres 跑 `sync_incremental`，fresh 時 0.0s no-op）→ 自動撿回 cron 的 markdown 變更，Postgres 不再脫節。plist 範本（去敏）已入 repo。
+  - ✅ **已做 (b) 最小可行**：新增 launchd `com.user.second-brain-pg-sync`（`launchd/run_pg_sync.py`，每逢 `:00`、`:30` 對 Postgres 跑 `sync_incremental`，fresh 時 0.0s no-op）→ 自動撿回 cron 的 markdown 變更，Postgres 不再脫節。排程採 `StartCalendarInterval`；`StartInterval=1800` 曾在中央主機停滯，已同步修正去敏 plist 範本。
   - ⏳ **(a) 仍可選**：把 janitor/sleep 改用 `get_store()` 並把向量運算下推 pgvector，徹底移除 DuckDB 寫者；目前它們只維護 fallback DuckDB（無競爭、不影響 Postgres 正確性），故降為非急迫的後續工作。
 - [x] **4.5** 驗證：穩態 `pgrep mcp_second_brain.server`（stdio）= **0**、中央 HTTP server = **1**，無多寫者。
 - [x] **4.6** git commit: `chore(P4): repoint clients to central HTTP, kill stdio duckdb-writers + obsidian zombies`（4.4 cron 重構另開工作）

@@ -49,15 +49,14 @@
       57s，**0 崩潰**；再跑一次 0.7s 仍乾淨。證明 `ON CONFLICT` upsert 正常、可冪等，先前崩潰純粹是
       **前次 abort 留下的損壞 db/WAL 狀態**。舊 db 備份於 `vault.db.bak-20260723`、WAL 備份 `vault.db.wal.bak-20260723`。
       教訓：DuckDB 若被 C++ abort 中斷，殘留 WAL 可能導致下次 replay 撞 PK → 需刪 db+wal 重建。
-- [ ] **launchd 排程「重啟」← 實測後結論修正（2026-07-23）** — 原記憶「決策 B 維持本機」**已過時**。
-      實測：mac-mini（Tailscale 100.87.59.15）**在線**，`:9100` SB server **回 HTTP 401（server 活著、
-      強制 X-API-Key）** → **mac-mini 已是 live 中央主機**；本機無任何 SB process。因此：
-      **本機不可重啟** server/pg-sync/pg-backup（會變雙寫者、Drive 衝突）；寫 markdown 的 janitor/analyzer
-      也只能在一台跑。**正確動作 = SSH 進 mac-mini 啟用該機排程**（需 mac-mini 開 SSH）。本機維持 client。
+- [x] **中央主機 launchd 排程已啟用（2026-08-29）** — mac-mini（Tailscale
+      `100.87.59.15`）是唯一寫入主機；client 維持 HTTP MCP 連線，不啟動本機 server 或維護排程。
+      `com.user.vault-janitor` 每日 07:30 以 `--push --execute` 執行，
+      `com.user.vault-sleep` 每週日 02:00 執行，最近一次 exit code 均為 0。
 - [ ] **（可選）janitor conflict-copy 韌性** — 目前 regex 不吃 Drive 衝突副本（`..._20260701 2.md`、
       `... (1).md`）。已手動清 finance 目錄；如要根治可讓 regex 容忍 ` N` / ` (N)` 後綴或加獨立清理。
 
 ## 相關
 
 - 記憶：`feedback-sb-vault-janitor`
-- 遷移狀態：mac-mini host migration（決策 B 維持本機）
+- 遷移狀態：mac-mini 已是正式中央主機；client 僅透過 HTTP MCP 存取

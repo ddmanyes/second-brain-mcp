@@ -6,7 +6,7 @@
 >
 > **When adding documentation**: modify the relevant section here, then update the Last updated date.
 >
-> **Last updated:** 2026-08-29
+> **Last updated:** 2026-08-30
 
 ---
 
@@ -42,7 +42,9 @@ Postgres directly.
   `X-API-Key: <key>` (auth is enforced when `SB_API_KEY`/`SB_API_KEYS` is set on the server).
   Setup per client type is in [NEW_MACHINE_SETUP.md](NEW_MACHINE_SETUP.md) §A.
 - **Index freshness**: `com.user.second-brain-pg-sync` runs `sync_incremental` against
-  Postgres every 30 min so cron-driven markdown edits don't let the index drift.
+  Postgres at minute `:00` and `:30` via `StartCalendarInterval`, so cron-driven markdown
+  edits do not let the index drift. Keep the source plist template on calendar triggers;
+  `StartInterval=1800` was observed to stall on the central host.
 - **Backups**: `com.user.second-brain-pg-backup` runs `pg_dump` daily (markdown is still
   the real backup; this only speeds recovery).
 
@@ -225,10 +227,11 @@ python mcp_second_brain/vault_janitor.py --execute  # move files
 
 - **Filename regex** groups by leading ticker token; tolerates an optional human-name
   segment (`2890.TW_永豐金_analysis_YYYYMMDD.md`) so all variants share one bucket.
-- **Gaps (handle separately):** `*_analysis_*.json` snapshots and
-  `00_Daily_Briefing_*.md` are NOT covered by the janitor.
-- **⚠️ Schedules currently `.disabled`** — no auto-maintenance runs until the
-  `com.user.*` launchd jobs are re-enabled (paused during mac-mini host migration).
+- **Companion retention:** `*_analysis_*.json` snapshots follow the same newest-per-ticker
+  rule as Markdown analyses; `00_Daily_Briefing_*.md` keeps the newest 14 days.
+- **Active central-host schedules:** `com.user.vault-janitor` runs daily at 07:30 with
+  `--push --execute`; `com.user.vault-sleep` runs Sunday at 02:00. Run these jobs only on
+  the central host to preserve the single-writer discipline.
 - **DuckDB upkeep is opt-in:** Tasks 5–6 (sleep candidates + `sync_all`) touch the local
   DuckDB fallback index and run **only** when `SB_DB_BACKEND=duckdb`. In the Postgres-central
   setup they are skipped (pg-sync owns freshness); this avoids an uncatchable DuckDB C++ abort.

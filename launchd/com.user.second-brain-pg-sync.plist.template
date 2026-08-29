@@ -26,7 +26,16 @@
 	<string>/tmp/second-brain-pg-sync.log</string>
 	<key>StandardOutPath</key>
 	<string>/tmp/second-brain-pg-sync.log</string>
-	<key>StartInterval</key>
-	<integer>1800</integer>
+	<key>StartCalendarInterval</key>
+	<array>
+		<dict>
+			<key>Minute</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>Minute</key>
+			<integer>30</integer>
+		</dict>
+	</array>
 </dict>
 </plist>

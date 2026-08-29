@@ -19,7 +19,7 @@
                   ▲ localhost
    中央 host ─────┤ MCP server :9100（streamable-http，綁 Tailscale IP）
    lab_center     │   SB_DB_BACKEND=postgres、SB_API_KEY=<key>…
-   100.87.59.15   │   + pg-sync（每 30 分）+ pg-backup（每日）
+   100.87.59.15   │   + pg-sync（每逢 :00／:30）+ pg-backup（每日）
                   ▼ Tailscale
    client Mac ─────── 連 http://100.87.59.15:9100/mcp + X-API-Key header
                       （免 venv、免 DuckDB、免 sync — 只要 MCP 設定）
@@ -347,8 +347,10 @@ SB_DB_BACKEND=postgres SB_PG_DSN=… SECOND_BRAIN_PATH="$VAULT" \
 
 | Job | 頻率 | 用途 |
 | --- | --- | --- |
-| `com.user.second-brain-pg-sync` | 每 30 分 | 對 Postgres 跑 `sync_incremental`，撿回 cron 改的 markdown，防索引脫節。 |
+| `com.user.second-brain-pg-sync` | 每逢 :00／:30 | 對 Postgres 跑 `sync_incremental`，撿回 cron 改的 markdown，防索引脫節。使用 `StartCalendarInterval`；實測 `StartInterval=1800` 會停滯。 |
 | `com.user.second-brain-pg-backup` | 每日 04:00 | `pg_dump \| gzip` 到 `PJ_save/backups/second-brain-pg/`，保留近 7 份。 |
+| `com.user.vault-janitor` | 每日 07:30 | 只在中央主機以 `--push --execute` 歸檔過期財經紀錄；pg-sync 會把 Markdown 變更同步到 Postgres。 |
+| `com.user.vault-sleep` | 每週日 02:00 | 只在中央主機執行 Ebbinghaus 維護；DuckDB 專用工作仍只在 DuckDB backend 啟用。 |
 
 ---
 

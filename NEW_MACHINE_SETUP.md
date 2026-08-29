@@ -19,7 +19,7 @@ The current setup is **one central HTTP server + Postgres**, not a local server 
                   ▲ localhost
    central host ──┤ MCP server :9100 (streamable-http, bound to Tailscale IP)
    (always-on)    │   SB_DB_BACKEND=postgres, SB_API_KEY=…
-                  │   + pg-sync (every 30 min) + pg-backup (daily)
+                  │   + pg-sync (:00/:30 calendar triggers) + pg-backup (daily)
                   ▼ Tailscale
    client Macs ───── connect via http://<tailscale-ip>:9100/mcp  +  X-API-Key header
                      (no venv, no DuckDB, no sync — just MCP config)
@@ -204,9 +204,10 @@ Expect `{'synced': N, 'embed_failed': 0}`. (~900 notes ≈ 35 s once embeddings 
 
 | Job | Cadence | Purpose |
 | --- | --- | --- |
-| `com.user.second-brain-pg-sync` | every 30 min | `sync_incremental` against Postgres so cron-driven markdown edits don't let the index drift (`launchd/run_pg_sync.py`). |
+| `com.user.second-brain-pg-sync` | at :00 and :30 | `sync_incremental` against Postgres so cron-driven markdown edits do not let the index drift (`launchd/run_pg_sync.py`). Use `StartCalendarInterval`; `StartInterval=1800` was observed to stall. |
 | `com.user.second-brain-pg-backup` | daily 04:00 | `pg_dump \| gzip` of `sb_personal`/`sb_lab` to `PJ_save/backups/`, keep last 7 (`launchd/run_pg_backup.sh`). |
-| `com.user.vault-janitor` / `com.user.vault-sleep` | weekly | Vault cleanup + Ebbinghaus compression. ⚠️ still write only DuckDB and bypass the store abstraction; `pg-sync` propagates their markdown edits into Postgres. |
+| `com.user.vault-janitor` | daily 07:30 | Runs `--push --execute` on the central host to archive superseded finance records; pg-sync propagates Markdown changes into Postgres. |
+| `com.user.vault-sleep` | Sunday 02:00 | Runs Ebbinghaus maintenance on the central host; DuckDB-specific upkeep remains gated to the DuckDB backend. |
 
 ---
 

@@ -53,7 +53,7 @@ The vault directory and templates are created on first run. Then tell your agent
 | `vault_sleep` | Compress old, low-activity notes |
 | `get_agent_instructions` | Serve the full filing SOP (AGENTS.md) to remote agents |
 
-Full tool reference (30+ tools) lives in **[AGENTS.md](AGENTS.md)**.
+Full tool reference (39 tools) lives in **[AGENTS.md](AGENTS.md)**.
 
 Use `search_notes` when you need content, `health_check` when the server or index may be
 unhealthy, and `audit_article_records` when you need a housekeeping report. Audit results

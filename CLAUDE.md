@@ -13,7 +13,7 @@
 - **Index backend 可插拔**：`store/`，由 `SB_DB_BACKEND` 選 `postgres`（中央，pgvector+pg_trgm，多機並發）或 `duckdb`（預設/離線 fallback）。markdown 是正本，index 可由 `sync_all` 重建。
 - **正式拓樸**：單一中央 HTTP server（launchd `com.user.second-brain-remote`，`streamable-http` 綁 Tailscale IP `:9100`，`SB_DB_BACKEND=postgres`）+ Docker Postgres（`sb-pg`，僅 `127.0.0.1:5432`）。
 - **連線**：client 走 `http://<tailscale-ip>:9100/mcp`，帶 header `X-API-Key`（server 設 `SB_API_KEY`/`SB_API_KEYS` 時強制）。Postgres 永不對外，只 server 同機 localhost 連。
-- **排程**：`second-brain-pg-sync`（每 30 分 incremental，防脫節）、`second-brain-pg-backup`（每日 pg_dump）。
+- **排程**：`second-brain-pg-sync`（`StartCalendarInterval` 每逢 `:00`、`:30` incremental，防脫節）、`second-brain-pg-backup`（每日 pg_dump）。
 - **寫入紀律**：所有寫入經中央 server（單一寫者）；client 端 Obsidian 唯讀，避免 Drive 衝突副本。
 - **測試**：Postgres 測試對 `sb_test`（fixture 會 `DELETE` 全表，**絕不可**指向 `sb_personal`/`sb_lab`，`test_postgres_store.py` 有硬 guard）。
 - 詳見 [MIGRATION_PLAN_POSTGRES.md](MIGRATION_PLAN_POSTGRES.md) 與 [AGENTS.md](AGENTS.md) 的 Connection Topology 段。

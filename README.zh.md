@@ -22,6 +22,7 @@
 - **圖級搜尋**——`search_figures("UMAP melanocyte")` 跨整個文獻庫回傳「那一張」panel。
 - **自我組織**——新筆記自動連到相關筆記；常讀的筆記自動萃取可重用規則。
 - **像大腦一樣會遺忘**——Ebbinghaus 排序；冷門筆記自動壓縮（省 60–90% token）。
+- **唯讀文章整理稽核**——檢查文章 metadata、連結、精確重複候選、inbox 時效與來源新鮮度，不改動 vault。
 - **跨 session 連續性**——每個 session 開頭 `get_context()` 自動載入 goals + 熱門筆記 + rules。
 - **可插拔後端**——DuckDB（預設、離線）或 Postgres + pgvector（中央、多機）。自架 embedding 選用；離線時 BM25 fallback。
 
@@ -47,11 +48,15 @@ vault 目錄與模板會在首次啟動時自動建立。之後叫 agent 執行 
 | `get_context` | Session 開頭——goals + 排序後的熱門筆記 + 自動 rules |
 | `save_article` | URL / PDF → Markdown + 圖片 + 向量 |
 | `search_notes` / `search_figures` | 混合 BM25 + 語義搜尋（筆記內文 / 圖片內容） |
+| `audit_article_records` | 有界、唯讀的文章整理與社群來源新鮮度報告 |
 | `new_note` / `update_note` / `append_to_note` | 建立與編輯筆記（自動歸檔、索引、連結） |
 | `vault_sleep` | 壓縮老舊、低活躍度的筆記 |
 | `get_agent_instructions` | 把完整歸檔 SOP（AGENTS.md）提供給遠端 agent |
 
-完整工具清單（30+ 個）見 **[AGENTS.md](AGENTS.md)**。
+完整工具清單（39 個）見 **[AGENTS.md](AGENTS.md)**。
+
+需要內容時使用 `search_notes`；server 或索引可能異常時使用 `health_check`；
+需要文章整理報告時使用 `audit_article_records`。稽核結果不會自動合併、歸檔或刪除筆記。
 
 ## 運作方式
 

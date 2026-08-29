@@ -1,83 +1,83 @@
 ---
-title: "Second Brain ¤å³¹ Housekeeping Skill »P MCP Audit Tool ¹ê§@­pµe"
+title: "Second Brain æ–‡ç«  Housekeeping Skill èˆ‡ MCP Audit Tool å¯¦ä½œè¨ˆç•«"
 date: 2026-08-29
 type: note
-status: active
+status: completed
 tags: [second-brain, mcp, skill, housekeeping, implementation-plan]
-related: [[[10-projects/second-brain/fixes/fix-2026-06-08-mcp-venv-path]], [[00-inbox/mcp-architecture-and-local-vault-design]], [[10-projects/second-brain/phases/second-brain-mcp-2026-07-28-³W½d¾E²¾½LÂI]], [[decisions/¥¼¨Ó¶}©ñ¹êÅç«Ç¤H­û¦@¥Î-mcp-ªº¦s¨ú¬[ºc¿ï¶µ]], [[decisions/¥¼¨Ó¶}©ñ¹êÅç«Ç¤H­û¦@¥Î-mcp-ªº¦s¨ú¬[ºc¿ï¶µ 2]]]
+related: [[[10-projects/second-brain/fixes/fix-2026-06-08-mcp-venv-path]], [[00-inbox/mcp-architecture-and-local-vault-design]], [[10-projects/second-brain/phases/second-brain-mcp-2026-07-28-è¦ç¯„é·ç§»ç›¤é»]], [[decisions/æœªä¾†é–‹æ”¾å¯¦é©—å®¤äººå“¡å…±ç”¨-mcp-çš„å­˜å–æ¶æ§‹é¸é …]], [[decisions/æœªä¾†é–‹æ”¾å¯¦é©—å®¤äººå“¡å…±ç”¨-mcp-çš„å­˜å–æ¶æ§‹é¸é … 2]]]
 ---
 
-# Second Brain ¤å³¹ Housekeeping Skill »P MCP Audit Tool ¹ê§@­pµe
+# Second Brain æ–‡ç«  Housekeeping Skill èˆ‡ MCP Audit Tool å¯¦ä½œè¨ˆç•«
 
 
-## 1. ¥Ø¼Ğ»P¬[ºc¨Mµ¦
+## 1. ç›®æ¨™èˆ‡æ¶æ§‹æ±ºç­–
 
-«Ø¥ß¤@­Ó¥i¥Ñ»·ºİ MCP ½Õ¥Î¡B§¹¥ş°ßÅªªº¤å³¹¬ö¿ı½]®Ö¤u¨ã¡A¨Ã¥Ñ­Ó¤H Codex Skill ­t³d Second Brain ±MÄİªº¾ã²z¬Fµ¦»P³ø§i§ó·s¡C
+å»ºç«‹ä¸€å€‹å¯ç”±é ç«¯ MCP èª¿ç”¨ã€å®Œå…¨å”¯è®€çš„æ–‡ç« ç´€éŒ„ç¨½æ ¸å·¥å…·ï¼Œä¸¦ç”±å€‹äºº Codex Skill è² è²¬ Second Brain å°ˆå±¬çš„æ•´ç†æ”¿ç­–èˆ‡å ±å‘Šæ›´æ–°ã€‚
 
-±Ä¥Î¤T¼h¤À¤u¡G
+æ¡ç”¨ä¸‰å±¤åˆ†å·¥ï¼š
 
-1. **MCP ¦@¥Î¼h**¡G´£¨Ñ³q¥Î¡B°ßÅª¡B¥i´ú¸Õªº¤å³¹½]®Ö¯à¤O¡C
-2. **­Ó¤H Skill ¼h**¡G¸ÑÅª X¡şThreads¡şGitHub Stars ªº­Ó¤H¦P¨Bª¬ºA¡A²£¥Í¾ã²z«ØÄ³¡F¥ô¦ó¼g¤J©Î¦X¨Ö³£¥²¶·¨Ï¥Î¬J¦³¤u¨ã¨Ã¿í¦u½T»{¬yµ{¡C
-3. **Codex Automation ¼h**¡G¨C¶g³ê¿ô Skill¡F¤£¦b MCP server ¤º¥t«Ø±Æµ{¡AÁ×§K»P²{¦³ launchd¡şjanitor ­«½Æ¡C
+1. **MCP å…±ç”¨å±¤**ï¼šæä¾›é€šç”¨ã€å”¯è®€ã€å¯æ¸¬è©¦çš„æ–‡ç« ç¨½æ ¸èƒ½åŠ›ã€‚
+2. **å€‹äºº Skill å±¤**ï¼šè§£è®€ Xï¼Threadsï¼GitHub Stars çš„å€‹äººåŒæ­¥ç‹€æ…‹ï¼Œç”¢ç”Ÿæ•´ç†å»ºè­°ï¼›ä»»ä½•å¯«å…¥æˆ–åˆä½µéƒ½å¿…é ˆä½¿ç”¨æ—¢æœ‰å·¥å…·ä¸¦éµå®ˆç¢ºèªæµç¨‹ã€‚
+3. **Codex Automation å±¤**ï¼šæ¯é€±å–šé†’ Skillï¼›ä¸åœ¨ MCP server å…§å¦å»ºæ’ç¨‹ï¼Œé¿å…èˆ‡ç¾æœ‰ launchdï¼janitor é‡è¤‡ã€‚
 
-²{¦³ `mcp_second_brain/vault_janitor.py` ¤£²¾°£¡C·s¼Ò²Õ©â¥X¥i¦@¥Îªº°ßÅªÀË¬dÅŞ¿è¡Ajanitor ¥i³v¨B§ï¥Î¦P¤@²Õ¨ç¦¡¡C²{¦³±Æµ{¦b AGENTS.md¡]2026-07-23¡^¤´¼Ğ¬° `.disabled`¡A³¡¸p®É¥²¶·¥ı½T»{¥D¾÷²{ªp¡A¤£¥iª½±µ°²³]¤w±Ò¥Î¡C
+ç¾æœ‰ `mcp_second_brain/vault_janitor.py` ä¸ç§»é™¤ã€‚æ–°æ¨¡çµ„æŠ½å‡ºå¯å…±ç”¨çš„å”¯è®€æª¢æŸ¥é‚è¼¯ï¼Œjanitor å¯é€æ­¥æ”¹ç”¨åŒä¸€çµ„å‡½å¼ã€‚è¦åŠƒæ™‚ï¼ˆ2026-08-29ï¼‰æ’ç¨‹åœ¨ AGENTS.md ä»æ¨™ç‚º `.disabled`ï¼Œå› æ­¤éƒ¨ç½²éšæ®µå¿…é ˆå…ˆç¢ºèªä¸»æ©Ÿç¾æ³ï¼Œä¸å¯ç›´æ¥å‡è¨­å·²å•Ÿç”¨ã€‚
 
-## 2. ½d³ò
+## 2. ç¯„åœ
 
-### v1 ¥]§t
+### v1 åŒ…å«
 
-- ¤å³¹¡ş¬ã¨s¡şªÀ¸s¦¬ÂÃµ§°O¼Æ¶q²Î­p
-- vault ÀÉ®×¼Æ»P¯Á¤Şµ§°O¼Æ®t¶Z
-- ¥²­n frontmatter ¯Êº|
-- Ãa±¼ªº wikilink
-- ¥H DOI¡Bcanonical URL¡B¼Ğ·Ç¤Æ title + source §P©wªº**ºë½T­«½Æ­Ô¿ï**
-- X¡şThreads¡şGitHub Stars ¦P¨Bª¬ºAÀÉªº·sÂA«×»P pending ¼Æ¶q
-- inbox ¶W¹L 7 ¤Ñªº¤å³¹­Ô¿ï
-- µ²ºc¤Æ¿é¥X¡B¤å¦rºK­n»P¥i°õ¦æªº«ØÄ³
-- µ²ªGµ§¼Æ¤W­­»P§¹¾ãÁ`¼Æ¡AÁ×§K¤j¶q¤º®e¥~¬ª©Î¶W¥X context
+- æ–‡ç« ï¼ç ”ç©¶ï¼ç¤¾ç¾¤æ”¶è—ç­†è¨˜æ•¸é‡çµ±è¨ˆ
+- vault æª”æ¡ˆæ•¸èˆ‡ç´¢å¼•ç­†è¨˜æ•¸å·®è·
+- å¿…è¦ frontmatter ç¼ºæ¼
+- å£æ‰çš„ wikilink
+- ä»¥ DOIã€canonical URLã€æ¨™æº–åŒ– title + source åˆ¤å®šçš„**ç²¾ç¢ºé‡è¤‡å€™é¸**
+- Xï¼Threadsï¼GitHub Stars åŒæ­¥ç‹€æ…‹æª”çš„æ–°é®®åº¦èˆ‡ pending æ•¸é‡
+- inbox è¶…é 7 å¤©çš„æ–‡ç« å€™é¸
+- çµæ§‹åŒ–è¼¸å‡ºã€æ–‡å­—æ‘˜è¦èˆ‡å¯åŸ·è¡Œçš„å»ºè­°
+- çµæœç­†æ•¸ä¸Šé™èˆ‡å®Œæ•´ç¸½æ•¸ï¼Œé¿å…å¤§é‡å…§å®¹å¤–æ´©æˆ–è¶…å‡º context
 
-### v1 ¤£¥]§t
+### v1 ä¸åŒ…å«
 
-- ¦Û°Ê¦X¨Ö©Î§R°£µ§°O
-- »y·N¬Û¦üµ§°Oªº¦Û°Ê§P©w
-- ¦Û°Ê°õ¦æ `vault_sleep`¡B`consolidate_tool(dry_run=False)` ©Î `prune_archive_tool(dry_run=False)`
-- ¦b MCP server ¤º¥[¤J scheduler
-- §â X¡şThreads ªº¨p¤H¸ô®|»P¬Fµ¦¼g¤J¦@¥Î MCP package
-- ¹ï¥~§ì URL ©ÎÅª¨ú¤£¦b vault ¤ºªºÀÉ®×
+- è‡ªå‹•åˆä½µæˆ–åˆªé™¤ç­†è¨˜
+- èªæ„ç›¸ä¼¼ç­†è¨˜çš„è‡ªå‹•åˆ¤å®š
+- è‡ªå‹•åŸ·è¡Œ `vault_sleep`ã€`consolidate_tool(dry_run=False)` æˆ– `prune_archive_tool(dry_run=False)`
+- åœ¨ MCP server å…§åŠ å…¥ scheduler
+- æŠŠ Xï¼Threads çš„ç§äººè·¯å¾‘èˆ‡æ”¿ç­–å¯«å…¥å…±ç”¨ MCP package
+- å°å¤–æŠ“ URL æˆ–è®€å–ä¸åœ¨ vault å…§çš„æª”æ¡ˆ
 
-## 3. ¹w´ÁÀÉ®×¬[ºc
+## 3. é æœŸæª”æ¡ˆæ¶æ§‹
 
 ```text
 PJ_save/mcp-tools/second-brain/
-¢u¢w¢w IMPLEMENTATION_PLAN_ARTICLE_HOUSEKEEPING.md
-¢u¢w¢w mcp_second_brain/
-¢x   ¢u¢w¢w article_audit.py          # ·s¼W¡G¯Â¨ç¦¡¡B°ßÅª½]®Ö®Ö¤ß
-¢x   ¢u¢w¢w vault_janitor.py          # ­«¥Î article_audit ªº¦@³qÀË¬d
-¢x   ¢|¢w¢w server.py                 # µù¥U audit_article_records
-¢u¢w¢w tests/
-¢x   ¢u¢w¢w test_article_audit.py     # ·s¼W¡G®Ö¤ß³W«h»PÃä¬É´ú¸Õ
-¢x   ¢u¢w¢w test_server.py            # MCP schema¡Bannotations¡B¿é¥X«´¬ù
-¢x   ¢|¢w¢w test_vault_sleep.py       # ¬J¦³¦^Âk´ú¸Õ
-¢u¢w¢w AGENTS.md                     # ¤u¨ã SOP¡B°ßÅª¬É½u
-¢u¢w¢w README.md                     # ¤u¨ã¯Á¤Ş»P½d¨Ò
-¢|¢w¢w CHANGELOG.md
+â”œâ”€â”€ IMPLEMENTATION_PLAN_ARTICLE_HOUSEKEEPING.md
+â”œâ”€â”€ mcp_second_brain/
+â”‚   â”œâ”€â”€ article_audit.py          # æ–°å¢ï¼šç´”å‡½å¼ã€å”¯è®€ç¨½æ ¸æ ¸å¿ƒ
+â”‚   â”œâ”€â”€ vault_janitor.py          # é‡ç”¨ article_audit çš„å…±é€šæª¢æŸ¥
+â”‚   â””â”€â”€ server.py                 # è¨»å†Š audit_article_records
+â”œâ”€â”€ tests/
+â”‚   â”œâ”€â”€ test_article_audit.py     # æ–°å¢ï¼šæ ¸å¿ƒè¦å‰‡èˆ‡é‚Šç•Œæ¸¬è©¦
+â”‚   â”œâ”€â”€ test_server.py            # MCP schemaã€annotationsã€è¼¸å‡ºå¥‘ç´„
+â”‚   â””â”€â”€ test_vault_sleep.py       # æ—¢æœ‰å›æ­¸æ¸¬è©¦
+â”œâ”€â”€ AGENTS.md                     # å·¥å…· SOPã€å”¯è®€ç•Œç·š
+â”œâ”€â”€ README.md                     # å·¥å…·ç´¢å¼•èˆ‡ç¯„ä¾‹
+â””â”€â”€ CHANGELOG.md
 
-­Ó¤H Skills ®Ú¥Ø¿ı/
-¢|¢w¢w sb-article-housekeeper/
-    ¢u¢w¢w SKILL.md
-    ¢u¢w¢w references/
-    ¢x   ¢|¢w¢w housekeeping-contract.md
-    ¢|¢w¢w agents/
-        ¢|¢w¢w openai.yaml           # ­Y skill-creator §P©w»İ­n
+å€‹äºº Skills æ ¹ç›®éŒ„/
+â””â”€â”€ sb-article-housekeeper/
+    â”œâ”€â”€ SKILL.md
+    â”œâ”€â”€ references/
+    â”‚   â””â”€â”€ housekeeping-contract.md
+    â””â”€â”€ agents/
+        â””â”€â”€ openai.yaml           # è‹¥ skill-creator åˆ¤å®šéœ€è¦
 ```
 
-¥¿¦¡¶}¤u«e¡A¥ı§â¥»­pµe¦P¨B¦¨ source repo ®Ú¥Ø¿ıªº `IMPLEMENTATION_PLAN_ARTICLE_HOUSEKEEPING.md`¡CWindows ¤w±¾¸ü canonical source¡A¦ı `.git` «ü¦V mac-mini ¤Wªº `/Users/zhanqiru/git-repos/second-brain.git`¡A¥»¾÷µLªk«Ø¥ß atomic commit¡C¦]¦¹¥»µ§°O¬O¥i¼f¾\¥¿¥»¡FGit metadata ¥i¥Î«e¤£­×§ïµ{¦¡¡C
+æ­£å¼é–‹å·¥å‰ï¼Œå…ˆæŠŠæœ¬è¨ˆç•«åŒæ­¥æˆ source repo æ ¹ç›®éŒ„çš„ `IMPLEMENTATION_PLAN_ARTICLE_HOUSEKEEPING.md`ã€‚Windows å·²æ›è¼‰ canonical sourceï¼Œä½† `.git` æŒ‡å‘ mac-mini ä¸Šçš„ `/Users/zhanqiru/git-repos/second-brain.git`ï¼Œæœ¬æ©Ÿç„¡æ³•å»ºç«‹ atomic commitã€‚å› æ­¤æœ¬ç­†è¨˜æ˜¯å¯å¯©é–±æ­£æœ¬ï¼›Git metadata å¯ç”¨å‰ä¸ä¿®æ”¹ç¨‹å¼ã€‚
 
-## 4. MCP ¤u¨ã«´¬ù
+## 4. MCP å·¥å…·å¥‘ç´„
 
-¤u¨ã¦WºÙ¡G`audit_article_records`
+å·¥å…·åç¨±ï¼š`audit_article_records`
 
-«ØÄ³°Ñ¼Æ¡G
+å»ºè­°åƒæ•¸ï¼š
 
 ```python
 scope: Literal["articles", "social", "all"] = "all"
@@ -85,9 +85,9 @@ limit: int = 100  # 1..500
 stale_after_days: int = 8  # 1..90
 ```
 
-¤u¨ã©T©w°ßÅª¡A¤£´£¨Ñ `execute` ©Î `dry_run` °Ñ¼Æ¡C
+å·¥å…·å›ºå®šå”¯è®€ï¼Œä¸æä¾› `execute` æˆ– `dry_run` åƒæ•¸ã€‚
 
-Annotations¡G
+Annotationsï¼š
 
 ```json
 {
@@ -98,7 +98,7 @@ Annotations¡G
 }
 ```
 
-µ²ºc¤Æµ²ªG¡G
+çµæ§‹åŒ–çµæœï¼š
 
 ```json
 {
@@ -128,281 +128,281 @@ Annotations¡G
 }
 ```
 
-¨C­Ó issue ¥u¦^¶Ç vault-relative path¡B¯Êº|Äæ¦ì¡BÃÑ§OÁä»P®É¶¡ÂW¡A¤£¦^¶Ç¥ş¤å¡C¿ù»~°T®§¥²¶·¥]§t¡G¥¢±ÑÀË¬d¡B¥i¯à­ì¦]¡B¥i¦w¥ş­«¸Õ¤è¦¡¡C«O¯d¤å¦rºK­n§@¬°¤£¤ä´© structured content ªº client fallback¡C
+æ¯å€‹ issue åªå›å‚³ vault-relative pathã€ç¼ºæ¼æ¬„ä½ã€è­˜åˆ¥éµèˆ‡æ™‚é–“æˆ³ï¼Œä¸å›å‚³å…¨æ–‡ã€‚éŒ¯èª¤è¨Šæ¯å¿…é ˆåŒ…å«ï¼šå¤±æ•—æª¢æŸ¥ã€å¯èƒ½åŸå› ã€å¯å®‰å…¨é‡è©¦æ–¹å¼ã€‚ä¿ç•™æ–‡å­—æ‘˜è¦ä½œç‚ºä¸æ”¯æ´ structured content çš„ client fallbackã€‚
 
-## 5. MCP Tool Evals¡]¼gµ{¦¡«e¥ı­áµ²¡^
+## 5. MCP Tool Evalsï¼ˆå¯«ç¨‹å¼å‰å…ˆå‡çµï¼‰
 
 ```xml
 <evals>
   <eval>
-    <user>ÀË¬d Second Brain ªº¤å³¹¬ö¿ı¬O§_°·±d¡A¤£­n­×§ï¥ô¦óÀÉ®×¡C</user>
+    <user>æª¢æŸ¥ Second Brain çš„æ–‡ç« ç´€éŒ„æ˜¯å¦å¥åº·ï¼Œä¸è¦ä¿®æ”¹ä»»ä½•æª”æ¡ˆã€‚</user>
     <expected>
       <tool name="audit_article_records">
         <arg name="scope">all</arg>
         <arg name="limit">100</arg>
       </tool>
-      <behavior>¦^¶Çµ²ºc¤Æ½]®ÖºK­n¡F¤£©I¥s¥ô¦ó¼g¤J¡B¦X¨Ö¡B«Ê¦s©Î¯Á¤Ş­««Ø¤u¨ã¡C</behavior>
+      <behavior>å›å‚³çµæ§‹åŒ–ç¨½æ ¸æ‘˜è¦ï¼›ä¸å‘¼å«ä»»ä½•å¯«å…¥ã€åˆä½µã€å°å­˜æˆ–ç´¢å¼•é‡å»ºå·¥å…·ã€‚</behavior>
     </expected>
   </eval>
 
   <eval>
-    <user>¬İ¬İ X »P Threads ¥»¶g¦³¨S¦³º|³B²zªº¦¬ÂÃ¡C</user>
+    <user>çœ‹çœ‹ X èˆ‡ Threads æœ¬é€±æœ‰æ²’æœ‰æ¼è™•ç†çš„æ”¶è—ã€‚</user>
     <expected>
       <tool name="audit_article_records">
         <arg name="scope">social</arg>
         <arg name="stale_after_days">8</arg>
       </tool>
-      <behavior>¦C¥X state freshness¡Bpending ¼Æ¶q»P¨Ó·½Äµ§i¡A¤£­×§ï state¡C</behavior>
+      <behavior>åˆ—å‡º state freshnessã€pending æ•¸é‡èˆ‡ä¾†æºè­¦å‘Šï¼Œä¸ä¿®æ”¹ stateã€‚</behavior>
     </expected>
   </eval>
 
   <eval>
-    <user>À°§Ú§â©Ò¦³­«½Æ¤å³¹ª½±µ¦X¨Ö±¼¡C</user>
+    <user>å¹«æˆ‘æŠŠæ‰€æœ‰é‡è¤‡æ–‡ç« ç›´æ¥åˆä½µæ‰ã€‚</user>
     <expected>
       <tool name="audit_article_records">
         <arg name="scope">articles</arg>
       </tool>
-      <behavior>¥u¦C¥Xºë½T­«½Æ­Ô¿ï¨Ã­n¨D¤H¤u½T»{¡Fv1 ¤£°õ¦æ¦X¨Ö©Î§R°£¡C</behavior>
+      <behavior>åªåˆ—å‡ºç²¾ç¢ºé‡è¤‡å€™é¸ä¸¦è¦æ±‚äººå·¥ç¢ºèªï¼›v1 ä¸åŸ·è¡Œåˆä½µæˆ–åˆªé™¤ã€‚</behavior>
     </expected>
   </eval>
 
   <eval>
-    <user>Second Brain server ²{¦b³s±o¤W¶Ü¡H</user>
+    <user>Second Brain server ç¾åœ¨é€£å¾—ä¸Šå—ï¼Ÿ</user>
     <expected>
       <tool name="health_check" />
-      <behavior>¤£±o»~¥Î¤å³¹½]®Ö¤u¨ã¦^µª¤@¯ë¨t²Î°·±d°İÃD¡C</behavior>
+      <behavior>ä¸å¾—èª¤ç”¨æ–‡ç« ç¨½æ ¸å·¥å…·å›ç­”ä¸€èˆ¬ç³»çµ±å¥åº·å•é¡Œã€‚</behavior>
     </expected>
   </eval>
 
   <eval>
-    <user>·j´M TGF-beta »PÅÖºû¤Æªº¤å³¹¡C</user>
+    <user>æœå°‹ TGF-beta èˆ‡çº–ç¶­åŒ–çš„æ–‡ç« ã€‚</user>
     <expected>
       <tool name="search_notes">
-        <arg name="query">TGF-beta ÅÖºû¤Æ</arg>
+        <arg name="query">TGF-beta çº–ç¶­åŒ–</arg>
       </tool>
-      <behavior>¤£±o»~¥Î¤å³¹½]®Ö¤u¨ã°µ¤º®eÀË¯Á¡C</behavior>
+      <behavior>ä¸å¾—èª¤ç”¨æ–‡ç« ç¨½æ ¸å·¥å…·åšå…§å®¹æª¢ç´¢ã€‚</behavior>
     </expected>
   </eval>
 </evals>
 ```
 
-## 6. TDD ¹ê§@¥ô°È
+## 6. TDD å¯¦ä½œä»»å‹™
 
-¨C¶µ¤u§@±±¨î¦b¬ù 2¡V5 ¤ÀÄÁ¡A§¹¦¨«á¥ß§Y«Ø¥ß atomic commit¡C´ú¸Õ¿í´` Red ¡÷ Green ¡÷ Refactor¡C
+æ¯é …å·¥ä½œæ§åˆ¶åœ¨ç´„ 2â€“5 åˆ†é˜ï¼Œå®Œæˆå¾Œç«‹å³å»ºç«‹ atomic commitã€‚æ¸¬è©¦éµå¾ª Red â†’ Green â†’ Refactorã€‚
 
-### Task 0 ¡X ©T¤Æ­pµe
+### Task 0 â€” å›ºåŒ–è¨ˆç•«
 
-- ¦b source repo «Ø¥ß `IMPLEMENTATION_PLAN_ARTICLE_HOUSEKEEPING.md`¡A¤º®e»P¥»µ§°O¤@­P¡C
-- °õ¦æ `git diff --check`¡C
-- Commit¡G`docs: add article housekeeping implementation plan`
+- åœ¨ source repo å»ºç«‹ `IMPLEMENTATION_PLAN_ARTICLE_HOUSEKEEPING.md`ï¼Œå…§å®¹èˆ‡æœ¬ç­†è¨˜ä¸€è‡´ã€‚
+- åŸ·è¡Œ `git diff --check`ã€‚
+- Commitï¼š`docs: add article housekeeping implementation plan`
 
-### Task 1 ¡X Red¡G½]®Ö°òÂ¦ fixture »PªÅ vault ¦æ¬°
+### Task 1 â€” Redï¼šç¨½æ ¸åŸºç¤ fixture èˆ‡ç©º vault è¡Œç‚º
 
-- ·s¼W `tests/test_article_audit.py`¡C
-- «Ø¥ß temp vault fixture¡A²[»\ªÅ vault¡B¦Xªk¤å³¹¡B¯Ê frontmatter¡C
-- Â_¨¥µ²ªG schema¡B¬Û¹ï¸ô®|»Pµ²ªG¤W­­¡C
-- °õ¦æ¡G`uv run pytest tests/test_article_audit.py -q`¡A½T»{¦]¼Ò²Õ¤£¦s¦b¦Ó¥¢±Ñ¡C
-- Commit¡G`test: define article audit base contract`
+- æ–°å¢ `tests/test_article_audit.py`ã€‚
+- å»ºç«‹ temp vault fixtureï¼Œæ¶µè“‹ç©º vaultã€åˆæ³•æ–‡ç« ã€ç¼º frontmatterã€‚
+- æ–·è¨€çµæœ schemaã€ç›¸å°è·¯å¾‘èˆ‡çµæœä¸Šé™ã€‚
+- åŸ·è¡Œï¼š`uv run pytest tests/test_article_audit.py -q`ï¼Œç¢ºèªå› æ¨¡çµ„ä¸å­˜åœ¨è€Œå¤±æ•—ã€‚
+- Commitï¼š`test: define article audit base contract`
 
-### Task 2 ¡X Green¡G°ò¥»²Î­p»P frontmatter ½]®Ö
+### Task 2 â€” Greenï¼šåŸºæœ¬çµ±è¨ˆèˆ‡ frontmatter ç¨½æ ¸
 
-- ·s¼W `mcp_second_brain/article_audit.py`¡C
-- ¹ê§@ vault ¤º¸ô®|ÅçÃÒ¡BMarkdown ±½´y¡B¤å³¹¤ÀÃş¡B¥²­nÄæ¦ìÀË¬d¡C
-- ¤£Åª¨ú symlink «ü¦V vault ¥~³¡ªº¤º®e¡C
-- °õ¦æ Task 1 ´ú¸Õ¦Ü³q¹L¡C
-- Commit¡G`feat: add read-only article audit core`
+- æ–°å¢ `mcp_second_brain/article_audit.py`ã€‚
+- å¯¦ä½œ vault å…§è·¯å¾‘é©—è­‰ã€Markdown æƒæã€æ–‡ç« åˆ†é¡ã€å¿…è¦æ¬„ä½æª¢æŸ¥ã€‚
+- ä¸è®€å– symlink æŒ‡å‘ vault å¤–éƒ¨çš„å…§å®¹ã€‚
+- åŸ·è¡Œ Task 1 æ¸¬è©¦è‡³é€šéã€‚
+- Commitï¼š`feat: add read-only article audit core`
 
-### Task 3 ¡X Red¡Gºë½T­«½Æ¿ëÃÑ
+### Task 3 â€” Redï¼šç²¾ç¢ºé‡è¤‡è¾¨è­˜
 
-- ¥[¤J DOI ¤j¤p¼g¡şURL ¥¿³W¤Æ¡Bcanonical URL query ²M²z¡Btitle + source fixture¡C
-- Â_¨¥¥u²£¥Í exact candidate¡A¤£§â¯Â»y·N¬Û¦üµ§°Oµø¬°­«½Æ¡C
-- °õ¦æ³æ¤@´ú¸Õ¡A½T»{¥¢±Ñ¡C
-- Commit¡G`test: define exact duplicate detection rules`
+- åŠ å…¥ DOI å¤§å°å¯«ï¼URL æ­£è¦åŒ–ã€canonical URL query æ¸…ç†ã€title + source fixtureã€‚
+- æ–·è¨€åªç”¢ç”Ÿ exact candidateï¼Œä¸æŠŠç´”èªæ„ç›¸ä¼¼ç­†è¨˜è¦–ç‚ºé‡è¤‡ã€‚
+- åŸ·è¡Œå–®ä¸€æ¸¬è©¦ï¼Œç¢ºèªå¤±æ•—ã€‚
+- Commitï¼š`test: define exact duplicate detection rules`
 
-### Task 4 ¡X Green¡G¹ê§@ºë½T­«½Æ¿ëÃÑ
+### Task 4 â€” Greenï¼šå¯¦ä½œç²¾ç¢ºé‡è¤‡è¾¨è­˜
 
-- Àu¥ı¶¶§Ç¡GDOI ¡÷ canonical URL ¡÷ normalized title + source¡C
-- ¨C²Õ¦^¶Ç match key¡Bpaths¡Bconfidence=`exact`¡C
-- ³q¹L duplicate tests¡C
-- Commit¡G`feat: detect exact article duplicates`
+- å„ªå…ˆé †åºï¼šDOI â†’ canonical URL â†’ normalized title + sourceã€‚
+- æ¯çµ„å›å‚³ match keyã€pathsã€confidence=`exact`ã€‚
+- é€šé duplicate testsã€‚
+- Commitï¼š`feat: detect exact article duplicates`
 
-### Task 5 ¡X Red¡GÃa³sµ²¡Binbox »P¨Ó·½ª¬ºA
+### Task 5 â€” Redï¼šå£é€£çµã€inbox èˆ‡ä¾†æºç‹€æ…‹
 
-- ¥[¤J¦s¦b¡ş¤£¦s¦b wikilink¡Bheading link¡Balias link fixture¡C
-- ¥[¤J¶W¹L 7 ¤Ñ inbox »P X¡şThreads¡şGitHub Stars state fixture¡C
-- Â_¨¥¹L´ÁªùÂe¡Bpending »P missing state¡C
-- Commit¡G`test: define link and source freshness audits`
+- åŠ å…¥å­˜åœ¨ï¼ä¸å­˜åœ¨ wikilinkã€heading linkã€alias link fixtureã€‚
+- åŠ å…¥è¶…é 7 å¤© inbox èˆ‡ Xï¼Threadsï¼GitHub Stars state fixtureã€‚
+- æ–·è¨€éæœŸé–€æª»ã€pending èˆ‡ missing stateã€‚
+- Commitï¼š`test: define link and source freshness audits`
 
-### Task 6 ¡X Green¡G§¹¦¨ link¡Binbox¡Bstate ½]®Ö
+### Task 6 â€” Greenï¼šå®Œæˆ linkã€inboxã€state ç¨½æ ¸
 
-- ¶È¸ÑªR¥»¦a wikilink »P¤wª¾ state ÀÉ¡F¤£³sºô¡C
-- ±Æ°£ external URL¡Bembed attachment »P¦PÀÉ heading¡C
-- ³q¹L Task 5 ´ú¸Õ¡C
-- Commit¡G`feat: audit article links inbox and source state`
+- åƒ…è§£ææœ¬åœ° wikilink èˆ‡å·²çŸ¥ state æª”ï¼›ä¸é€£ç¶²ã€‚
+- æ’é™¤ external URLã€embed attachment èˆ‡åŒæª” headingã€‚
+- é€šé Task 5 æ¸¬è©¦ã€‚
+- Commitï¼š`feat: audit article links inbox and source state`
 
-### Task 7 ¡X Refactor¡G»P vault_janitor ¦@¥Î¯Â¨ç¦¡
+### Task 7 â€” Refactorï¼šèˆ‡ vault_janitor å…±ç”¨ç´”å‡½å¼
 
-- ±N janitor ¥i¦@¥Îªº frontmatter¡Binbox¡B©R¦WÀË¬d§ï¥Î·s¼Ò²Õ¡C
-- «O«ù janitor CLI °Ñ¼Æ»P¿é¥X¬Û®e¡C
-- °õ¦æ¡G`uv run pytest tests/test_article_audit.py tests/test_vault_sleep.py -q`¡C
-- Commit¡G`refactor: share audit checks with vault janitor`
+- å°‡ janitor å¯å…±ç”¨çš„ frontmatterã€inboxã€å‘½åæª¢æŸ¥æ”¹ç”¨æ–°æ¨¡çµ„ã€‚
+- ä¿æŒ janitor CLI åƒæ•¸èˆ‡è¼¸å‡ºç›¸å®¹ã€‚
+- åŸ·è¡Œï¼š`uv run pytest tests/test_article_audit.py tests/test_vault_sleep.py -q`ã€‚
+- Commitï¼š`refactor: share audit checks with vault janitor`
 
-### Task 8 ¡X Red¡GMCP contract tests
+### Task 8 â€” Redï¼šMCP contract tests
 
-- ¦b `tests/test_server.py` ¥[¤J¤u¨ãµù¥U¡B°Ñ¼Æ½d³ò¡Bannotations¡Bstructured content »P¤å¦r fallback ´ú¸Õ¡C
-- ¥[¤JµLªkÅª vault¡Bstate YAML ·lÃa¡Blimit ¶W¬Éµ¥ actionable error ´ú¸Õ¡C
-- ½T»{´ú¸Õ¥¢±Ñ¡C
-- Commit¡G`test: define article audit MCP contract`
+- åœ¨ `tests/test_server.py` åŠ å…¥å·¥å…·è¨»å†Šã€åƒæ•¸ç¯„åœã€annotationsã€structured content èˆ‡æ–‡å­— fallback æ¸¬è©¦ã€‚
+- åŠ å…¥ç„¡æ³•è®€ vaultã€state YAML æå£ã€limit è¶…ç•Œç­‰ actionable error æ¸¬è©¦ã€‚
+- ç¢ºèªæ¸¬è©¦å¤±æ•—ã€‚
+- Commitï¼š`test: define article audit MCP contract`
 
-### Task 9 ¡X Green¡Gµù¥U audit_article_records
+### Task 9 â€” Greenï¼šè¨»å†Š audit_article_records
 
-- ¦b `server.py` µù¥UÁ¡ wrapper¡F®Ö¤ßÅŞ¿è¤£±o©ñ¶i tool function¡C
-- ©ú½T³]©w output schema »P°ßÅª annotations¡C
-- ©Ò¦³ paths «O«ù vault-relative¡C
-- °õ¦æ server contract tests ¦Ü³q¹L¡C
-- Commit¡G`feat: expose article audit MCP tool`
+- åœ¨ `server.py` è¨»å†Šè–„ wrapperï¼›æ ¸å¿ƒé‚è¼¯ä¸å¾—æ”¾é€² tool functionã€‚
+- æ˜ç¢ºè¨­å®š output schema èˆ‡å”¯è®€ annotationsã€‚
+- æ‰€æœ‰ paths ä¿æŒ vault-relativeã€‚
+- åŸ·è¡Œ server contract tests è‡³é€šéã€‚
+- Commitï¼š`feat: expose article audit MCP tool`
 
-### Task 10 ¡X MCP ¤å¥ó»P¥ş®M¦^Âk
+### Task 10 â€” MCP æ–‡ä»¶èˆ‡å…¨å¥—å›æ­¸
 
-- §ó·s `AGENTS.md`¡B`README.md`¡B`CHANGELOG.md`¡C
-- °O¿ı¤u¨ã¿ï¾Ü¬É½u¡G¤º®e·j´M¥Î `search_notes`¡B¨t²Î°·±d¥Î `health_check`¡B¤å³¹¾ã¼ä«×¤~¥Î·s¤u¨ã¡C
-- °õ¦æ¡G`uv run pytest tests/ -q` »P `git diff --check`¡C
-- Commit¡G`docs: document article audit tool`
+- æ›´æ–° `AGENTS.md`ã€`README.md`ã€`CHANGELOG.md`ã€‚
+- è¨˜éŒ„å·¥å…·é¸æ“‡ç•Œç·šï¼šå…§å®¹æœå°‹ç”¨ `search_notes`ã€ç³»çµ±å¥åº·ç”¨ `health_check`ã€æ–‡ç« æ•´æ½”åº¦æ‰ç”¨æ–°å·¥å…·ã€‚
+- åŸ·è¡Œï¼š`uv run pytest tests/ -q` èˆ‡ `git diff --check`ã€‚
+- Commitï¼š`docs: document article audit tool`
 
-### Task 11 ¡X «Ø¥ß­Ó¤H Skill °©¬[
+### Task 11 â€” å»ºç«‹å€‹äºº Skill éª¨æ¶
 
-- ¨Ï¥Î `skill-creator` «Ø¥ß `sb-article-housekeeper`¡C
-- Skill ¥ı©I¥s `get_agent_instructions` »P `audit_article_records`¡C
-- ¨p¤H¨Ó·½¸ô®|»P X¡şThreads ¬Fµ¦¥u©ñ Skill reference¡C
-- Commit¡G`feat: add second brain article housekeeper skill`
+- ä½¿ç”¨ `skill-creator` å»ºç«‹ `sb-article-housekeeper`ã€‚
+- Skill å…ˆå‘¼å« `get_agent_instructions` èˆ‡ `audit_article_records`ã€‚
+- ç§äººä¾†æºè·¯å¾‘èˆ‡ Xï¼Threads æ”¿ç­–åªæ”¾ Skill referenceã€‚
+- Commitï¼š`feat: add second brain article housekeeper skill`
 
-### Task 12 ¡X Skill ¦w¥ş¬yµ{»P³ø§i«´¬ù
+### Task 12 â€” Skill å®‰å…¨æµç¨‹èˆ‡å ±å‘Šå¥‘ç´„
 
-- ©w¸q¾­µ¥¬yµ{¡GÅª¨ú½]®Ö ¡÷ §ó·s¤å³¹Á`¯Á¤Ş ¡÷ append audit log¡C
-- `index_gap != 0` ®É¥u´£¥X `sync_index` «ØÄ³¡F¦Û°Ê¤Æ¼Ò¦¡¤£ª½±µ­««Ø¡A°£«D¤é«á¥t¦æ©ú½T±ÂÅv¡C
-- ¦X¨Ö¡B«Ê¦s¡B§R°£¥Ã»·°±¦b­Ô¿ï³ø§i¡C
-- ¥[¤J skill ¥¿¡ş¤Ï¨Ò»P¥¢±Ñ­«¶]»¡©ú¡C
-- Commit¡G`feat: define safe article housekeeping workflow`
+- å®šç¾©å†ªç­‰æµç¨‹ï¼šè®€å–ç¨½æ ¸ â†’ æ›´æ–°æ–‡ç« ç¸½ç´¢å¼• â†’ append audit logã€‚
+- `index_gap != 0` æ™‚åªæå‡º `sync_index` å»ºè­°ï¼›è‡ªå‹•åŒ–æ¨¡å¼ä¸ç›´æ¥é‡å»ºï¼Œé™¤éæ—¥å¾Œå¦è¡Œæ˜ç¢ºæˆæ¬Šã€‚
+- åˆä½µã€å°å­˜ã€åˆªé™¤æ°¸é åœåœ¨å€™é¸å ±å‘Šã€‚
+- åŠ å…¥ skill æ­£ï¼åä¾‹èˆ‡å¤±æ•—é‡è·‘èªªæ˜ã€‚
+- Commitï¼š`feat: define safe article housekeeping workflow`
 
-### Task 13 ¡X Skill QA gate
+### Task 13 â€” Skill QA gate
 
-- ¨Ï¥Î `skill-qa-gate` °õ¦æµ²ºc¡B¦w¥ş«´¬ù¡Bcontrolled-language »P»y·N«O¯dÀË¬d¡C
-- ­×¥¿©Ò¦³ blocker¡F­«·s°õ¦æ¦Ü³q¹L¡C
-- Commit¡G`test: validate article housekeeper skill`
+- ä½¿ç”¨ `skill-qa-gate` åŸ·è¡Œçµæ§‹ã€å®‰å…¨å¥‘ç´„ã€controlled-language èˆ‡èªæ„ä¿ç•™æª¢æŸ¥ã€‚
+- ä¿®æ­£æ‰€æœ‰ blockerï¼›é‡æ–°åŸ·è¡Œè‡³é€šéã€‚
+- Commitï¼š`test: validate article housekeeper skill`
 
-### Task 14 ¡X ³¡¸p»P¤TªA°ÈÅçÃÒ
+### Task 14 â€” éƒ¨ç½²èˆ‡ä¸‰æœå‹™é©—è­‰
 
-- ±q canonical Drive source ³¡¸p¨ì server venv¡C
-- ¦] sb¡Blcdda¡Blcdda-harvest ¦@¥Î package¡A¨Ì AGENTS.md ªº deployment SOP ­«±Ò¤T­ÓªA°È¡C
-- ¦b¤T­Ó vault ¦U©I¥s¤@¦¸ tool¡A½T»{ vault isolation¡Bstructured output »P°ßÅª¡C
-- ¤ñ¹ï write audit log »P´ú¸Õ fixture¡A½T»{ tool ¨S¦³¼g¤J¡C
-- ­Y¥ô¤@ªA°È¥¢±Ñ¡A¦^ºu¸Ó³¡¸p¡A¤£±Ò¥Î¦Û°Ê¤Æ¡C
-- Commit¡G`chore: record article audit deployment verification`
+- å¾ canonical Drive source éƒ¨ç½²åˆ° server venvã€‚
+- å›  sbã€lcddaã€lcdda-harvest å…±ç”¨ packageï¼Œä¾ AGENTS.md çš„ deployment SOP é‡å•Ÿä¸‰å€‹æœå‹™ã€‚
+- åœ¨ second-brain èˆ‡ lcdda å…©å€‹ vault å„å‘¼å«ä¸€æ¬¡ toolï¼Œä¸¦é©—è­‰ lcdda-harvest wrapperï¼Œç¢ºèª vault isolationã€structured output èˆ‡å”¯è®€ã€‚
+- æ¯”å° write audit log èˆ‡æ¸¬è©¦ fixtureï¼Œç¢ºèª tool æ²’æœ‰å¯«å…¥ã€‚
+- è‹¥ä»»ä¸€æœå‹™å¤±æ•—ï¼Œå›æ»¾è©²éƒ¨ç½²ï¼Œä¸å•Ÿç”¨è‡ªå‹•åŒ–ã€‚
+- Commitï¼š`chore: record article audit deployment verification`
 
-### Task 15 ¡X «Ø¥ß¨C¶g Codex Automation
+### Task 15 â€” å»ºç«‹æ¯é€± Codex Automation
 
-- «e´£¡GTask 14 ¥ş³¡³q¹L¡C
-- «Ø¥ß heartbeat automation¡A¨C¶g¤@ 13:30¡]Asia/Taipei¡^°õ¦æ­Ó¤H Skill¡A±µ¦b¬J¦³ weekly content radar ¤§«á¡C
-- Prompt ¥u­n¨D½]®Ö¡B¾ã²zÁ`¯Á¤Ş»P¦^³ø­Ô¿ï¡F¤£±o­n¨D¦Û°Ê¦X¨Ö¡ş§R°£¡C
-- ­º¦¸¥ı¤â°Ê°õ¦æ¤@¦¸¡A½T»{­«¶]¤£·|­«½Æ·s¼W¯Á¤Ş¦C¡C
-- ³o¬O¥~³¡±Æµ{ª¬ºA¡A¤£¯Ç¤J MCP server commit¡C
+- å‰æï¼šTask 14 å…¨éƒ¨é€šéã€‚
+- å»ºç«‹ heartbeat automationï¼Œæ¯é€±ä¸€ 13:30ï¼ˆAsia/Taipeiï¼‰åŸ·è¡Œå€‹äºº Skillï¼Œæ¥åœ¨æ—¢æœ‰ weekly content radar ä¹‹å¾Œã€‚
+- Prompt åªè¦æ±‚ç¨½æ ¸ã€æ•´ç†ç¸½ç´¢å¼•èˆ‡å›å ±å€™é¸ï¼›ä¸å¾—è¦æ±‚è‡ªå‹•åˆä½µï¼åˆªé™¤ã€‚
+- é¦–æ¬¡å…ˆæ‰‹å‹•åŸ·è¡Œä¸€æ¬¡ï¼Œç¢ºèªé‡è·‘ä¸æœƒé‡è¤‡æ–°å¢ç´¢å¼•åˆ—ã€‚
+- é€™æ˜¯å¤–éƒ¨æ’ç¨‹ç‹€æ…‹ï¼Œä¸ç´å…¥ MCP server commitã€‚
 
-## 7. Åç¦¬¼Ğ·Ç
+## 7. é©—æ”¶æ¨™æº–
 
-- ©Ò¦³¬J¦³»P·s¼W´ú¸Õ³q¹L¡C
-- ·s¤u¨ãªº MCP annotations »P output schema ¥i¥Ñ client Åª¨ú¡C
-- ¬Û¦P fixture ³sÄò°õ¦æ¨â¦¸¡Aµ²ªG°£ `run_id/generated_at` ¥~¤@­P¡C
-- tool call «e«á vault Markdown¡Bstate »P DB write audit µLÅÜ§ó¡C
-- ºë½T­«½Æ­Ô¿ïµL false-positive fixture¡C
-- X¡şThreads¡şGitHub Stars state ¯ÊÀÉ©Î·lÃa®É¦^¶Ç warning¡A¤£¨Ï¾ã­Ó½]®Ö¥¢±Ñ¡C
-- ¤T­Ó¦@¨ÉªA°È§¡³q¹L vault isolation ´ú¸Õ¡C
-- Skill ¸g `skill-qa-gate` ³q¹L¡C
-- Automation ¥i­«¶]¥B¤å³¹Á`¯Á¤Ş¤£­«½Æ¡C
+- æ‰€æœ‰æ—¢æœ‰èˆ‡æ–°å¢æ¸¬è©¦é€šéã€‚
+- æ–°å·¥å…·çš„ MCP annotations èˆ‡ output schema å¯ç”± client è®€å–ã€‚
+- ç›¸åŒ fixture é€£çºŒåŸ·è¡Œå…©æ¬¡ï¼Œçµæœé™¤ `run_id/generated_at` å¤–ä¸€è‡´ã€‚
+- tool call å‰å¾Œ vault Markdownã€state èˆ‡ DB write audit ç„¡è®Šæ›´ã€‚
+- ç²¾ç¢ºé‡è¤‡å€™é¸ç„¡ false-positive fixtureã€‚
+- Xï¼Threadsï¼GitHub Stars state ç¼ºæª”æˆ–æå£æ™‚å›å‚³ warningï¼Œä¸ä½¿æ•´å€‹ç¨½æ ¸å¤±æ•—ã€‚
+- å…©å€‹ vault æœå‹™å‡é€šé vault isolation æ¸¬è©¦ï¼Œlcdda-harvest wrapper ç¶­æŒæ—¢æœ‰å››å·¥å…·å¥‘ç´„ã€‚
+- Skill ç¶“ `skill-qa-gate` é€šéã€‚
+- Automation å¯é‡è·‘ä¸”æ–‡ç« ç¸½ç´¢å¼•ä¸é‡è¤‡ã€‚
 
-## 8. ³¡¸p«eÀË¬d±ø¥ó
+## 8. éƒ¨ç½²å‰æª¢æŸ¥æ¢ä»¶
 
-- Windows ±¾¸üªº Google Drive ¤£¬O¤¤¥¡ PARA vault¡Fvault µ§°OÅª¼g¤@«ß¸g¤¤¥¡ Second Brain MCP¡C
-- mac-mini SSH »P Git ¤wÅçÃÒ¥i¥Î¡FTask 0¡V13 ¦b¹jÂ÷ worktree¡ş¥\¯à¤À¤ä°õ¦æ¡A¤£¸I­ì¤u§@¥Ø¿ıªº¥¼´£¥æ­×§ï¡C
-- ©|¥¼½T»{ mac-mini ¤W `com.user.vault-janitor` ªº¹ê»Ú±Ò¥Îª¬ºA¡F³o¥uªı¾× Task 14 ³¡¸p¡A¤£ªı¾×¥»¦a¹ê§@»P´ú¸Õ¡C
-- MCP evals ¤w¥Ñ¨Ï¥ÎªÌ©ó 2026-08-29 ½T»{¡C
+- Windows æ›è¼‰çš„ Google Drive ä¸æ˜¯ä¸­å¤® PARA vaultï¼›vault ç­†è¨˜è®€å¯«ä¸€å¾‹ç¶“ä¸­å¤® Second Brain MCPã€‚
+- mac-mini SSH èˆ‡ Git å·²é©—è­‰å¯ç”¨ï¼›Task 0â€“13 åœ¨éš”é›¢ worktreeï¼åŠŸèƒ½åˆ†æ”¯åŸ·è¡Œï¼Œä¸ç¢°åŸå·¥ä½œç›®éŒ„çš„æœªæäº¤ä¿®æ”¹ã€‚
+- å°šæœªç¢ºèª mac-mini ä¸Š `com.user.vault-janitor` çš„å¯¦éš›å•Ÿç”¨ç‹€æ…‹ï¼›é€™åªé˜»æ“‹ Task 14 éƒ¨ç½²ï¼Œä¸é˜»æ“‹æœ¬åœ°å¯¦ä½œèˆ‡æ¸¬è©¦ã€‚
+- MCP evals å·²ç”±ä½¿ç”¨è€…æ–¼ 2026-08-29 ç¢ºèªã€‚
 
-Task 14 «e¥²¶·§¹¦¨±Æµ{²{ªp¡B¤TªA°È­«±Ò»P¦^ºu±ø¥óÀË¬d¡FTask 14 ¥¼³q¹L«e¤£«Ø¥ß©w´Á¦Û°Ê¤Æ¡C
+Task 14 å‰å¿…é ˆå®Œæˆæ’ç¨‹ç¾æ³ã€ä¸‰æœå‹™é‡å•Ÿèˆ‡å›æ»¾æ¢ä»¶æª¢æŸ¥ï¼›Task 14 æœªé€šéå‰ä¸å»ºç«‹å®šæœŸè‡ªå‹•åŒ–ã€‚
 
 ## Execution Trace
 
-### 2026-08-29 ¡X Task 0 blocked
+### 2026-08-29 â€” Task 0 blocked
 
-- [ ] Task 0¡G©T¤Æ repo ­pµe»P atomic commit
-- [ ] Task 1¡V15¡G©|¥¼¶}©l
-- ¤w­×¥¿­pµeÀÉ¦W¬° `IMPLEMENTATION_PLAN_ARTICLE_HOUSEKEEPING.md`¡AÁ×§KÂĞ¼g¬J¦³ PDF pipeline ªº `IMPLEMENTATION_PLAN.md`¡C
-- Windows source mount ¥iÅª¡G`J:\§Úªº¶³ºİµwºĞ\PJ_save\mcp-tools\second-brain`¡C
-- `.git` «ü¦V mac-mini ªº `/Users/zhanqiru/git-repos/second-brain.git`¡AWindows Git ¦^³ø `not a git repository`¡C
-- GitHub connector §ä¤£¨ì¹ïÀ³ repository¡C
-- ¥»¾÷ `.ssh` ¥u¦³ `known_hosts`¡A¨S¦³ config ©Î private key¡F¥ı«e SSH ÅçÃÒ¥¢±Ñ¡C
-- ¨Ì `sp-executing-plans` ªº Stop on Blockers ³W«h¡A¥¼­×§ï server¡Btests¡BSkill ©Î automation¡C
+- [ ] Task 0ï¼šå›ºåŒ– repo è¨ˆç•«èˆ‡ atomic commit
+- [ ] Task 1â€“15ï¼šå°šæœªé–‹å§‹
+- å·²ä¿®æ­£è¨ˆç•«æª”åç‚º `IMPLEMENTATION_PLAN_ARTICLE_HOUSEKEEPING.md`ï¼Œé¿å…è¦†å¯«æ—¢æœ‰ PDF pipeline çš„ `IMPLEMENTATION_PLAN.md`ã€‚
+- Windows source mount å¯è®€ï¼š`J:\æˆ‘çš„é›²ç«¯ç¡¬ç¢Ÿ\PJ_save\mcp-tools\second-brain`ã€‚
+- `.git` æŒ‡å‘ mac-mini çš„ `/Users/zhanqiru/git-repos/second-brain.git`ï¼ŒWindows Git å›å ± `not a git repository`ã€‚
+- GitHub connector æ‰¾ä¸åˆ°å°æ‡‰ repositoryã€‚
+- æœ¬æ©Ÿ `.ssh` åªæœ‰ `known_hosts`ï¼Œæ²’æœ‰ config æˆ– private keyï¼›å…ˆå‰ SSH é©—è­‰å¤±æ•—ã€‚
+- ä¾ `sp-executing-plans` çš„ Stop on Blockers è¦å‰‡ï¼Œæœªä¿®æ”¹ serverã€testsã€Skill æˆ– automationã€‚
 
-### 2026-08-29 ¡X Task 0 completed
+### 2026-08-29 â€” Task 0 completed
 
-- [x] Task 0¡G¦b¹jÂ÷ worktree ©T¤Æ repo ­pµe»P atomic commit
-- [ ] Task 1¡V15¡G©|¥¼¶}©l
-- SSH key ÅçÃÒ¤w³q¹L¡Amac-mini Git metadata ¥i¥Î¡C
-- ­ì worktree «O¯d `mcp_second_brain/llm_cli.py` »P `tests/test_llm_cli.py` ªº¥¼´£¥æ­×§ï¡C
-- ¤w±q `7234342` «Ø¥ß `feat/article-housekeeping-audit`¡A¸ô®|¬° `/Users/lab_center/git-worktrees/sb-article-housekeeping`¡C
-- Windows ¥»¾÷Ãè¹³¥u¥Î©ó patch ·Ç³Æ¡F´ú¸Õ»P commit ¦b mac-mini ¹jÂ÷ worktree °õ¦æ¡C
+- [x] Task 0ï¼šåœ¨éš”é›¢ worktree å›ºåŒ– repo è¨ˆç•«èˆ‡ atomic commit
+- [ ] Task 1â€“15ï¼šå°šæœªé–‹å§‹
+- SSH key é©—è­‰å·²é€šéï¼Œmac-mini Git metadata å¯ç”¨ã€‚
+- åŸ worktree ä¿ç•™ `mcp_second_brain/llm_cli.py` èˆ‡ `tests/test_llm_cli.py` çš„æœªæäº¤ä¿®æ”¹ã€‚
+- å·²å¾ `7234342` å»ºç«‹ `feat/article-housekeeping-audit`ï¼Œè·¯å¾‘ç‚º `/Users/lab_center/git-worktrees/sb-article-housekeeping`ã€‚
+- Windows æœ¬æ©Ÿé¡åƒåªç”¨æ–¼ patch æº–å‚™ï¼›æ¸¬è©¦èˆ‡ commit åœ¨ mac-mini éš”é›¢ worktree åŸ·è¡Œã€‚
 
-### 2026-08-29 ¡X Task 1 completed (Red)
+### 2026-08-29 â€” Task 1 completed (Red)
 
-- [x] Task 0¡G©T¤Æ repo ­pµe»P atomic commit
-- [x] Task 1¡G©w¸q article audit °òÂ¦«´¬ù´ú¸Õ
-- [ ] Task 2¡V15¡G©|¥¼¶}©l
-- mac-mini «D¤¬°Ê SSH ªº PATH ¤£§t `uv`¡F¨ä lockfile ¥ç¦] `markitdown[all]` prerelease ¸ÑªR½Ä¬ğµLªk«Ø¥ß§¹¾ã `.venv`¡C
-- ¨Ì `NEW_MACHINE_SETUP.md` §ï¥Î¬J¦³ `/Users/lab_center/.venvs/second-brain/bin/python`¡A¨Ã¥H `PYTHONPATH="$PWD"` «ü¦V¹jÂ÷ worktree¡C
-- Red ÅçÃÒ²Å¦X¹w´Á¡G`ModuleNotFoundError: No module named 'mcp_second_brain.article_audit'`¡C
+- [x] Task 0ï¼šå›ºåŒ– repo è¨ˆç•«èˆ‡ atomic commit
+- [x] Task 1ï¼šå®šç¾© article audit åŸºç¤å¥‘ç´„æ¸¬è©¦
+- [ ] Task 2â€“15ï¼šå°šæœªé–‹å§‹
+- mac-mini éäº’å‹• SSH çš„ PATH ä¸å« `uv`ï¼›å…¶ lockfile äº¦å›  `markitdown[all]` prerelease è§£æè¡çªç„¡æ³•å»ºç«‹å®Œæ•´ `.venv`ã€‚
+- ä¾ `NEW_MACHINE_SETUP.md` æ”¹ç”¨æ—¢æœ‰ `/Users/lab_center/.venvs/second-brain/bin/python`ï¼Œä¸¦ä»¥ `PYTHONPATH="$PWD"` æŒ‡å‘éš”é›¢ worktreeã€‚
+- Red é©—è­‰ç¬¦åˆé æœŸï¼š`ModuleNotFoundError: No module named 'mcp_second_brain.article_audit'`ã€‚
 
-### 2026-08-29 ¡X Task 2 completed (Green)
+### 2026-08-29 â€” Task 2 completed (Green)
 
-- [x] Task 0¡V2¡G­pµe¡BRed «´¬ù»P°ò¥» audit core
-- [ ] Task 3¡V15¡G©|¥¼¶}©l
-- ·s¼W `mcp_second_brain/article_audit.py`¡A­«¥Î `note_row.parse_frontmatter`¡C
-- ±½´y®É¥u¦^¶Ç vault-relative paths¡A¨Ã¸õ¹L¸ÑªR¨ì vault ¥~³¡ªº Markdown symlink¡C
-- ÅçÃÒ¡G`PYTHONPATH="$PWD" /Users/lab_center/.venvs/second-brain/bin/python -m pytest tests/test_article_audit.py -q` ¡÷ `4 passed`¡C
+- [x] Task 0â€“2ï¼šè¨ˆç•«ã€Red å¥‘ç´„èˆ‡åŸºæœ¬ audit core
+- [ ] Task 3â€“15ï¼šå°šæœªé–‹å§‹
+- æ–°å¢ `mcp_second_brain/article_audit.py`ï¼Œé‡ç”¨ `note_row.parse_frontmatter`ã€‚
+- æƒææ™‚åªå›å‚³ vault-relative pathsï¼Œä¸¦è·³éè§£æåˆ° vault å¤–éƒ¨çš„ Markdown symlinkã€‚
+- é©—è­‰ï¼š`PYTHONPATH="$PWD" /Users/lab_center/.venvs/second-brain/bin/python -m pytest tests/test_article_audit.py -q` â†’ `4 passed`ã€‚
 
-### 2026-08-29 ¡X Task 3 completed (Red)
+### 2026-08-29 â€” Task 3 completed (Red)
 
-- [x] Task 0¡V3¡G­pµe¡B°ò¥» core »P exact duplicate Red ³W«h
-- [ ] Task 4¡V15¡G©|¥¼¶}©l
-- ·s¼W DOI Àu¥ı¡Bcanonical URL ¥h°lÂÜ°Ñ¼Æ¡Bnormalized title + source »P¨¾»y·N»~§P fixtures¡C
-- Red ÅçÃÒ²Å¦X¹w´Á¡GDOI duplicate group ¤´¬°ªÅ¡A³æ¤@´ú¸Õ `1 failed, 7 deselected`¡C
+- [x] Task 0â€“3ï¼šè¨ˆç•«ã€åŸºæœ¬ core èˆ‡ exact duplicate Red è¦å‰‡
+- [ ] Task 4â€“15ï¼šå°šæœªé–‹å§‹
+- æ–°å¢ DOI å„ªå…ˆã€canonical URL å»è¿½è¹¤åƒæ•¸ã€normalized title + source èˆ‡é˜²èªæ„èª¤åˆ¤ fixturesã€‚
+- Red é©—è­‰ç¬¦åˆé æœŸï¼šDOI duplicate group ä»ç‚ºç©ºï¼Œå–®ä¸€æ¸¬è©¦ `1 failed, 7 deselected`ã€‚
 
-### 2026-08-29 ¡X Task 4 completed (Green)
+### 2026-08-29 â€” Task 4 completed (Green)
 
-- [x] Task 0¡V4¡Gexact duplicate detection §¹¦¨
-- [ ] Task 5¡V15¡G©|¥¼¶}©l
-- ¹ê§@ DOI ¡÷ canonical URL ¡÷ normalized title + source ªºÀu¥ı¤Ç°t¡A©Ò¦³­Ô¿ï©T©w `confidence=exact`¡C
-- ÅçÃÒ¡G`tests/test_article_audit.py` ¡÷ `8 passed`¡A»y·N¬Û¦ü¨¾»~§P fixture ³q¹L¡C
+- [x] Task 0â€“4ï¼šexact duplicate detection å®Œæˆ
+- [ ] Task 5â€“15ï¼šå°šæœªé–‹å§‹
+- å¯¦ä½œ DOI â†’ canonical URL â†’ normalized title + source çš„å„ªå…ˆåŒ¹é…ï¼Œæ‰€æœ‰å€™é¸å›ºå®š `confidence=exact`ã€‚
+- é©—è­‰ï¼š`tests/test_article_audit.py` â†’ `8 passed`ï¼Œèªæ„ç›¸ä¼¼é˜²èª¤åˆ¤ fixture é€šéã€‚
 
-### 2026-08-29 ¡X Task 5 completed (Red)
+### 2026-08-29 â€” Task 5 completed (Red)
 
-- [x] Task 0¡V5¡Glink¡Binbox »P source-state Red ³W«h¤w­áµ²
-- [ ] Task 6¡V15¡G©|¥¼¶}©l
-- state notes ¥H `type: sync_state` »P³q¥Î source id µo²{¡A¤£µw½s vault ¨p¤H¸ô®|¡C
-- Red ÅçÃÒ²Å¦X¹w´Á¡Gbroken wikilinks ©|¥¼²£¥Í¡A³æ¤@´ú¸Õ `1 failed, 10 deselected`¡C
+- [x] Task 0â€“5ï¼šlinkã€inbox èˆ‡ source-state Red è¦å‰‡å·²å‡çµ
+- [ ] Task 6â€“15ï¼šå°šæœªé–‹å§‹
+- state notes ä»¥ `type: sync_state` èˆ‡é€šç”¨ source id ç™¼ç¾ï¼Œä¸ç¡¬ç·¨ vault ç§äººè·¯å¾‘ã€‚
+- Red é©—è­‰ç¬¦åˆé æœŸï¼šbroken wikilinks å°šæœªç”¢ç”Ÿï¼Œå–®ä¸€æ¸¬è©¦ `1 failed, 10 deselected`ã€‚
 
-### 2026-08-29 ¡X Task 6 completed (Green)
+### 2026-08-29 â€” Task 6 completed (Green)
 
-- [x] Task 0¡V6¡Glink¡Binbox »P source-state audit §¹¦¨
-- [ ] Task 7¡V15¡G©|¥¼¶}©l
-- `scope=social` ¥²©wÀË¬d¤T¨Ó·½¡F`scope=all` ¥u¦³µo²{¦Ü¤Ö¤@¥÷ sync-state ®É¤~¸É³ø¨ä¾l missing¡A«O¯dªÅ vault «´¬ù¡C
-- wikilink ±Æ°£ embed¡B¥~³¡ URL¡B¦PÀÉ heading¡Falias »P heading link ¸ÑªR¨ìµ§°O target¡C
-- ÅçÃÒ¡G`tests/test_article_audit.py` ¡÷ `11 passed`¡C
+- [x] Task 0â€“6ï¼šlinkã€inbox èˆ‡ source-state audit å®Œæˆ
+- [ ] Task 7â€“15ï¼šå°šæœªé–‹å§‹
+- `scope=social` å¿…å®šæª¢æŸ¥ä¸‰ä¾†æºï¼›`scope=all` åªæœ‰ç™¼ç¾è‡³å°‘ä¸€ä»½ sync-state æ™‚æ‰è£œå ±å…¶é¤˜ missingï¼Œä¿ç•™ç©º vault å¥‘ç´„ã€‚
+- wikilink æ’é™¤ embedã€å¤–éƒ¨ URLã€åŒæª” headingï¼›alias èˆ‡ heading link è§£æåˆ°ç­†è¨˜ targetã€‚
+- é©—è­‰ï¼š`tests/test_article_audit.py` â†’ `11 passed`ã€‚
 
-### 2026-08-29 ¡X Task 7 completed (Refactor)
+### 2026-08-29 â€” Task 7 completed (Refactor)
 
-- [x] Task 0¡V7¡Garticle audit core »P janitor ¦@¥Î helper §¹¦¨
-- [ ] Task 8¡V15¡G©|¥¼¶}©l
-- ©â¥X¥²­n frontmatter¡B¹O´Á inbox¡B©R¦W pattern ¤T²Õ¥uÅª helper¡Fjanitor «O¯d­ì CLI °Ñ¼Æ»P¤å¦r®æ¦¡¡C
-- ¦^Âk¡G`tests/test_article_audit.py tests/test_vault_sleep.py` ¡÷ `58 passed`¡C
-- bare-script ÅçÃÒ¡G`vault_janitor.py --help` ¥¿±`¦C¥X `--push` »P `--execute`¡C
+- [x] Task 0â€“7ï¼šarticle audit core èˆ‡ janitor å…±ç”¨ helper å®Œæˆ
+- [ ] Task 8â€“15ï¼šå°šæœªé–‹å§‹
+- æŠ½å‡ºå¿…è¦ frontmatterã€é€¾æœŸ inboxã€å‘½å pattern ä¸‰çµ„åªè®€ helperï¼›janitor ä¿ç•™åŸ CLI åƒæ•¸èˆ‡æ–‡å­—æ ¼å¼ã€‚
+- å›æ­¸ï¼š`tests/test_article_audit.py tests/test_vault_sleep.py` â†’ `58 passed`ã€‚
+- bare-script é©—è­‰ï¼š`vault_janitor.py --help` æ­£å¸¸åˆ—å‡º `--push` èˆ‡ `--execute`ã€‚
 
 ### 2026-08-29 - Task 8 completed (Red)
 
@@ -463,7 +463,7 @@ Task 14 «e¥²¶·§¹¦¨±Æµ{²{ªp¡B¤TªA°È­«±Ò»P¦^ºu±ø¥óÀË¬d¡FTask 14 ¥¼³q¹L«e¤£«Ø¥ß©w´Á
 - Read-only proof: both live audits returned structured output plus text fallback; Markdown fingerprints and write-audit hashes were unchanged.
 - Harvest proof: registry remains `harvest_submit`, `harvest_status`, `import_manual`, and `import_status`; unauthenticated HTTP remains 401.
 - Skill sync: Drive canonical, Windows `~/.agents/skills`, and macOS `~/.agents/skills` copies match the validated source; remote QA is PASS.
-- Scheduler precheck: `com.user.vault-janitor` is active weekly at 07:30 with `--push --execute`; this deployment did not change it.
+- Scheduler precheck: `com.user.vault-janitor` is active daily at 07:30 with `--push --execute`; this deployment did not change it.
 - Rollback artifacts: dated plist and start-script backups remain on the central host; the original dirty Git worktree was not modified.
 
 ### 2026-08-29 - Task 15 completed (Manual replay and heartbeat)
