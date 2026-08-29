@@ -22,6 +22,7 @@ Everything is plain Markdown — sync via Google Drive / iCloud / git, switch ag
 - **Figure-level search** — `search_figures("UMAP melanocyte")` returns the exact panel across your whole library.
 - **Self-organizing** — new notes auto-link to related ones; frequently-read notes extract reusable rules.
 - **Memory that forgets like a brain** — Ebbinghaus ranking; stale notes auto-compress (60–90% fewer tokens).
+- **Read-only housekeeping audit** — inspect article metadata, links, exact duplicate candidates, inbox age, and source freshness without changing the vault.
 - **Session continuity** — `get_context()` reloads goals + top notes + rules at the start of every session.
 - **Pluggable backend** — DuckDB (default, offline) or Postgres + pgvector (central, multi-machine). Self-hosted embeddings optional; BM25 fallback when offline.
 
@@ -47,11 +48,16 @@ The vault directory and templates are created on first run. Then tell your agent
 | `get_context` | Session start — goals + top-ranked notes + auto-rules |
 | `save_article` | URL / PDF → Markdown + figures + embeddings |
 | `search_notes` / `search_figures` | Hybrid BM25 + semantic search (note text / figure content) |
+| `audit_article_records` | Bounded, read-only article housekeeping and social-source freshness report |
 | `new_note` / `update_note` / `append_to_note` | Create & edit notes (auto-filed, auto-indexed, auto-linked) |
 | `vault_sleep` | Compress old, low-activity notes |
 | `get_agent_instructions` | Serve the full filing SOP (AGENTS.md) to remote agents |
 
 Full tool reference (30+ tools) lives in **[AGENTS.md](AGENTS.md)**.
+
+Use `search_notes` when you need content, `health_check` when the server or index may be
+unhealthy, and `audit_article_records` when you need a housekeeping report. Audit results
+never merge, archive, or delete notes automatically.
 
 ## How It Works
 

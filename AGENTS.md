@@ -6,7 +6,7 @@
 >
 > **When adding documentation**: modify the relevant section here, then update the Last updated date.
 >
-> **Last updated:** 2026-07-23
+> **Last updated:** 2026-08-29
 
 ---
 
@@ -14,7 +14,7 @@
 
 Second Brain is a personal knowledge management server that exposes vault read/write, search, archiving, and maintenance via MCP.
 
-- **MCP server**: `server.py` (38 tools — see Tool Reference; keep this count in sync when adding/removing tools)
+- **MCP server**: `server.py` (39 tools — see Tool Reference; keep this count in sync when adding/removing tools)
 - **Index backend**: pluggable `VaultStore` (`store/`), selected by `SB_DB_BACKEND`:
   - `postgres` (central brain) — `store/postgres_store.py`, Postgres 16 + pgvector + pg_trgm, connection-pooled, multi-machine concurrent read/write via MVCC.
   - `duckdb` (default / offline fallback) — `store/duckdb_store.py` wrapping `vault_db.py`.
@@ -72,6 +72,7 @@ Postgres directly.
 | "Search for X" | `search_notes(query)` | Semantic search; wrap in quotes for exact match |
 | "Show grouped search results" | `search_grouped(query)` | Results grouped by note type |
 | "Search news / recent articles" | `search_news_tool(query, days)` | Default: last 7 days |
+| "Audit article housekeeping" | `audit_article_records(scope, limit, stale_after_days)` | Read-only, bounded report for metadata, links, exact duplicate candidates, overdue inbox, and social-source state |
 | "Read this note" | `read_note(path)` | path relative to vault root |
 | "Read as image" | `read_note_as_image(path)` | For notes with charts/figures |
 | "Show decision log" | `get_decisions(project)` | Omit project for all decisions |
@@ -191,6 +192,11 @@ When answering a question that *might* need a figure, climb only as far as neede
 4. Decision log           → get_decisions(project)
 5. Read full note         → read_note(path)
 ```
+
+**Tool boundary:** use `search_notes` to retrieve content, `health_check` to diagnose
+server/index/runtime health, and `audit_article_records` only for article-record
+housekeeping. The audit is read-only: duplicate groups and recommended actions always
+require human confirmation before merge, archive, or deletion.
 
 ### C. Vault maintenance (periodic or on demand)
 
