@@ -403,3 +403,10 @@ Task 14 前必須完成排程現況、三服務重啟與回滾條件檢查；Task 14 未通過前不建立定期
 - 抽出必要 frontmatter、逾期 inbox、命名 pattern 三組只讀 helper；janitor 保留原 CLI 參數與文字格式。
 - 回歸：`tests/test_article_audit.py tests/test_vault_sleep.py` → `58 passed`。
 - bare-script 驗證：`vault_janitor.py --help` 正常列出 `--push` 與 `--execute`。
+
+### 2026-08-29 - Task 8 completed (Red)
+
+- [x] Task 0-8: MCP article audit contract is specified through FastMCP public seams.
+- [ ] Task 9-15: not started.
+- Red verification: `python -m pytest tests/test_server.py::TestAuditArticleRecordsMCPContract -q` -> `6 failed`; every failure is caused by the missing `audit_article_records` registration.
+- Contract covers registration, bounded input schema, read-only annotations, structured output/text fallback, unreadable vault, invalid social state, and limit overflow.

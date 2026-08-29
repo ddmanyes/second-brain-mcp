@@ -1,10 +1,13 @@
-"""Tests for server.py — Phase 4: read_note_as_image + save_article URL normalisation."""
+"""Tests for server.py public helpers and MCP tool contracts."""
 
+import asyncio
+import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from mcp.server.fastmcp.exceptions import ToolError
 
 
 
@@ -36,6 +39,157 @@ def vault(tmp_path: Path) -> Path:
     )
     vault_db.sync_all(tmp_path)
     return tmp_path
+
+
+def _mcp_tool(server, name: str):
+    """Return one tool through FastMCP's public listing seam."""
+    tools = asyncio.run(server.mcp.list_tools())
+    matches = [tool for tool in tools if tool.name == name]
+    assert len(matches) == 1, f"expected exactly one registered MCP tool named {name!r}"
+    return matches[0]
+
+
+def _call_mcp(server, name: str, arguments: dict):
+    """Invoke a tool through FastMCP's public call seam."""
+    return asyncio.run(server.mcp.call_tool(name, arguments))
+
+
+# ---------------------------------------------------------------------------
+# Article housekeeping — audit_article_records MCP contract
+# ---------------------------------------------------------------------------
+
+
+class TestAuditArticleRecordsMCPContract:
+    TOOL_NAME = "audit_article_records"
+
+    def test_tool_registration_and_bounded_input_schema(self):
+        from mcp_second_brain import server
+
+        tool = _mcp_tool(server, self.TOOL_NAME)
+        properties = tool.inputSchema["properties"]
+
+        assert tool.inputSchema["required"] == []
+        assert properties["scope"]["default"] == "all"
+        assert properties["scope"]["enum"] == ["articles", "social", "all"]
+        assert properties["limit"] == {
+            "default": 100,
+            "maximum": 500,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer",
+        }
+        assert properties["stale_after_days"] == {
+            "default": 8,
+            "maximum": 90,
+            "minimum": 1,
+            "title": "Stale After Days",
+            "type": "integer",
+        }
+
+    def test_tool_is_explicitly_read_only_and_has_structured_output(self):
+        from mcp_second_brain import server
+
+        tool = _mcp_tool(server, self.TOOL_NAME)
+
+        assert tool.annotations is not None
+        assert tool.annotations.model_dump(by_alias=True, exclude_none=True) == {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+        assert tool.outputSchema is not None
+        assert tool.outputSchema["type"] == "object"
+
+    def test_call_returns_structured_content_and_equivalent_text_fallback(
+        self, vault, monkeypatch
+    ):
+        from mcp_second_brain import server
+
+        monkeypatch.setattr(server, "VAULT", vault)
+        content, structured = _call_mcp(server, self.TOOL_NAME, {})
+
+        assert structured["scope"] == "all"
+        assert structured["counts"]["vault_markdown_files"] == 1
+        assert set(structured["issues"]) == {
+            "missing_frontmatter",
+            "broken_wikilinks",
+            "exact_duplicate_groups",
+            "overdue_inbox",
+            "stale_sources",
+        }
+        assert len(content) == 1
+        assert content[0].type == "text"
+        assert json.loads(content[0].text) == structured
+
+    def test_unreadable_vault_returns_actionable_tool_error(self, tmp_path, monkeypatch):
+        from mcp_second_brain import server
+
+        missing_vault = tmp_path / "missing-vault"
+        monkeypatch.setattr(server, "VAULT", missing_vault)
+
+        with pytest.raises(ToolError) as exc_info:
+            _call_mcp(server, self.TOOL_NAME, {})
+
+        message = str(exc_info.value)
+        assert "could not read vault" in message.lower()
+        assert "SECOND_BRAIN_PATH" in message
+        assert "retry" in message.lower()
+
+    def test_corrupt_social_state_is_reported_without_failing_audit(
+        self, vault, monkeypatch
+    ):
+        from mcp_second_brain import server
+
+        state_dir = vault / "memory" / "sync-state"
+        state_dir.mkdir(parents=True)
+        state_path = state_dir / "x-bookmarks.md"
+        state_path.write_text(
+            "---\n"
+            "title: X bookmark sync state\n"
+            "date: 2026-08-29\n"
+            "type: sync_state\n"
+            "status: active\n"
+            "source: x-bookmarks\n"
+            "last_synced_at: definitely-not-a-date\n"
+            "pending: many\n"
+            "---\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(server, "VAULT", vault)
+
+        _, structured = _call_mcp(
+            server,
+            self.TOOL_NAME,
+            {"scope": "social", "stale_after_days": 8},
+        )
+
+        invalid = next(
+            issue
+            for issue in structured["issues"]["stale_sources"]
+            if issue["source"] == "x-bookmarks"
+        )
+        assert invalid["status"] == "invalid"
+        assert invalid["path"] == "memory/sync-state/x-bookmarks.md"
+        assert any(
+            "Invalid sync state fields" in warning
+            and "memory/sync-state/x-bookmarks.md" in warning
+            for warning in structured["warnings"]
+        )
+        assert any(
+            "social source state" in action
+            for action in structured["recommended_actions"]
+        )
+
+    def test_limit_above_contract_returns_actionable_tool_error(self):
+        from mcp_second_brain import server
+
+        with pytest.raises(ToolError) as exc_info:
+            _call_mcp(server, self.TOOL_NAME, {"limit": 501})
+
+        message = str(exc_info.value).lower()
+        assert "limit" in message
+        assert "500" in message
 
 
 # ---------------------------------------------------------------------------
