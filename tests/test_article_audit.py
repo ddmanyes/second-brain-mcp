@@ -1,5 +1,6 @@
 """Contract tests for the read-only article audit core."""
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -229,3 +230,122 @@ def test_similar_titles_are_not_exact_duplicates(tmp_path: Path) -> None:
     result = audit_article_records(tmp_path)
 
     assert result["issues"]["exact_duplicate_groups"] == []
+
+def test_wikilink_audit_handles_missing_heading_alias_and_embeds(
+    tmp_path: Path,
+) -> None:
+    _write_note(
+        tmp_path,
+        "30-resources/existing.md",
+        _article_note("Existing", "https://example.com/existing"),
+    )
+    linker = _article_note("Linker", "https://example.com/linker") + """
+## Local heading
+
+[[30-resources/existing]]
+[[30-resources/existing#Section|Readable alias]]
+[[30-resources/missing]]
+[[#Local heading]]
+![[figures/missing-image.png]]
+[External](https://example.com/outside)
+"""
+    _write_note(tmp_path, "30-resources/linker.md", linker)
+
+    result = audit_article_records(tmp_path)
+
+    assert result["issues"]["broken_wikilinks"] == [
+        {
+            "path": "30-resources/linker.md",
+            "target": "30-resources/missing",
+        }
+    ]
+
+
+def test_inbox_article_is_overdue_after_seven_days(tmp_path: Path) -> None:
+    old_note = _article_note("Old inbox article", "https://example.com/old").replace(
+        "date: 2026-08-29",
+        "date: 2026-08-01",
+    )
+    recent_note = _article_note(
+        "Recent inbox article",
+        "https://example.com/recent",
+    ).replace("date: 2026-08-29", "date: 2026-08-25")
+    _write_note(tmp_path, "00-inbox/old.md", old_note)
+    _write_note(tmp_path, "00-inbox/recent.md", recent_note)
+
+    result = audit_article_records(
+        tmp_path,
+        now=datetime(2026, 8, 29, tzinfo=timezone.utc),
+    )
+
+    assert result["issues"]["overdue_inbox"] == [
+        {"path": "00-inbox/old.md", "age_days": 28}
+    ]
+
+
+def _sync_state_note(
+    source: str,
+    last_synced_at: str,
+    pending: int,
+) -> str:
+    return (
+        "---\n"
+        f"title: {source} sync state\n"
+        "date: 2026-08-29\n"
+        "type: sync_state\n"
+        "status: active\n"
+        f"source: {source}\n"
+        f"last_synced_at: {last_synced_at}\n"
+        f"pending: {pending}\n"
+        "---\n"
+    )
+
+
+def test_source_state_reports_pending_stale_and_missing(tmp_path: Path) -> None:
+    _write_note(
+        tmp_path,
+        "memory/x-state.md",
+        _sync_state_note("x-bookmarks", "2026-08-28T00:00:00+00:00", 2),
+    )
+    _write_note(
+        tmp_path,
+        "memory/threads-state.md",
+        _sync_state_note("threads-bookmarks", "2026-08-01T00:00:00+00:00", 0),
+    )
+
+    result = audit_article_records(
+        tmp_path,
+        scope="social",
+        stale_after_days=8,
+        now=datetime(2026, 8, 29, tzinfo=timezone.utc),
+    )
+
+    by_source = {
+        issue["source"]: issue for issue in result["issues"]["stale_sources"]
+    }
+    assert by_source == {
+        "github-stars": {
+            "source": "github-stars",
+            "path": None,
+            "status": "missing",
+            "last_synced_at": None,
+            "age_days": None,
+            "pending": None,
+        },
+        "threads-bookmarks": {
+            "source": "threads-bookmarks",
+            "path": "memory/threads-state.md",
+            "status": "stale",
+            "last_synced_at": "2026-08-01T00:00:00+00:00",
+            "age_days": 28,
+            "pending": 0,
+        },
+        "x-bookmarks": {
+            "source": "x-bookmarks",
+            "path": "memory/x-state.md",
+            "status": "pending",
+            "last_synced_at": "2026-08-28T00:00:00+00:00",
+            "age_days": 1,
+            "pending": 2,
+        },
+    }

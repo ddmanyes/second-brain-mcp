@@ -380,3 +380,10 @@ Task 14 前必須完成排程現況、三服務重啟與回滾條件檢查；Task 14 未通過前不建立定期
 - [ ] Task 5–15：尚未開始
 - 實作 DOI → canonical URL → normalized title + source 的優先匹配，所有候選固定 `confidence=exact`。
 - 驗證：`tests/test_article_audit.py` → `8 passed`，語意相似防誤判 fixture 通過。
+
+### 2026-08-29 — Task 5 completed (Red)
+
+- [x] Task 0–5：link、inbox 與 source-state Red 規則已凍結
+- [ ] Task 6–15：尚未開始
+- state notes 以 `type: sync_state` 與通用 source id 發現，不硬編 vault 私人路徑。
+- Red 驗證符合預期：broken wikilinks 尚未產生，單一測試 `1 failed, 10 deselected`。
