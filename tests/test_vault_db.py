@@ -2,6 +2,7 @@
 
 import math
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -24,10 +25,11 @@ def vault(tmp_path: Path) -> Path:
     """Minimal vault with three notes at different ages."""
     (tmp_path / "10-projects").mkdir()
     (tmp_path / "30-resources").mkdir()
+    recent_date = date.today().isoformat()
 
     notes = {
         "10-projects/alpha.md": (
-            "---\ntitle: Alpha Project\ndate: 2026-05-28\ntype: project\n"
+            f"---\ntitle: Alpha Project\ndate: {recent_date}\ntype: project\n"
             "status: active\ntags: [ml, research]\n---\n\n"
             "This note is about machine learning and neural networks."
         ),
@@ -169,7 +171,7 @@ class TestEbbinghaus:
         assert "30-resources/gamma.md" in paths
 
     def test_sleep_candidates_recent_note_excluded(self, indexed_vault):
-        # alpha.md date=2026-01-01 → too recent → not a candidate
+        # alpha.md uses today's date → too recent → not a candidate
         candidates = vault_db.sleep_candidates(min_age_days=90, max_score=1.0)
         paths = [c["path"] for c in candidates]
         assert "10-projects/alpha.md" not in paths
