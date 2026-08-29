@@ -358,3 +358,11 @@ Task 14 前必須完成排程現況、三服務重啟與回滾條件檢查；Task 14 未通過前不建立定期
 - mac-mini 非互動 SSH 的 PATH 不含 `uv`；其 lockfile 亦因 `markitdown[all]` prerelease 解析衝突無法建立完整 `.venv`。
 - 依 `NEW_MACHINE_SETUP.md` 改用既有 `/Users/lab_center/.venvs/second-brain/bin/python`，並以 `PYTHONPATH="$PWD"` 指向隔離 worktree。
 - Red 驗證符合預期：`ModuleNotFoundError: No module named 'mcp_second_brain.article_audit'`。
+
+### 2026-08-29 — Task 2 completed (Green)
+
+- [x] Task 0–2：計畫、Red 契約與基本 audit core
+- [ ] Task 3–15：尚未開始
+- 新增 `mcp_second_brain/article_audit.py`，重用 `note_row.parse_frontmatter`。
+- 掃描時只回傳 vault-relative paths，並跳過解析到 vault 外部的 Markdown symlink。
+- 驗證：`PYTHONPATH="$PWD" /Users/lab_center/.venvs/second-brain/bin/python -m pytest tests/test_article_audit.py -q` → `4 passed`。
