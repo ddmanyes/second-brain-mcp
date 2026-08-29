@@ -477,3 +477,17 @@ Task 14 前必須完成排程現況、三服務重啟與回滾條件檢查；Task 14 未通過前不建立定期
 - Safety: `index_gap=44`; `sync_index` remained recommendation-only, and no merge, archive, delete, sleep, consolidate, prune, or index rebuild ran.
 - Automation: active heartbeat `weekly-second-brain-article-housekeeping`, every Monday at 13:30 in the local Asia/Taipei schedule.
 - Final live probe: ports 9100 and 9104 expose 39 tools with distinct vault IDs and unchanged read-only audit hashes; port 9106 still rejects unauthenticated access with 401.
+
+### 2026-08-29 - Post-deployment index-gap reconciliation completed
+
+- [x] The real index gap, audit false-positive, and stalled pg-sync schedule are resolved.
+- Path-set diagnosis: Second Brain raw gap 44 = 9 expected exclusions + 35 unindexed finance notes; LCDDA raw gap 7 = 7 expected template exclusions; neither vault had orphaned index rows.
+- Incremental recovery: manual `com.user.second-brain-pg-sync` run completed with exit 0 and reduced Second Brain raw gap from 44 to 9 without calling `sync_index`.
+- Red proof: the new fixture counted one indexable note plus three excluded control notes as four before the fix.
+- Fix commit: `f0ab984 fix: align audit gap with index exclusions` makes audit scanning exclude `.obsidian`, `.claude`, and `templates`, matching the indexer.
+- Verification: `tests/test_article_audit.py` -> `12 passed`; the full pytest suite completed with exit code 0.
+- Deployment: the shared wheel was reinstalled and ports 9100, 9104, and 9106 were restarted; final live gaps are Second Brain 0 and LCDDA 0.
+- Managed report: `article-housekeeping:2026-W35` now records `index_gap=0`; one managed block and one weekly audit marker remain, with 133 unique candidate rows.
+- Scheduler diagnosis: `StartInterval=1800` remained stuck at `pended nondemand spawn = interval`; one 30-minute observation and a post-reload 35-minute observation produced no automatic run.
+- Scheduler repair: the original plist is backed up as `com.user.second-brain-pg-sync.plist.bak-before-calendar-20260829`; scheduling now uses `StartCalendarInterval` at minute 0 and 30.
+- Scheduler proof: the 23:00 calendar event automatically changed runs from 0 to 1 and logged `updated=394, skipped=0` with exit code 0.
