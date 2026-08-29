@@ -68,7 +68,7 @@ class TestAuditArticleRecordsMCPContract:
         tool = _mcp_tool(server, self.TOOL_NAME)
         properties = tool.inputSchema["properties"]
 
-        assert tool.inputSchema["required"] == []
+        assert tool.inputSchema.get("required", []) == []
         assert properties["scope"]["default"] == "all"
         assert properties["scope"]["enum"] == ["articles", "social", "all"]
         assert properties["limit"] == {

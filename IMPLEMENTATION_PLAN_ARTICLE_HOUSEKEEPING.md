@@ -410,3 +410,10 @@ Task 14 前必須完成排程現況、三服務重啟與回滾條件檢查；Task 14 未通過前不建立定期
 - [ ] Task 9-15: not started.
 - Red verification: `python -m pytest tests/test_server.py::TestAuditArticleRecordsMCPContract -q` -> `6 failed`; every failure is caused by the missing `audit_article_records` registration.
 - Contract covers registration, bounded input schema, read-only annotations, structured output/text fallback, unreadable vault, invalid social state, and limit overflow.
+
+### 2026-08-29 - Task 9 completed (Green)
+
+- [x] Task 0-9: `audit_article_records` is registered as a read-only structured-output MCP tool.
+- [ ] Task 10-15: not started.
+- Contract verification: `tests/test_server.py::TestAuditArticleRecordsMCPContract` -> `6 passed`.
+- Regression verification: `tests/test_server.py` -> `45 passed`; only the pre-existing optional ffmpeg warning remains.

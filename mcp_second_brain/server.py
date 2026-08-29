@@ -15,12 +15,16 @@ import threading
 import time
 from datetime import date
 from pathlib import Path
+from typing import Annotated, Literal, TypedDict
 from urllib.parse import urlparse
 
 from markitdown import MarkItDown
 from mcp.server.fastmcp import FastMCP, Image
+from mcp.types import ToolAnnotations
+from pydantic import Field
 
 from . import vault_db
+from .article_audit import audit_article_records as _audit_article_records
 from .vault_db import KNOWLEDGE_EXCLUDE
 from . import vault_sleep as _vs
 from . import figures as _fig
@@ -1203,6 +1207,73 @@ def mark_note_status(path: str, status: str) -> str:
         print(f"[second-brain] warning: DB status update failed for {path}: {e}", file=sys.stderr)
 
     return f"Status updated to '{status}': {path}"
+
+
+class AuditVaultInfo(TypedDict):
+    backend: str
+    vault_id: str
+
+
+class AuditCounts(TypedDict):
+    vault_markdown_files: int
+    indexed_notes: int
+    article_notes: int
+    research_notes: int
+    social_notes: int
+
+
+class AuditArticleRecordsResult(TypedDict):
+    run_id: str
+    generated_at: str
+    scope: str
+    vault: AuditVaultInfo
+    counts: AuditCounts
+    index_gap: int
+    issues: dict[str, list[dict[str, object]]]
+    totals: dict[str, int]
+    truncated: bool
+    recommended_actions: list[str]
+    warnings: list[str]
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+    structured_output=True,
+)
+def audit_article_records(
+    scope: Literal["articles", "social", "all"] = "all",
+    limit: Annotated[int, Field(ge=1, le=500)] = 100,
+    stale_after_days: Annotated[int, Field(ge=1, le=90)] = 8,
+) -> AuditArticleRecordsResult:
+    """Audit article records and social-source state without changing the vault.
+
+    Args:
+        scope: Audit article notes, social-source state, or both.
+        limit: Maximum results returned per issue category (1..500).
+        stale_after_days: Age at which source state is considered stale (1..90).
+    """
+    try:
+        stats = _store.db_stats()
+    except Exception:
+        stats = {}
+
+    backend = str(
+        stats.get("backend") or os.environ.get("SB_DB_BACKEND", "duckdb")
+    ).lower()
+    return _audit_article_records(
+        VAULT,
+        scope=scope,
+        limit=limit,
+        stale_after_days=stale_after_days,
+        indexed_notes=stats.get("total_notes"),
+        vault_backend=backend,
+        vault_id=VAULT.name,
+    )
 
 
 @mcp.tool()
