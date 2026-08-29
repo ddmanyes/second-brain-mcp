@@ -366,3 +366,10 @@ Task 14 前必須完成排程現況、三服務重啟與回滾條件檢查；Task 14 未通過前不建立定期
 - 新增 `mcp_second_brain/article_audit.py`，重用 `note_row.parse_frontmatter`。
 - 掃描時只回傳 vault-relative paths，並跳過解析到 vault 外部的 Markdown symlink。
 - 驗證：`PYTHONPATH="$PWD" /Users/lab_center/.venvs/second-brain/bin/python -m pytest tests/test_article_audit.py -q` → `4 passed`。
+
+### 2026-08-29 — Task 3 completed (Red)
+
+- [x] Task 0–3：計畫、基本 core 與 exact duplicate Red 規則
+- [ ] Task 4–15：尚未開始
+- 新增 DOI 優先、canonical URL 去追蹤參數、normalized title + source 與防語意誤判 fixtures。
+- Red 驗證符合預期：DOI duplicate group 仍為空，單一測試 `1 failed, 7 deselected`。

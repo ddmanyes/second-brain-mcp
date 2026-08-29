@@ -113,3 +113,119 @@ def test_limit_caps_issue_payload_but_preserves_total(tmp_path: Path) -> None:
     ]
     assert result["totals"]["missing_frontmatter"] == 3
     assert result["truncated"] is True
+
+
+def _article_note(title: str, source: str, *, doi: str = "") -> str:
+    doi_line = f"doi: {doi}\n" if doi else ""
+    return (
+        "---\n"
+        f"title: {title}\n"
+        "date: 2026-08-29\n"
+        "type: resource\n"
+        "status: active\n"
+        f"source: {source}\n"
+        f"{doi_line}"
+        "tags: [article]\n"
+        "---\n\n"
+        f"# {title}\n"
+    )
+
+
+def test_doi_match_is_case_insensitive_and_has_priority(tmp_path: Path) -> None:
+    _write_note(
+        tmp_path,
+        "30-resources/a.md",
+        _article_note(
+            "First title",
+            "https://example.com/first",
+            doi="10.1234/ABC.Def",
+        ),
+    )
+    _write_note(
+        tmp_path,
+        "30-resources/b.md",
+        _article_note(
+            "Different title",
+            "https://other.example/paper",
+            doi="https://doi.org/10.1234/abc.def",
+        ),
+    )
+
+    result = audit_article_records(tmp_path)
+
+    assert result["issues"]["exact_duplicate_groups"] == [
+        {
+            "match_key": "doi:10.1234/abc.def",
+            "paths": ["30-resources/a.md", "30-resources/b.md"],
+            "confidence": "exact",
+        }
+    ]
+
+
+def test_canonical_url_strips_tracking_parameters(tmp_path: Path) -> None:
+    _write_note(
+        tmp_path,
+        "30-resources/a.md",
+        _article_note(
+            "Story",
+            "https://EXAMPLE.com/story/?utm_source=x&id=42",
+        ),
+    )
+    _write_note(
+        tmp_path,
+        "30-resources/b.md",
+        _article_note(
+            "Story copy",
+            "https://example.com/story?id=42&utm_medium=email",
+        ),
+    )
+
+    result = audit_article_records(tmp_path)
+
+    assert result["issues"]["exact_duplicate_groups"] == [
+        {
+            "match_key": "url:https://example.com/story?id=42",
+            "paths": ["30-resources/a.md", "30-resources/b.md"],
+            "confidence": "exact",
+        }
+    ]
+
+
+def test_normalized_title_and_non_url_source_match(tmp_path: Path) -> None:
+    _write_note(
+        tmp_path,
+        "30-resources/a.md",
+        _article_note("A Useful Article!", "Example Weekly"),
+    )
+    _write_note(
+        tmp_path,
+        "30-resources/b.md",
+        _article_note("  a useful article  ", "example weekly"),
+    )
+
+    result = audit_article_records(tmp_path)
+
+    assert result["issues"]["exact_duplicate_groups"] == [
+        {
+            "match_key": "title_source:a useful article|example weekly",
+            "paths": ["30-resources/a.md", "30-resources/b.md"],
+            "confidence": "exact",
+        }
+    ]
+
+
+def test_similar_titles_are_not_exact_duplicates(tmp_path: Path) -> None:
+    _write_note(
+        tmp_path,
+        "30-resources/a.md",
+        _article_note("TGF beta drives fibrosis", "Journal A"),
+    )
+    _write_note(
+        tmp_path,
+        "30-resources/b.md",
+        _article_note("TGF beta reduces fibrosis", "Journal B"),
+    )
+
+    result = audit_article_records(tmp_path)
+
+    assert result["issues"]["exact_duplicate_groups"] == []
