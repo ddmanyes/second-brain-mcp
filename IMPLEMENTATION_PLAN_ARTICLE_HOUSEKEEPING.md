@@ -395,3 +395,11 @@ Task 14 前必須完成排程現況、三服務重啟與回滾條件檢查；Task 14 未通過前不建立定期
 - `scope=social` 必定檢查三來源；`scope=all` 只有發現至少一份 sync-state 時才補報其餘 missing，保留空 vault 契約。
 - wikilink 排除 embed、外部 URL、同檔 heading；alias 與 heading link 解析到筆記 target。
 - 驗證：`tests/test_article_audit.py` → `11 passed`。
+
+### 2026-08-29 — Task 7 completed (Refactor)
+
+- [x] Task 0–7：article audit core 與 janitor 共用 helper 完成
+- [ ] Task 8–15：尚未開始
+- 抽出必要 frontmatter、逾期 inbox、命名 pattern 三組只讀 helper；janitor 保留原 CLI 參數與文字格式。
+- 回歸：`tests/test_article_audit.py tests/test_vault_sleep.py` → `58 passed`。
+- bare-script 驗證：`vault_janitor.py --help` 正常列出 `--push` 與 `--execute`。

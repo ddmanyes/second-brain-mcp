@@ -42,6 +42,18 @@ def _import_vault_db():
         import vault_db  # type: ignore[no-redef]
     return vault_db
 
+def _import_article_audit():
+    """Import article_audit in package and bare-script run modes."""
+    try:
+        from . import article_audit
+    except ImportError:
+        package_parent = str(Path(__file__).parent.parent)
+        if package_parent not in sys.path:
+            sys.path.insert(0, package_parent)
+        from mcp_second_brain import article_audit
+    return article_audit
+
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -170,14 +182,17 @@ def archive_old_briefings(keep_days: int = BRIEFING_KEEP_DAYS, dry_run: bool = T
 
 def check_inbox_overdue() -> list[str]:
     """Return inbox notes older than INBOX_OVERDUE_DAYS days."""
-    cutoff = datetime.now() - timedelta(days=INBOX_OVERDUE_DAYS)
-    overdue: list[str] = []
-    for f in INBOX_DIR.glob("*.md"):
-        mtime = datetime.fromtimestamp(f.stat().st_mtime)
-        if mtime < cutoff:
-            age = (datetime.now() - mtime).days
-            overdue.append(f"{f.name}  ({age}d)")
-    return sorted(overdue)
+    article_audit = _import_article_audit()
+    overdue = article_audit.find_overdue_inbox(
+        VAULT,
+        now=datetime.now().astimezone(),
+        overdue_days=INBOX_OVERDUE_DAYS,
+        prefer_frontmatter_date=False,
+    )
+    return [
+        f"{Path(item['path']).name}  ({item['age_days']}d)"
+        for item in overdue
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -186,12 +201,15 @@ def check_inbox_overdue() -> list[str]:
 
 def check_naming_violations() -> list[str]:
     """Detect files in 20-areas/coding/ that match old naming patterns."""
-    violations: list[str] = []
-    for f in CODING_DIR.glob("*.md"):
-        for pattern in NAMING_VIOLATION_PATTERNS:
-            if re.match(pattern, f.name):
-                violations.append(f"{f.name}  (matches: {pattern})")
-    return violations
+    article_audit = _import_article_audit()
+    violations = article_audit.find_naming_violations(
+        CODING_DIR,
+        NAMING_VIOLATION_PATTERNS,
+    )
+    return [
+        f"{item['path']}  (matches: {item['pattern']})"
+        for item in violations
+    ]
 
 
 # ---------------------------------------------------------------------------

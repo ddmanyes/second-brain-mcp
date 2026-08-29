@@ -11,13 +11,18 @@ import unicodedata
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Iterable, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
 from .note_row import parse_frontmatter
 
-__all__ = ["audit_article_records"]
+__all__ = [
+    "audit_article_records",
+    "find_naming_violations",
+    "find_overdue_inbox",
+    "missing_required_frontmatter",
+]
 
 AuditScope = Literal["articles", "social", "all"]
 
@@ -107,6 +112,85 @@ def _is_article_note(relative_path: str, frontmatter: dict[str, str]) -> bool:
 
 def _empty_issues() -> dict[str, list[dict]]:
     return {key: [] for key in _ISSUE_KEYS}
+
+def missing_required_frontmatter(
+    frontmatter: dict[str, str],
+    required: Iterable[str] = _REQUIRED_FRONTMATTER,
+) -> list[str]:
+    return sorted(field for field in required if not frontmatter.get(field))
+
+
+def find_overdue_inbox(
+    vault: Path | str,
+    *,
+    now: datetime | None = None,
+    overdue_days: int = _INBOX_OVERDUE_DAYS,
+    prefer_frontmatter_date: bool = True,
+    article_only: bool = False,
+) -> list[dict]:
+    root = Path(vault).expanduser().resolve()
+    inbox = root / "00-inbox"
+    if not inbox.is_dir():
+        return []
+
+    current_time = now or datetime.now(timezone.utc)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=timezone.utc)
+    current_time = current_time.astimezone(timezone.utc)
+
+    overdue: list[dict] = []
+    for candidate in sorted(inbox.glob("*.md")):
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if not resolved.is_relative_to(root) or not resolved.is_file():
+            continue
+
+        relative_path = candidate.relative_to(root).as_posix()
+        frontmatter: dict[str, str] = {}
+        if prefer_frontmatter_date or article_only:
+            text = resolved.read_text(encoding="utf-8", errors="ignore")
+            frontmatter = parse_frontmatter(text)
+        if article_only and not _is_article_note(relative_path, frontmatter):
+            continue
+
+        note_time = (
+            _parse_datetime(frontmatter.get("date", ""))
+            if prefer_frontmatter_date
+            else None
+        )
+        if note_time is None:
+            note_time = datetime.fromtimestamp(
+                resolved.stat().st_mtime,
+                tz=timezone.utc,
+            )
+        age_days = max(0, (current_time - note_time).days)
+        if age_days > overdue_days:
+            overdue.append({"path": relative_path, "age_days": age_days})
+    return overdue
+
+
+def find_naming_violations(
+    directory: Path | str,
+    patterns: Iterable[str],
+) -> list[dict]:
+    root = Path(directory).expanduser().resolve()
+    if not root.is_dir():
+        return []
+
+    violations: list[dict] = []
+    for candidate in sorted(root.glob("*.md")):
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if not resolved.is_relative_to(root) or not resolved.is_file():
+            continue
+        for pattern in patterns:
+            if re.match(pattern, candidate.name):
+                violations.append({"path": candidate.name, "pattern": pattern})
+    return violations
 
 
 def _normalize_doi(value: str) -> str | None:
@@ -301,9 +385,7 @@ def audit_article_records(
         social_notes += int(is_social)
 
         if is_article and scope in {"articles", "all"}:
-            missing = sorted(
-                field for field in _REQUIRED_FRONTMATTER if not frontmatter.get(field)
-            )
+            missing = missing_required_frontmatter(frontmatter)
             if missing:
                 missing_frontmatter.append(
                     {"path": relative_path, "missing_fields": missing}
@@ -319,19 +401,15 @@ def audit_article_records(
                     known_stems=known_stems,
                 )
             )
-            if relative_path.startswith("00-inbox/"):
-                note_time = _parse_datetime(frontmatter.get("date", ""))
-                if note_time is None:
-                    note_time = datetime.fromtimestamp(
-                        markdown_file.stat().st_mtime,
-                        tz=timezone.utc,
-                    )
-                age_days = max(0, (current_time - note_time).days)
-                if age_days > _INBOX_OVERDUE_DAYS:
-                    overdue_inbox.append(
-                        {"path": relative_path, "age_days": age_days}
-                    )
 
+    if scope in {"articles", "all"}:
+        overdue_inbox = find_overdue_inbox(
+            root,
+            now=current_time,
+            overdue_days=_INBOX_OVERDUE_DAYS,
+            prefer_frontmatter_date=True,
+            article_only=True,
+        )
     exact_duplicate_groups = [
         {
             "match_key": match_key,
