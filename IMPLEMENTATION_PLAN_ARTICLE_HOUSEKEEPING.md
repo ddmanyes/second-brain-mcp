@@ -449,3 +449,19 @@ Task 14 前必須完成排程現況、三服務重啟與回滾條件檢查；Task 14 未通過前不建立定期
 - Skill commit: `5d45e89 test: validate article housekeeper skill`.
 - QA result: PASS with zero FAIL and zero WARN; `quick_validate.py` reports the Skill as valid.
 - Forward-test note: the first live manual run remains in Task 15 after deployment and service verification.
+
+### 2026-08-29 - Task 14 completed (Deployment and live verification)
+
+- [x] Task 0-14: the article audit tool and personal Skill are deployed and verified.
+- [ ] Task 15: not started.
+- Topology correction: `second-brain` and `lcdda` are vault servers; `lcdda-harvest` is a four-tool ingest wrapper, not a third vault.
+- Rollout recovery: the first wheel install exposed legacy plist `PYTHONPATH` shadowing; the editable package and 38-tool services were restored before the final rollout.
+- Deployment fix: both vault start scripts now `unset PYTHONPATH`; the shared venv imports the feature wheel from site-packages.
+- Services: ports 9100 and 9104 each expose 39 tools including `audit_article_records`; port 9106 restarted with its four existing tools.
+- `second-brain`: `vault_id=second-brain`, backend `postgres`, 3748 Markdown files, 3704 indexed notes, `index_gap=44`.
+- `lcdda`: `vault_id=lcdda`, backend `postgres`, 684 Markdown files, 677 indexed notes, `index_gap=7`.
+- Read-only proof: both live audits returned structured output plus text fallback; Markdown fingerprints and write-audit hashes were unchanged.
+- Harvest proof: registry remains `harvest_submit`, `harvest_status`, `import_manual`, and `import_status`; unauthenticated HTTP remains 401.
+- Skill sync: Drive canonical, Windows `~/.agents/skills`, and macOS `~/.agents/skills` copies match the validated source; remote QA is PASS.
+- Scheduler precheck: `com.user.vault-janitor` is active weekly at 07:30 with `--push --execute`; this deployment did not change it.
+- Rollback artifacts: dated plist and start-script backups remain on the central host; the original dirty Git worktree was not modified.
