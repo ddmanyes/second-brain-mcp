@@ -31,6 +31,25 @@ _ISSUE_KEYS = (
 _REQUIRED_FRONTMATTER = ("date", "status", "title", "type")
 _DOI_RE = re.compile(r"10\.\d{4,9}/[-._;()/:a-z0-9]+", re.IGNORECASE)
 _TRACKING_QUERY_KEYS = {"fbclid", "gclid", "mc_cid", "mc_eid"}
+_WIKILINK_RE = re.compile(r"(?<!!)\[\[([^\]]+)\]\]")
+_EXPECTED_SOCIAL_SOURCES = (
+    "github-stars",
+    "threads-bookmarks",
+    "x-bookmarks",
+)
+_SOURCE_ALIASES = {
+    "github": "github-stars",
+    "github-star": "github-stars",
+    "github-stars": "github-stars",
+    "threads": "threads-bookmarks",
+    "threads-bookmark": "threads-bookmarks",
+    "threads-bookmarks": "threads-bookmarks",
+    "twitter": "x-bookmarks",
+    "x": "x-bookmarks",
+    "x-bookmark": "x-bookmarks",
+    "x-bookmarks": "x-bookmarks",
+}
+_INBOX_OVERDUE_DAYS = 7
 
 
 def _markdown_files(vault: Path) -> tuple[list[Path], list[str]]:
@@ -77,6 +96,8 @@ def _is_social_note(relative_path: str, frontmatter: dict[str, str]) -> bool:
 
 
 def _is_article_note(relative_path: str, frontmatter: dict[str, str]) -> bool:
+    if frontmatter.get("type", "").strip().lower() == "sync_state":
+        return False
     return (
         relative_path.startswith("30-resources/")
         or _is_research_note(relative_path, frontmatter)
@@ -147,6 +168,66 @@ def _duplicate_match_key(frontmatter: dict[str, str]) -> str | None:
     return None
 
 
+def _normalize_wikilink_target(raw_target: str) -> str | None:
+    target = raw_target.split("|", 1)[0].strip()
+    if not target or target.startswith("#"):
+        return None
+    target = target.split("#", 1)[0].strip().replace("\\", "/")
+    if not target or "://" in target:
+        return None
+    if target.casefold().endswith(".md"):
+        target = target[:-3]
+    return target.strip("/")
+
+
+def _find_broken_wikilinks(
+    text: str,
+    *,
+    source_path: str,
+    known_paths: set[str],
+    known_stems: set[str],
+) -> list[dict]:
+    broken: list[dict] = []
+    seen: set[str] = set()
+    for match in _WIKILINK_RE.finditer(text):
+        target = _normalize_wikilink_target(match.group(1))
+        if not target or target in seen:
+            continue
+        seen.add(target)
+        exists = target in known_paths
+        if "/" not in target:
+            exists = exists or target in known_stems
+        if not exists:
+            broken.append({"path": source_path, "target": target})
+    return broken
+
+
+def _parse_datetime(value: str) -> datetime | None:
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _canonical_source_id(value: str) -> str | None:
+    return _SOURCE_ALIASES.get(value.strip().casefold())
+
+
+def _pending_count(value: str) -> int | None:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def audit_article_records(
     vault: Path | str,
     *,
@@ -156,6 +237,7 @@ def audit_article_records(
     indexed_notes: int | None = None,
     vault_backend: str = "filesystem",
     vault_id: str | None = None,
+    now: datetime | None = None,
 ) -> dict:
     """Inspect article records under the vault and return a bounded result.
 
@@ -177,8 +259,20 @@ def audit_article_records(
             "Verify SECOND_BRAIN_PATH points to an existing directory, then retry."
         )
 
+    current_time = now or datetime.now(timezone.utc)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=timezone.utc)
+    current_time = current_time.astimezone(timezone.utc)
+
     markdown_files, warnings = _markdown_files(root)
+    known_paths = {
+        path.relative_to(root).as_posix()[:-3] for path in markdown_files
+    }
+    known_stems = {path.stem for path in markdown_files}
     missing_frontmatter: list[dict] = []
+    broken_wikilinks: list[dict] = []
+    overdue_inbox: list[dict] = []
+    source_states: dict[str, dict] = {}
     article_notes = 0
     research_notes = 0
     social_notes = 0
@@ -192,6 +286,15 @@ def audit_article_records(
         is_research = _is_research_note(relative_path, frontmatter)
         is_social = _is_social_note(relative_path, frontmatter)
         is_article = _is_article_note(relative_path, frontmatter)
+
+        if frontmatter.get("type", "").strip().lower() == "sync_state":
+            source_id = _canonical_source_id(frontmatter.get("source", ""))
+            if source_id:
+                source_states[source_id] = {
+                    "path": relative_path,
+                    "last_synced_at": frontmatter.get("last_synced_at", ""),
+                    "pending": frontmatter.get("pending", ""),
+                }
 
         article_notes += int(is_article)
         research_notes += int(is_research)
@@ -208,6 +311,26 @@ def audit_article_records(
             match_key = _duplicate_match_key(frontmatter)
             if match_key:
                 duplicate_paths[match_key].append(relative_path)
+            broken_wikilinks.extend(
+                _find_broken_wikilinks(
+                    text,
+                    source_path=relative_path,
+                    known_paths=known_paths,
+                    known_stems=known_stems,
+                )
+            )
+            if relative_path.startswith("00-inbox/"):
+                note_time = _parse_datetime(frontmatter.get("date", ""))
+                if note_time is None:
+                    note_time = datetime.fromtimestamp(
+                        markdown_file.stat().st_mtime,
+                        tz=timezone.utc,
+                    )
+                age_days = max(0, (current_time - note_time).days)
+                if age_days > _INBOX_OVERDUE_DAYS:
+                    overdue_inbox.append(
+                        {"path": relative_path, "age_days": age_days}
+                    )
 
     exact_duplicate_groups = [
         {
@@ -219,17 +342,82 @@ def audit_article_records(
         if len(paths) > 1
     ]
 
+    stale_sources: list[dict] = []
+    should_check_missing_sources = scope == "social" or (
+        scope == "all" and bool(source_states)
+    )
+    if should_check_missing_sources:
+        for source_id in _EXPECTED_SOCIAL_SOURCES:
+            state = source_states.get(source_id)
+            if state is None:
+                stale_sources.append(
+                    {
+                        "source": source_id,
+                        "path": None,
+                        "status": "missing",
+                        "last_synced_at": None,
+                        "age_days": None,
+                        "pending": None,
+                    }
+                )
+                continue
+
+            last_synced_raw = state["last_synced_at"]
+            last_synced = _parse_datetime(last_synced_raw)
+            pending = _pending_count(state["pending"])
+            if last_synced is None or pending is None:
+                warnings.append(
+                    f"Invalid sync state fields in {state['path']} for {source_id}."
+                )
+                stale_sources.append(
+                    {
+                        "source": source_id,
+                        "path": state["path"],
+                        "status": "invalid",
+                        "last_synced_at": last_synced_raw or None,
+                        "age_days": None,
+                        "pending": pending,
+                    }
+                )
+                continue
+
+            age_days = max(0, (current_time - last_synced).days)
+            status = (
+                "stale"
+                if age_days >= stale_after_days
+                else "pending"
+                if pending > 0
+                else "fresh"
+            )
+            if status != "fresh":
+                stale_sources.append(
+                    {
+                        "source": source_id,
+                        "path": state["path"],
+                        "status": status,
+                        "last_synced_at": last_synced_raw,
+                        "age_days": age_days,
+                        "pending": pending,
+                    }
+                )
+
     safe_indexed_notes = (
         len(markdown_files) if indexed_notes is None else max(0, int(indexed_notes))
     )
     issues = _empty_issues()
     issues["missing_frontmatter"] = missing_frontmatter[:limit]
+    issues["broken_wikilinks"] = broken_wikilinks[:limit]
     issues["exact_duplicate_groups"] = exact_duplicate_groups[:limit]
+    issues["overdue_inbox"] = overdue_inbox[:limit]
+    issues["stale_sources"] = stale_sources[:limit]
     totals = {key: 0 for key in _ISSUE_KEYS}
     totals["missing_frontmatter"] = len(missing_frontmatter)
+    totals["broken_wikilinks"] = len(broken_wikilinks)
     totals["exact_duplicate_groups"] = len(exact_duplicate_groups)
-    truncated = (
-        len(missing_frontmatter) > limit or len(exact_duplicate_groups) > limit
+    totals["overdue_inbox"] = len(overdue_inbox)
+    totals["stale_sources"] = len(stale_sources)
+    truncated = any(
+        total > limit for total in totals.values()
     )
 
     recommended_actions: list[str] = []
@@ -241,10 +429,22 @@ def audit_article_records(
         recommended_actions.append(
             "Review exact duplicate candidates manually before any merge or deletion."
         )
+    if broken_wikilinks:
+        recommended_actions.append(
+            "Review broken wikilinks and correct their vault-relative targets."
+        )
+    if overdue_inbox:
+        recommended_actions.append(
+            "Review overdue inbox articles and route them without automatic deletion."
+        )
+    if stale_sources:
+        recommended_actions.append(
+            "Review stale, pending, missing, or invalid social source state."
+        )
 
     return {
         "run_id": str(uuid4()),
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": current_time.isoformat(),
         "scope": scope,
         "vault": {
             "backend": vault_backend,

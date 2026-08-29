@@ -387,3 +387,11 @@ Task 14 前必須完成排程現況、三服務重啟與回滾條件檢查；Task 14 未通過前不建立定期
 - [ ] Task 6–15：尚未開始
 - state notes 以 `type: sync_state` 與通用 source id 發現，不硬編 vault 私人路徑。
 - Red 驗證符合預期：broken wikilinks 尚未產生，單一測試 `1 failed, 10 deselected`。
+
+### 2026-08-29 — Task 6 completed (Green)
+
+- [x] Task 0–6：link、inbox 與 source-state audit 完成
+- [ ] Task 7–15：尚未開始
+- `scope=social` 必定檢查三來源；`scope=all` 只有發現至少一份 sync-state 時才補報其餘 missing，保留空 vault 契約。
+- wikilink 排除 embed、外部 URL、同檔 heading；alias 與 heading link 解析到筆記 target。
+- 驗證：`tests/test_article_audit.py` → `11 passed`。
