@@ -425,3 +425,11 @@ Task 14 前必須完成排程現況、三服務重啟與回滾條件檢查；Task 14 未通過前不建立定期
 - Debug log: full-suite failure reproduced in `test_sleep_candidates_recent_note_excluded`; the fixed 2026-05-28 fixture crossed the 90-day threshold, so the recent fixture now uses `date.today()`.
 - Focused verification: the previously failing Ebbinghaus test -> `1 passed`.
 - Full verification: `pytest tests/ -q` -> `415 passed, 17 skipped`; `git diff --check` passed.
+
+### 2026-08-29 - Task 11 completed (Skill skeleton)
+
+- [x] Task 0-11: the personal `sb-article-housekeeper` Skill skeleton is versioned.
+- [ ] Task 12-15: not started.
+- Skill source branch: `feat/sb-article-housekeeper` in `antigravity-skills-zht`.
+- Skill commit: `5b06d65 feat: add second brain article housekeeper skill`.
+- Verification: `lint_skill.py` -> PASS with no warnings; `quick_validate.py` -> valid; `git diff --check` passed.
