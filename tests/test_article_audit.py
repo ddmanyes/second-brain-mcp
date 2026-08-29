@@ -87,6 +87,26 @@ def test_valid_resource_article_is_counted(tmp_path: Path, valid_article: str) -
     assert result["issues"]["missing_frontmatter"] == []
 
 
+def test_index_gap_uses_same_markdown_exclusions_as_indexer(
+    tmp_path: Path,
+    valid_article: str,
+) -> None:
+    _write_note(tmp_path, "30-resources/example.md", valid_article)
+    for path in (
+        ".obsidian/plugins/example.md",
+        ".claude/skills/example/SKILL.md",
+        "templates/note-template.md",
+    ):
+        _write_note(tmp_path, path, valid_article)
+
+    result = audit_article_records(tmp_path, indexed_notes=1)
+
+    assert result["counts"]["vault_markdown_files"] == 1
+    assert result["counts"]["indexed_notes"] == 1
+    assert result["index_gap"] == 0
+    assert result["issues"]["missing_frontmatter"] == []
+
+
 def test_missing_frontmatter_reports_required_fields_and_relative_path(
     tmp_path: Path,
 ) -> None:

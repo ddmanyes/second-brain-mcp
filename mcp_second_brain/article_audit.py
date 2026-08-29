@@ -55,6 +55,7 @@ _SOURCE_ALIASES = {
     "x-bookmarks": "x-bookmarks",
 }
 _INBOX_OVERDUE_DAYS = 7
+_INDEX_EXCLUDED_PARTS = {".obsidian", ".claude", "templates"}
 
 
 def _markdown_files(vault: Path) -> tuple[list[Path], list[str]]:
@@ -64,6 +65,9 @@ def _markdown_files(vault: Path) -> tuple[list[Path], list[str]]:
     warnings: list[str] = []
 
     for candidate in root.rglob("*.md"):
+        relative_parts = candidate.relative_to(root).parts
+        if _INDEX_EXCLUDED_PARTS.intersection(relative_parts):
+            continue
         try:
             resolved = candidate.resolve(strict=True)
         except OSError as exc:
