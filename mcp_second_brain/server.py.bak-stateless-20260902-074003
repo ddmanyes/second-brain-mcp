@@ -202,7 +202,7 @@ def _kill_old_server() -> None:
 # （刻意不在此處呼叫 _kill_old_server()；見上方說明，改在 HTTP 分支才呼叫）
 # ─────────────────────────────────────────────────────────────────────────────
 
-mcp = FastMCP("second-brain", stateless_http=True)
+mcp = FastMCP("second-brain")
 
 # Single source of truth: note type → (folder, template)
 NOTE_CONFIG: dict[str, tuple[str, str]] = {

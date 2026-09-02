@@ -48,11 +48,17 @@ _LOCAL_MODEL = os.environ.get("SB_LLM_MODEL", "gemma")
 _LOCAL_NO_THINK = os.environ.get("SB_LLM_NO_THINK", "1") not in ("0", "false", "False", "")
 
 
-def _local_chat(prompt: str, *, image_path: Path | str | None = None, timeout: int) -> str | None:
+def _local_chat(prompt: str, *, image_path: Path | str | None = None, timeout: int,
+                 max_tokens: int = 1024) -> str | None:
     """POST 到本機 OpenAI 相容 /chat/completions。無 SB_LLM_BASE_URL 則回 None（跳過）。
 
     - 對 Gemma 推理型模型傳 ``chat_template_kwargs={"enable_thinking": false}``。
     - 若最終 ``content`` 空白，退而取 ``reasoning_content``（避免推理模型吐空）。
+    - ``max_tokens`` 預設 1024 是給短輸出（關鍵字、單一分類）用的；內容豐富、輸出量大的呼叫端
+      （例如逐 chunk 抽取多條結構化陳述）必須自己傳更高的值，否則輸出會在 JSON 講到一半被硬切斷——
+      這不是「模型亂回」或格式問題，見 F3（2026-08-19，litnet-抽取稀疏的定案根因）：4 個一開始
+      被判定成 no_json_in_reply 的 chunk，唯一差別只是 max_tokens 從 1024 調到 4096，跟有沒有套
+      grammar/schema 約束無關。
     """
     if not _LOCAL_BASE:
         return None
@@ -72,7 +78,7 @@ def _local_chat(prompt: str, *, image_path: Path | str | None = None, timeout: i
         "model": _LOCAL_MODEL,
         "messages": [{"role": "user", "content": content}],
         "temperature": 0.2,
-        "max_tokens": 1024,
+        "max_tokens": max_tokens,
     }
     if _LOCAL_NO_THINK:
         payload["chat_template_kwargs"] = {"enable_thinking": False}
@@ -108,9 +114,13 @@ def _run(cmd: list[str], *, stdin: str | None = None, timeout: int, cwd: str | N
     return None
 
 
-def llm_text(prompt: str, *, timeout: int = 90) -> str | None:
-    """純文字 LLM 呼叫。本機 Gemma → Claude → Gemini（已死）。全部失敗回 None。"""
-    out = _local_chat(prompt, timeout=timeout)
+def llm_text(prompt: str, *, timeout: int = 90, max_tokens: int = 1024) -> str | None:
+    """純文字 LLM 呼叫。本機 Gemma → Claude → Gemini（已死）。全部失敗回 None。
+
+    ``max_tokens`` 只餵給本機後端（CLI 後端不支援這個參數，本來就沒有硬性上限）。預設 1024
+    是給短輸出用的；輸出量可能很大的呼叫端（例如一次要抽多條結構化陳述）應該明確傳更高的值。
+    """
+    out = _local_chat(prompt, timeout=timeout, max_tokens=max_tokens)
     if out:
         return out
     if _CLAUDE_CLI:
