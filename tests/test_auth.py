@@ -8,7 +8,12 @@ from starlette.routing import Route
 from starlette.testclient import TestClient
 
 from mcp_second_brain import auth
-from mcp_second_brain.identity import Identity, get_current_identity, hash_key
+from mcp_second_brain.identity import (
+    Identity,
+    KeyState,
+    get_current_identity,
+    hash_key,
+)
 
 
 def _build_app(capture: list | None = None) -> Starlette:
@@ -27,11 +32,12 @@ def _client(
     multi="",
     lookup_fn=None,
     capture: list | None = None,
+    db_key_count: int = 0,
 ) -> TestClient:
     monkeypatch.setenv(auth.SINGLE_KEY_ENV, single)
     monkeypatch.setenv(auth.MULTI_KEY_ENV, multi)
     app = _build_app(capture=capture)
-    n = auth.maybe_add_api_key_auth(app, lookup_fn=lookup_fn)
+    n = auth.maybe_add_api_key_auth(app, lookup_fn=lookup_fn, db_key_count=db_key_count)
     app.state.n_keys = n
     return TestClient(app)
 
@@ -143,16 +149,11 @@ class TestIdentityLookupFn:
         assert captured[0] is not None
         assert captured[0].role == "admin"
 
-    def test_revoked_key_returns_none_from_lookup(self, monkeypatch):
-        """Simulates a revoked key: lookup returns None → admin fallback via env.
-
-        Real revocation (lookup returns None AND env key also absent) should
-        return 401; tested here via a key NOT in env."""
-        lookup = self._make_lookup({})  # revoked → returns None
+    def test_unknown_key_not_in_env_is_rejected(self, monkeypatch):
+        lookup = self._make_lookup({})
         captured: list = []
-        # key is not in SB_API_KEY → rejected by middleware before lookup runs
         client = _client(monkeypatch, single="other-key", lookup_fn=lookup, capture=captured)
-        r = client.get("/mcp", headers={"X-API-Key": "revoked-key"})
+        r = client.get("/mcp", headers={"X-API-Key": "nobodys-key"})
         assert r.status_code == 401
         assert captured == []
 
@@ -164,6 +165,55 @@ class TestIdentityLookupFn:
         client.get("/mcp", headers={"X-API-Key": "bob-key"})
         assert captured[0].role == "reader"
         assert not captured[0].can_write()
+
+
+class TestRegisteredKeyRegressions:
+    """The two defects that made per-key identity unusable (MULTIUSER_PLAN R1/R2)."""
+
+    def test_db_key_authenticates_without_being_in_env(self, monkeypatch):
+        """R1: env keys must not act as an admission list for DB-registered keys.
+
+        Previously _key_accepted() ran first against the env set, so a key issued
+        via manage_api_key 401'd before lookup_fn was ever consulted.
+        """
+        alice = Identity(user_id="alice", role="reader")
+        lookup = lambda k: alice if k == "alice-key" else None  # noqa: E731
+        captured: list = []
+        client = _client(
+            monkeypatch, single="owner-env-key", lookup_fn=lookup,
+            capture=captured, db_key_count=1,
+        )
+        r = client.get("/mcp", headers={"X-API-Key": "alice-key"})
+        assert r.status_code == 200
+        assert captured[0] == alice
+
+    def test_revoked_key_is_denied_not_promoted_to_admin(self, monkeypatch):
+        """R2: revoking a key must deny it, not hand it role='admin'.
+
+        With the key also present in SB_API_KEYS (the only way R1 could be worked
+        around), revocation used to fall through to the env-key admin fallback —
+        turning 'remove this person's access' into 'make them an administrator'.
+        """
+        lookup = lambda k: KeyState.REVOKED if k == "alice-key" else None  # noqa: E731
+        captured: list = []
+        client = _client(
+            monkeypatch, single="owner-env-key", multi="alice-key",
+            lookup_fn=lookup, capture=captured,
+        )
+        r = client.get("/mcp", headers={"X-API-Key": "alice-key"})
+        assert r.status_code == 401
+        assert captured == []
+        # the owner's own env key still works — revocation is per-key
+        assert client.get("/mcp", headers={"X-API-Key": "owner-env-key"}).status_code == 200
+
+    def test_auth_stays_on_when_only_db_keys_exist(self, monkeypatch):
+        """Dropping the shared env key must not silently disable auth for everyone."""
+        alice = Identity(user_id="alice", role="writer")
+        lookup = lambda k: alice if k == "alice-key" else None  # noqa: E731
+        client = _client(monkeypatch, single="", lookup_fn=lookup, db_key_count=1)
+        assert client.app.state.n_keys == 1
+        assert client.get("/mcp").status_code == 401
+        assert client.get("/mcp", headers={"X-API-Key": "alice-key"}).status_code == 200
 
 
 # ---------------------------------------------------------------------------

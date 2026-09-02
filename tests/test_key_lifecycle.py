@@ -14,6 +14,7 @@ import pytest
 
 from mcp_second_brain.identity import (
     Identity,
+    KeyState,
     _current,
     check_admin_permission,
     hash_key,
@@ -114,11 +115,16 @@ class _MockKeyStore:
             raise ValueError(f"duplicate key_hash: {key_hash}")
         self._keys[key_hash] = {"user_id": user_id, "role": role, "revoked": False}
 
-    def get_identity_for_key(self, key_hash: str) -> Identity | None:
+    def get_identity_for_key(self, key_hash: str) -> Identity | KeyState | None:
         row = self._keys.get(key_hash)
-        if row is None or row["revoked"]:
-            return None
+        if row is None:
+            return None  # unknown key
+        if row["revoked"]:
+            return KeyState.REVOKED  # NOT None — see auth._authenticate
         return Identity(user_id=row["user_id"], role=row["role"])
+
+    def count_active_api_keys(self) -> int:
+        return sum(1 for v in self._keys.values() if not v["revoked"])
 
     def revoke_api_key(self, key_hash: str) -> bool:
         row = self._keys.get(key_hash)
@@ -158,11 +164,16 @@ class TestKeyLifecycleContract:
     def test_unknown_key_returns_none(self):
         assert self.store.get_identity_for_key(hash_key("unknown")) is None
 
-    def test_revoke_blocks_subsequent_lookup(self):
+    def test_revoke_reports_revoked_not_unknown(self):
+        """Revoked must be distinguishable from unknown.
+
+        Returning None here would send auth._authenticate down the env-key
+        fallback and hand the revoked key role='admin'.
+        """
         self.store.register_api_key(self.kh, "alice", "writer")
         revoked = self.store.revoke_api_key(self.kh)
         assert revoked is True
-        assert self.store.get_identity_for_key(self.kh) is None
+        assert self.store.get_identity_for_key(self.kh) is KeyState.REVOKED
 
     def test_revoke_returns_false_for_unknown_key(self):
         assert self.store.revoke_api_key(hash_key("nonexistent")) is False
@@ -172,8 +183,8 @@ class TestKeyLifecycleContract:
         self.store.register_api_key(self.kh, "alice", "writer")
         self.store.register_api_key(k2, "bob", "reader")
         self.store.revoke_api_key(self.kh)
-        assert self.store.get_identity_for_key(self.kh) is None
-        assert self.store.get_identity_for_key(k2) is not None
+        assert self.store.get_identity_for_key(self.kh) is KeyState.REVOKED
+        assert isinstance(self.store.get_identity_for_key(k2), Identity)
 
     def test_duplicate_register_raises(self):
         self.store.register_api_key(self.kh, "alice", "writer")
@@ -325,7 +336,7 @@ class TestLookupFnHashContract:
         assert identity.user_id == "alice"
         assert identity.role == "writer"
 
-    def test_lambda_wrapper_revoked_key_returns_none(self):
+    def test_lambda_wrapper_revoked_key_reports_revoked(self):
         raw_key = "revoked-key"
         kh = hash_key(raw_key)
 
@@ -334,7 +345,7 @@ class TestLookupFnHashContract:
         store.revoke_api_key(kh)
 
         lookup_fn = lambda raw: store.get_identity_for_key(hash_key(raw))  # noqa: E731
-        assert lookup_fn(raw_key) is None
+        assert lookup_fn(raw_key) is KeyState.REVOKED
 
 
 # ---------------------------------------------------------------------------

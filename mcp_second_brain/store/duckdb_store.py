@@ -278,7 +278,10 @@ class DuckDBStore:
     # ------------------------------------------------------------------
 
     def get_identity_for_key(self, key_hash: str) -> None:  # noqa: ARG002
-        return None  # triggers env-key admin fallback in auth.py
+        return None  # unknown key → env-key admin fallback in auth.py
+
+    def count_active_api_keys(self) -> int:
+        return 0  # no api_keys table in single-user mode
 
     def register_api_key(self, key_hash: str, user_id: str, role: str) -> None:  # noqa: ARG002
         pass

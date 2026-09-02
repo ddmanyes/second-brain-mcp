@@ -13,9 +13,22 @@ import hashlib
 import os
 import sys
 from dataclasses import dataclass
+from enum import Enum
 from typing import Optional
 
 VALID_ROLES = frozenset(("reader", "writer", "admin"))
+
+
+class KeyState(Enum):
+    """A key-lookup outcome that carries no Identity but is not "unknown".
+
+    A bare ``None`` used to mean both "no such key" and "key was revoked". The
+    env-key fallback in auth.py is correct for the first and a privilege
+    escalation for the second — a revoked key fell through to role='admin'.
+    Revocation now returns this sentinel so the two cases cannot be conflated.
+    """
+
+    REVOKED = "revoked"
 
 _current: contextvars.ContextVar[Optional["Identity"]] = contextvars.ContextVar(
     "sb_identity", default=None
