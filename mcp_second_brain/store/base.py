@@ -132,8 +132,13 @@ class VaultStore(Protocol):
         exclude_types: list[str] | None = None,
         fusion: str = "rrf",
         apply_path_penalty: bool = True,
+        rerank: bool = True,
     ) -> list[dict]:
-        """Hybrid keyword + semantic search (BM25/trgm + cosine, RRF fusion)."""
+        """Hybrid keyword + semantic search (BM25/trgm + cosine, RRF fusion),
+        then reranked (decision 2 of the chunking/embedding plan) unless
+        rerank=False. DuckDBStore ignores rerank — Postgres-only, see
+        reranker.py; ordinary RRF order is already what DuckDBStore returns.
+        """
         ...
 
     def search_news(

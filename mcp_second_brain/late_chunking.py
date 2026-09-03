@@ -32,6 +32,13 @@ exceeds the server's context window are encoded in overlapping windows; each
 window keeps only the token vectors it has full left-context for (the
 non-overlapping tail), so the stitched sequence tiles the document exactly once
 with no gap or overlap.
+
+Administrative sections (Author Contributions, Acknowledgments, Conflict of
+Interest, Data Availability, ...) are dropped before chunking at all —
+chunking.py's filter_administrative_sections(). Found during decision 2's
+reranker A/B experiment: a short, generic "Author Contributions" chunk beat
+every real content chunk on raw cosine distance for a cross-lingual query,
+which is exactly the kind of false hit that shouldn't exist in the index.
 """
 from __future__ import annotations
 
@@ -40,7 +47,7 @@ import os
 import urllib.error
 import urllib.request
 
-from .chunking import ChunkSpan, plan_chunk_spans, split_paragraphs
+from .chunking import ChunkSpan, filter_administrative_sections, plan_chunk_spans, split_paragraphs
 
 __all__ = [
     "LATE_CHUNK_URL",
@@ -264,6 +271,7 @@ def chunk_and_embed(
     default to chunking.py's module constants when omitted.
     """
     paragraphs = split_paragraphs(text)
+    paragraphs = filter_administrative_sections(paragraphs)
     if not paragraphs:
         return []
 

@@ -1,7 +1,12 @@
 """Tests for chunking.py — paragraph-aligned token chunk boundary math (Phase B-2)."""
 from __future__ import annotations
 
-from mcp_second_brain.chunking import ChunkSpan, plan_chunk_spans, split_paragraphs
+from mcp_second_brain.chunking import (
+    ChunkSpan,
+    filter_administrative_sections,
+    plan_chunk_spans,
+    split_paragraphs,
+)
 
 
 class TestSplitParagraphs:
@@ -88,3 +93,73 @@ class TestPlanChunkSpansTailMerge:
     def test_trailing_remainder_at_or_above_min_tail_stays_separate(self):
         spans = plan_chunk_spans([20, 12], target_tokens=15, min_tail_tokens=10)
         assert spans == [ChunkSpan(0, 20), ChunkSpan(20, 32)]
+
+
+class TestFilterAdministrativeSections:
+    def test_drops_heading_and_its_body(self):
+        paragraphs = [
+            "# Results",
+            "Real scientific content about macrophage polarization.",
+            "## Author Contributions",
+            "Jing Zhang and Yulan Cai conceived, supervised, wrote the manuscript.",
+        ]
+        out = filter_administrative_sections(paragraphs)
+        assert out == [
+            "# Results",
+            "Real scientific content about macrophage polarization.",
+        ]
+
+    def test_resumes_at_the_next_real_heading(self):
+        paragraphs = [
+            "## Acknowledgments",
+            "We thank the reviewers for their comments.",
+            "## References",
+            "1. Smith et al. Some paper. 2020.",
+        ]
+        out = filter_administrative_sections(paragraphs)
+        assert out == ["## References", "1. Smith et al. Some paper. 2020."]
+
+    def test_drops_multiple_separate_admin_sections(self):
+        paragraphs = [
+            "# Discussion",
+            "Real content here.",
+            "## Funding",
+            "This work was supported by grant XYZ.",
+            "## Conflict of Interest",
+            "The authors declare no conflict.",
+            "## Conclusion",
+            "Real content again.",
+        ]
+        out = filter_administrative_sections(paragraphs)
+        assert out == ["# Discussion", "Real content here.", "## Conclusion", "Real content again."]
+
+    def test_bold_only_heading_style_is_also_caught(self):
+        paragraphs = [
+            "Real content.",
+            "**Data Availability Statement**",
+            "Data are available upon reasonable request.",
+            "**Discussion**",
+            "More real content.",
+        ]
+        out = filter_administrative_sections(paragraphs)
+        assert out == ["Real content.", "**Discussion**", "More real content."]
+
+    def test_no_admin_sections_present_is_unchanged(self):
+        paragraphs = ["# Intro", "Some text.", "## Methods", "More text."]
+        assert filter_administrative_sections(paragraphs) == paragraphs
+
+    def test_admin_section_running_to_end_of_document_drops_to_the_end(self):
+        paragraphs = ["# Discussion", "Real content.", "## Acknowledgments", "Thanks everyone."]
+        out = filter_administrative_sections(paragraphs)
+        assert out == ["# Discussion", "Real content."]
+
+    def test_non_heading_paragraph_mentioning_trigger_words_is_not_dropped(self):
+        """Only headings start a skip — body prose that happens to discuss
+        funding or conflicts of interest as its actual subject matter (e.g. a
+        policy paper) must not be silently removed."""
+        paragraphs = [
+            "# Introduction",
+            "This paper studies how research funding and conflicts of interest "
+            "influence publication bias in clinical trials.",
+        ]
+        assert filter_administrative_sections(paragraphs) == paragraphs

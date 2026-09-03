@@ -32,7 +32,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-__all__ = ["ChunkSpan", "split_paragraphs", "plan_chunk_spans", "TARGET_TOKENS", "MIN_TAIL_TOKENS"]
+__all__ = [
+    "ChunkSpan",
+    "split_paragraphs",
+    "filter_administrative_sections",
+    "plan_chunk_spans",
+    "TARGET_TOKENS",
+    "MIN_TAIL_TOKENS",
+]
 
 TARGET_TOKENS = 512
 # A trailing chunk shorter than this merges into the previous one instead of
@@ -49,6 +56,51 @@ def split_paragraphs(text: str) -> list[str]:
     the original text, never reconstructed from tokens (see module docstring).
     """
     return [p for p in _PARAGRAPH_BREAK_RE.split(text) if p.strip()]
+
+
+# Decision 2's reranker A/B experiment (2026-09-03) found a paper's own
+# "## Author Contributions" chunk beating every real content chunk on raw
+# cosine distance for a Chinese-language query — short, generic administrative
+# text can spuriously look close to a query vector, especially cross-lingual.
+# Same idea as snippets.py's _METADATA_NOISE (which filters individual noisy
+# *sentences* out of verbatim-snippet extraction), but scoped to whole
+# *sections*: these headings mark boilerplate that is never the paper's own
+# scientific content, so chunking.py drops the section entirely rather than
+# just down-weighting it later at query time.
+_ADMIN_HEADING_RE = re.compile(
+    r"^#{1,6}\s|^\*\*[^*\n]+\*\*\s*$"
+)
+_ADMIN_SECTION_RE = re.compile(
+    r"(author contributions?|acknowledge?ments?|conflicts? of interest|"
+    r"competing interests?|data availab\w*|\bfunding\b|"
+    r"ethics (approval|declaration|statement)|"
+    r"supplementary (material|information)|author information|declarations?)",
+    re.IGNORECASE,
+)
+
+
+def filter_administrative_sections(paragraphs: list[str]) -> list[str]:
+    """Drop administrative/boilerplate sections (Author Contributions,
+    Acknowledgments, Conflict of Interest, Data Availability, Funding, ...).
+
+    Heuristic: a paragraph that looks like a markdown heading (``#`` prefix,
+    or a standalone bold line) whose text matches a known boilerplate section
+    name starts a skip; the skip runs through every following paragraph until
+    the next heading that does *not* match — sections are heading-delimited,
+    so this drops the section's heading and body together. A document that
+    never uses headings for these sections at all simply isn't caught (no
+    worse than before this filter existed); this only removes noise it can
+    positively identify.
+    """
+    out: list[str] = []
+    skipping = False
+    for p in paragraphs:
+        stripped = p.lstrip()
+        if _ADMIN_HEADING_RE.match(stripped):
+            skipping = bool(_ADMIN_SECTION_RE.search(stripped))
+        if not skipping:
+            out.append(p)
+    return out
 
 
 @dataclass(frozen=True)

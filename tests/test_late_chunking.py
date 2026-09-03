@@ -164,3 +164,17 @@ class TestChunkAndEmbedEndToEnd:
         (_t0, e0), (_t1, e1) = out
         assert e0[0] == pytest.approx((0 + 1) / 2)
         assert e1[0] == pytest.approx((2 + 3) / 2)
+
+    def test_administrative_sections_never_reach_the_embedding_server(self, fake_server):
+        """chunk_and_embed() filters boilerplate before tokenizing/embedding at
+        all — regression for decision 2's "Author Contributions beats real
+        content on cosine distance" finding."""
+        text = (
+            "Real scientific content about macrophages.\n\n"
+            "## Author Contributions\n\n"
+            "Jing Zhang and Yulan Cai conceived the study."
+        )
+        out = lc.chunk_and_embed(text, target_tokens=100, min_tail_tokens=0)
+        chunk_texts = [t for t, _e in out]
+        assert not any("Author Contributions" in t or "conceived" in t for t in chunk_texts)
+        assert any("macrophages" in t for t in chunk_texts)

@@ -34,6 +34,10 @@ from .. import vault_db as _vdb
 from ..late_chunking import chunk_and_embed, LateChunkingUnavailable
 from ..snippets import strip_references
 
+# Decision 2 — reranker (see reranker.py's docstring for the "top-1 chunk gets
+# fooled by boilerplate" lesson this module's NUM_CHUNKS_PER_CANDIDATE encodes).
+from .. import reranker as _reranker
+
 _SCORE_SQL = """
 (access_count + 1.0) / (1.0 + ln(GREATEST(
     (CURRENT_DATE - COALESCE(last_accessed::date, note_date, CURRENT_DATE))::float,
@@ -740,6 +744,40 @@ class PostgresStore:
             ).fetchall()
         return [{"path": r[0], "title": r[1], "score": float(r[2])} for r in rows]
 
+    def _top_chunks_for_paths(
+        self, paths: list[str], query_vec: list[float], n_per_path: int
+    ) -> dict[str, list[str]]:
+        """Each path's top-``n_per_path`` chunks by cosine distance to
+        ``query_vec``, as ``{path: [chunk_text, ...]}`` (nearest first).
+
+        One query for every candidate (window function, not N round trips) —
+        used to feed the reranker (decision 2): see reranker.py's docstring
+        for why more than one chunk per candidate matters.
+        """
+        if not paths:
+            return {}
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT note_path, chunk_text FROM (
+                    SELECT note_path, chunk_text,
+                           row_number() OVER (
+                               PARTITION BY note_path
+                               ORDER BY embedding <=> %s::vector
+                           ) AS rn
+                    FROM note_chunks
+                    WHERE note_path = ANY(%s) AND embedding IS NOT NULL
+                ) ranked
+                WHERE rn <= %s
+                ORDER BY note_path, rn
+                """,
+                [str(query_vec), paths, n_per_path],
+            ).fetchall()
+        out: dict[str, list[str]] = {}
+        for path, chunk_text in rows:
+            out.setdefault(path, []).append(chunk_text)
+        return out
+
     def hybrid_search(
         self,
         query: str,
@@ -748,7 +786,19 @@ class PostgresStore:
         exclude_types: list[str] | None = None,
         fusion: str = "rrf",  # noqa: ARG002 — always RRF for Postgres; kept for compat
         apply_path_penalty: bool = True,
+        rerank: bool = True,
     ) -> list[dict]:
+        """RRF-fused keyword + semantic search, notes and chunks merged (B-4),
+        then reranked (decision 2).
+
+        rerank: pass the fused candidates through the reranker before
+        truncating to `limit`. Default on — the A/B experiment
+        (decisions/second-brain-reranker-ab對照實驗結果-決策2.md) found a
+        consistent, substantial ranking improvement. Fails soft: an
+        unreachable reranker leaves RRF order unchanged rather than erroring
+        (see reranker.rerank()). Callers that want the pre-rerank baseline
+        (e.g. tests, or a future A/B comparison) pass rerank=False.
+        """
         bm25 = _merge_by_path_max_score(
             self._trgm_search(query, limit=limit * 2),
             self._trgm_search_chunks(query, limit=limit * 2),
@@ -786,11 +836,14 @@ class PostgresStore:
             if p not in penalty_map:
                 penalty_map[p] = _vdb._path_penalty(p) if apply_path_penalty else 1.0
 
+        # Reranking needs a wider funnel than the final `limit` — it can only
+        # promote candidates that are already in the pool, not find new ones.
+        funnel_limit = max(limit * 2, 20) if rerank else limit
         scored = sorted(
             rrf_scores.items(),
             key=lambda x: x[1] * penalty_map[x[0]],
             reverse=True,
-        )[:limit]
+        )[:funnel_limit]
 
         if not scored:
             return []
@@ -804,7 +857,7 @@ class PostgresStore:
             ).fetchall()
         meta = {r[0]: (r[1], r[2]) for r in rows}
 
-        return [
+        results = [
             {
                 "path": p,
                 "title": meta.get(p, ("", ""))[0],
@@ -814,6 +867,16 @@ class PostgresStore:
             for p, _ in scored
             if p in meta
         ]
+
+        if rerank and results:
+            query_vec = _vdb.embed_text(query)
+            if query_vec:
+                chunks_by_path = self._top_chunks_for_paths(
+                    [r["path"] for r in results], query_vec, _reranker.NUM_CHUNKS_PER_CANDIDATE
+                )
+                results = _reranker.rerank_candidates(query, results, chunks_by_path)
+
+        return results[:limit]
 
     def search_news(self, query: str, days: int = 7, limit: int = 20) -> list[dict]:
         q_like = f"% {query} %" if query.isdigit() else f"%{query.lower()}%"

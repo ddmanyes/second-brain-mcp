@@ -126,6 +126,7 @@ class DuckDBStore:
         exclude_types: list[str] | None = None,
         fusion: str = "rrf",
         apply_path_penalty: bool = True,
+        rerank: bool = True,  # noqa: ARG002 — reranker is Postgres-only, see base.py
     ) -> list[dict]:
         return vault_db.hybrid_search(
             query,
