@@ -117,6 +117,22 @@ class TestBodyAndEmbedText:
     def test_markdown_link_keeps_label(self):
         assert "label" in embed_text_for(FM + "[label](https://x.com)")
 
+    def test_embed_text_strips_references_section(self):
+        """References are the cited papers' claims, not this note's own — Phase B-0."""
+        text = (
+            FM
+            + "Main claim about pathway X.\n\n"
+            + "## References\n\n1. Some Cited Paper Title, SomeJournal 2020."
+        )
+        out = embed_text_for(text)
+        assert "Main claim about pathway X" in out
+        assert "Cited Paper Title" not in out
+
+    def test_embed_text_default_cap_exceeds_old_900_limit(self):
+        """Phase B-0: max_chars moved 900 -> ~32,000 to align with bge-m3's context."""
+        out = embed_text_for(FM + "x" * 5000)
+        assert len(out) > 900
+
 
 class TestParseDate:
     def test_iso(self):
@@ -181,6 +197,28 @@ class TestProjectNote:
         # the hash must still cover the tail, or an edit past the cut-off is invisible
         f.write_text(big + "CHANGED", encoding="utf-8")
         assert project_note(vault, f).content_hash != row.content_hash
+
+    def test_large_file_read_limit_covers_embed_text_max_chars(self, vault):
+        """Regression: LARGE_FILE_READ_LIMIT must stay >= embed_text_for's max_chars.
+
+        The old 16KB read limit truncated a large note's text before max_chars ever
+        got to run, so raising max_chars to ~32,000 without also raising the read
+        limit was a silent no-op for any note over the 32KB large-file threshold —
+        which is most research notes (median is 81,074 chars). This marker sits
+        past the old 16KB cutoff but inside the new one.
+        """
+        marker = "MARKER_PAST_OLD_16KB_CUTOFF"
+        big = FM + ("A" * 20_000) + marker + ("B" * 15_000)
+        f = _write(vault, "big.md", big)
+
+        seen = {}
+
+        def fake_embed(text):
+            seen["text"] = text
+            return [0.1]
+
+        project_note(vault, f, embed=fake_embed)
+        assert marker in seen["text"]
 
     def test_embedding_is_injected_and_uses_title_tags_body(self, vault):
         seen = {}

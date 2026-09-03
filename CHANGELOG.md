@@ -4,6 +4,19 @@ All notable source-tree changes are recorded here.
 
 ## Unreleased
 
+### Changed
+
+- `embed_text_for()` now strips the References section before capping length
+  (`snippets.strip_references` — cited-paper titles are not the note's own claims)
+  and its `max_chars` moved from 900 to ~32,000, aligned with bge-m3's 8,192-token
+  context. Fixed alongside it: `note_row.LARGE_FILE_READ_LIMIT` moved from 16 KB to
+  40 KB — it sat well under the old 900-char cap, so raising max_chars alone would
+  have been a silent no-op for every note over the 32 KB large-file threshold
+  (most research notes; median is 81,074 chars). Phase B-0 of
+  `10-projects/second-brain/phases/second-brain-分塊-embedding-與-late-chunking-實施計畫.md`.
+  Removed a dead, unused duplicate of the old read-limit constants left over in
+  `vault_db.py` from before the `note_row` extraction.
+
 ### Added
 
 - Added the read-only `audit_article_records` MCP tool with bounded parameters,

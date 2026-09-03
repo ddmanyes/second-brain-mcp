@@ -29,6 +29,8 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from .snippets import strip_references
+
 __all__ = [
     "NoteRow",
     "project_note",
@@ -41,9 +43,17 @@ __all__ = [
     "FRONTMATTER_RE",
 ]
 
-# Read only the first 16 KB of files over 32 KB — Drive I/O optimisation. The hash
+# Read only the first 40 KB of files over 32 KB — Drive I/O optimisation (still
+# skips the 4-5 MB proceedings outliers) while leaving headroom above
+# embed_text_for's own max_chars cap (see Phase B-0 note below). The hash
 # still covers the whole file, so an edit past the cut-off still triggers a reindex.
-LARGE_FILE_READ_LIMIT = 16 * 1024
+#
+# 2026-09-03: this used to be 16 KB, well under embed_text_for's old 900-char
+# cap. Raising max_chars to ~32,000 without raising this made the new cap a
+# no-op for any note over 32 KB on disk — which is most research notes (median
+# note is 81,074 chars). Both numbers have to move together or this silently
+# regresses back to the old ceiling on the next edit-triggered resync.
+LARGE_FILE_READ_LIMIT = 40 * 1024
 LARGE_FILE_THRESHOLD = 32 * 1024
 
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
@@ -77,8 +87,14 @@ def body_snippet(text: str, max_chars: int = 500) -> str:
     return body[:max_chars]
 
 
-def embed_text_for(text: str, max_chars: int = 900) -> str:
-    """Prepare text for embedding: strip code/URLs/fullwidth chars, keep prose.
+def embed_text_for(text: str, max_chars: int = 32_000) -> str:
+    """Prepare text for embedding: drop references, strip code/URLs/fullwidth chars.
+
+    max_chars defaults to ~8,192 tokens (bge-m3's context, ~4 chars/token) —
+    see 10-projects/second-brain/phases/second-brain-分塊-embedding-與-late-chunking-實施計畫.md
+    Phase B-0. References are stripped first (they are the cited papers' claims,
+    not this note's own — see snippets.strip_references) so the char budget goes
+    to the note's own prose instead of its bibliography.
 
     Three known llama-server crash triggers:
     1. URLs with query strings (?param=val)
@@ -86,6 +102,7 @@ def embed_text_for(text: str, max_chars: int = 900) -> str:
     3. Very long code blocks with shell special chars
     """
     body = FRONTMATTER_RE.sub("", text).strip()
+    body = strip_references(body)
     body = _CODE_BLOCK_RE.sub(" ", body)
     body = _INLINE_CODE_RE.sub(" ", body)
     body = _URL_RE.sub(" ", body)

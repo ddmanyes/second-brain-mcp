@@ -342,8 +342,10 @@ def _content_hash_of_file(md_file: Path) -> str:
 # Core operations
 # ---------------------------------------------------------------------------
 
-_LARGE_FILE_READ_LIMIT = 16 * 1024  # read only first 16KB for files > 32KB (Drive I/O opt)
-_LARGE_FILE_THRESHOLD = 32 * 1024
+# Note: the actual large-file read cap lives in note_row.LARGE_FILE_READ_LIMIT /
+# LARGE_FILE_THRESHOLD (used by project_note). A dead, unused duplicate of these
+# constants used to live here too — a leftover from before the note_row
+# extraction — and could mislead a reader into thinking it controlled anything.
 
 
 def upsert_note(con: duckdb.DuckDBPyConnection, vault: Path, md_file: Path) -> None:
