@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS notes (
     cluster_topic       TEXT,
     violations          TEXT,
     rules_extracted_at  TIMESTAMP,
-    embedding           vector(768)      -- nomic-embed-text / bge-m3, both return 768d on this host
+    embedding           vector(1024)     -- bge-m3-Q8_0 (1024d). Must equal vault_db.EMBED_DIM;
+                                         -- tests/test_embedding_dim.py pins the two together.
 );
 
 -- ---------------------------------------------------------------------------

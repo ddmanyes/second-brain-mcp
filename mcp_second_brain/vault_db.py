@@ -25,15 +25,16 @@ from . import note_row as _note_row
 # ---------------------------------------------------------------------------
 # Override via environment variables for Ollama compatibility:
 #   EMBED_URL=http://localhost:11434/v1/embeddings  (Ollama)
-#   EMBED_URL=http://localhost:11435/v1/embeddings  (llama-server, default)
-#   EMBED_MODEL=nomic-embed-text  (same model name works for both)
+#   EMBED_URL=http://localhost:8081/v1/embeddings   (llama-server bge-m3, default;
+#                                                    shared with Evo-PRISM)
+#   EMBED_MODEL=bge-m3            (1024d; EMBED_DIM must match)
 
 import os as _os
 
-EMBED_PORT = int(_os.environ.get("EMBED_PORT", "11435"))
+EMBED_PORT = int(_os.environ.get("EMBED_PORT", "8081"))
 EMBED_URL = _os.environ.get("EMBED_URL", f"http://localhost:{EMBED_PORT}/v1/embeddings")
-EMBED_MODEL = _os.environ.get("EMBED_MODEL", "nomic-embed-text")
-EMBED_DIM: int = int(_os.environ.get("EMBED_DIM", "768"))
+EMBED_MODEL = _os.environ.get("EMBED_MODEL", "bge-m3")
+EMBED_DIM: int = int(_os.environ.get("EMBED_DIM", "1024"))
 DISABLE_EMBEDDING: bool = _os.environ.get("DISABLE_EMBEDDING", "false").lower() in ("true", "1", "yes")
 del _os  # keep namespace clean
 
@@ -624,7 +625,7 @@ def _clean_orphan_snapshots(vault: Path, seen_paths: set[str]) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Embedding (Phase 6) — llama.cpp nomic-embed-text via REST
+# Embedding (Phase 6) — llama.cpp bge-m3 (1024d) via REST
 # ---------------------------------------------------------------------------
 
 # Embeddings stored as raw little-endian float32 bytes (array typecode "f", 4 bytes/dim).
@@ -700,20 +701,23 @@ def _ensure_embed_server() -> bool:
         pass
 
     # Only auto-start for the default llama-server setup
-    if EMBED_PORT != 11435:
+    if EMBED_PORT != 8081:
         return False  # Ollama or custom server — user manages it
 
     llama = Path.home() / "llama.cpp" / "build" / "bin" / "llama-server"
     if sys.platform == "win32":
         llama = llama.with_suffix(".exe")
-    model = Path.home() / "nomic-embed-text-v1.5.Q8_0.gguf"
+    model = Path.home() / "llama.cpp" / "models" / "bge-m3-Q8_0.gguf"
     if not llama.exists() or not model.exists():
         return False
 
+    # No --pooling override: the GGUF's own pooling is what launchd
+    # (com.llama-server-embed) and Evo-PRISM's start_bioagent.sh both use, and
+    # changing it would produce vectors incomparable with everything already stored.
     _embed_proc = subprocess.Popen(
         [str(llama), "-m", str(model),
          "--port", str(EMBED_PORT),
-         "--embedding", "--pooling", "mean", "-np", "4", "-c", "2048", "--log-disable"],
+         "--embedding", "-np", "4", "-c", "8192", "--log-disable"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     for _ in range(15):
@@ -806,7 +810,7 @@ def fts_search(query: str, limit: int = 20) -> list[dict]:
 
 
 def semantic_search(query: str, limit: int = 20) -> list[dict]:
-    """Vector cosine search via nomic-embed-text. Returns [] if server unavailable."""
+    """Vector cosine search via bge-m3. Returns [] if server unavailable."""
     q_vec = embed_text(query)
     if not q_vec:
         return []

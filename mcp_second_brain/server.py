@@ -618,7 +618,7 @@ def new_note(note_type: str, title: str, content: str = "", tags: str = "") -> s
 def search_notes(query: str) -> str:
     """Hybrid semantic + full-text search across knowledge notes (excludes daily news archives).
 
-    Uses BM25 + cosine similarity (nomic-embed-text) when embedding server is
+    Uses BM25 + cosine similarity (bge-m3, 1024d) when embedding server is
     available, falls back to BM25-only, then file scan.
     To search news specifically, use search_news_tool.
 
@@ -1726,7 +1726,7 @@ def save_article(
 def update_links_tool(note_path: str = "") -> str:
     """Refresh auto-generated related wikilinks in one note or all notes.
 
-    Uses semantic similarity (nomic-embed-text) to find related notes and
+    Uses semantic similarity (bge-m3, 1024d) to find related notes and
     writes them into the frontmatter `related` field.
 
     Args:
