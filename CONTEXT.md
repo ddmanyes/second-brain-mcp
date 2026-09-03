@@ -10,7 +10,7 @@
 - **Frontmatter**：note 開頭的 `---\n … \n---` YAML 區塊。存 title、status、tags、以及 enrichment 寫回的欄位（`semantic_keywords`、`neighbor_keywords`、`cluster_topic`、`related`）。
   - **引號慣例是逐欄位的、無法從值推導**：`semantic_keywords` 是帶引號 list、`tags`/`related` 是裸值 list、`status` 是裸 scalar、`title`/`source` 是帶引號 scalar。
   - **Surgical set（就地設定）**：修改 frontmatter 的既定動作 = 「定位該欄位行 → 取代，或缺則在 block 內附加，或無 block 則建立」，**只動被碰的欄位、保留其餘位元組**（守住 vault 是正本、git diff 最小）。這個手術由 [`frontmatter.py`](mcp_second_brain/frontmatter.py) 的 `set_fields` / `set_fields_in_file` 獨家擁有；值的序列化不屬它，由呼叫端傳已格式化字串。
-- **NoteRow（索引投影）**：一則 note 在 index 裡的樣子。由 [`note_row.project_note`](mcp_second_brain/note_row.py) 獨家擁有——frontmatter 解析、`cnyes_archive` 把 tickers 前置到 snippet、embed input 配方、keyword 欄位的多格式容錯、大檔截斷（**hash 覆蓋全檔、投影只讀前 16KB**）。`embed` 與 `validate` 用注入，所以投影可在無 DB、無 embedding server 下測試。
+- **NoteRow（索引投影）**：一則 note 在 index 裡的樣子。由 [`note_row.project_note`](mcp_second_brain/note_row.py) 獨家擁有——frontmatter 解析、`cnyes_archive` 把 tickers 前置到 snippet、embed input 配方、keyword 欄位的多格式容錯、大檔截斷（**hash 覆蓋全檔、投影只讀前 40KB**——2026-09-03 Phase B-0 隨 `embed_text_for` 的 900→32,000 一起調高，見 `note_row.LARGE_FILE_READ_LIMIT` 的註解，否則會是靜默 no-op）。`embed` 與 `validate` 用注入，所以投影可在無 DB、無 embedding server 下測試。
   - **縫切在「怎麼存」，不切在「note 是什麼」**：兩個 store 只負責把 `NoteRow` 綁進自家 SQL。這段知識曾在 DuckDB/Postgres 各抄一遍（~70 行逐行對應），等於讓純領域知識橫跨了 store 這道縫——加一個 frontmatter 欄位要改兩處，漏一處就是**後端間靜默語意分裂**。
 - **Store（索引後端）**：可插拔的 index，由 `SB_DB_BACKEND` 選 `postgres`（中央，pgvector+pg_trgm）或 `duckdb`（離線 fallback）。介面在 `store/base.py`。markdown 是正本，store 可重建。
   - **Staleness 由 backend 自答**：「index 是否過時、該不該 sync」是 backend 私有知識——`store.sync_if_stale(vault)`，server 不得認得 `DB_PATH` 這類後端細節（DuckDB 用 DB 檔 mtime 節流；Postgres 靠排程 sync、視 live query 恆新）。
