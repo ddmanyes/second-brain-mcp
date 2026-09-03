@@ -24,14 +24,27 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Files that must exist inside the wheel for a fresh `pip install` to behave like
-# the repo checkout. Add to this list whenever runtime resolves a path relative to
-# the installed package.
-REQUIRED_WHEEL_MEMBERS = (
-    "mcp_second_brain/AGENTS.md",
-    "mcp_second_brain/server.py",
-    "mcp_second_brain/templates/note-template.md",
-)
+
+def _required_wheel_members() -> tuple[str, ...]:
+    """Files that must be inside the wheel for a fresh install to behave like the
+    checkout. Add to this whenever runtime resolves a path relative to the package.
+
+    Templates are derived from NOTE_CONFIG rather than listed by hand: `new_note`
+    resolves them at call time, so one that exists in the repo but never ships
+    would fail only in production — the same shape as the AGENTS.md bug.
+    """
+    from mcp_second_brain.server import NOTE_CONFIG, _DEFAULT_CONFIG
+
+    templates = {tpl for _folder, tpl in NOTE_CONFIG.values()}
+    templates.add(_DEFAULT_CONFIG[1])
+    return (
+        "mcp_second_brain/AGENTS.md",
+        "mcp_second_brain/server.py",
+        *sorted(f"mcp_second_brain/{t}" for t in templates),
+    )
+
+
+REQUIRED_WHEEL_MEMBERS = _required_wheel_members()
 
 
 def _build_wheel(out_dir: Path) -> Path:
