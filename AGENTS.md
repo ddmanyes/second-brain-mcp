@@ -137,7 +137,12 @@ Postgres directly.
 
 **Universal rules:**
 
-- `status`: only `active` / `completed` / `archived` / `proposed` / `accepted`
+- `status`: `active` / `completed` / `archived` for general and project notes;
+  `proposed` / `accepted` / `superseded` for decisions and ADRs. `consolidated` and
+  `archive_backup` also exist but are written by `consolidate_tool` / `vault_sleep`,
+  not by hand. Set it with `mark_note_status(path, status)`, which validates against
+  this list — `new_note` fills in the template default, so a decision that is already
+  settled needs one call to move it off `proposed`.
 - `tags`: lowercase kebab-case, e.g. `[mcp, ai-agent]`
 - `related`: use `[[wikilink]]` format — auto-injected by semantic link tool
 

@@ -220,6 +220,17 @@ NOTE_CONFIG: dict[str, tuple[str, str]] = {
 }
 _DEFAULT_CONFIG = ("00-inbox", "templates/note-template.md")
 
+# Note status vocabulary — the code counterpart of the Frontmatter Spec in AGENTS.md.
+# Keep the two in sync; tests/test_note_status.py asserts they agree.
+NOTE_STATUS_LIFECYCLE = frozenset({
+    "active", "completed", "archived",      # project / general notes
+    "proposed", "accepted", "superseded",   # decision / ADR lifecycle
+})
+# Owned by tooling, not set by hand: consolidate_tool and vault_sleep write these.
+# Accepted here so a bulk repair can restore one, but they are not authoring states.
+NOTE_STATUS_MANAGED = frozenset({"consolidated", "archive_backup"})
+NOTE_STATUS_ALLOWED = NOTE_STATUS_LIFECYCLE | NOTE_STATUS_MANAGED
+
 # When a note matches a project slug, note_type → subfolder within project
 _PROJECT_SUBTYPE_MAP: dict[str, str] = {
     "coding":    "phases",
@@ -1189,15 +1200,22 @@ def append_to_note(path: str, content: str) -> str:
 def mark_note_status(path: str, status: str) -> str:
     """Update the frontmatter status field of a note and sync to DB.
 
-    Use this to track note lifecycle without rewriting the whole file.
+    Use this to track note lifecycle without rewriting the whole file — including
+    a decision note's proposed → accepted → superseded progression.
 
     Args:
         path: Relative path from vault root, e.g. '30-resources/my-note.md'
-        status: One of: active | archived | consolidated | archive_backup
+        status: active | completed | archived (general / project notes),
+            proposed | accepted | superseded (decision / ADR),
+            or consolidated | archive_backup (normally written by
+            consolidate_tool / vault_sleep, accepted here for repairs).
     """
-    allowed = {"active", "archived", "consolidated", "archive_backup"}
-    if status not in allowed:
-        return f"Invalid status {status!r}. Choose from: {', '.join(sorted(allowed))}"
+    if status not in NOTE_STATUS_ALLOWED:
+        return (
+            f"Invalid status {status!r}. Lifecycle: "
+            f"{', '.join(sorted(NOTE_STATUS_LIFECYCLE))}. "
+            f"Tool-managed: {', '.join(sorted(NOTE_STATUS_MANAGED))}."
+        )
 
     full_path = _vault_path(path)
     _fm.set_fields_in_file(full_path, {"status": status})
