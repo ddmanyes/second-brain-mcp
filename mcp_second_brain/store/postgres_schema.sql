@@ -122,3 +122,38 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_ts   ON audit_log(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_notes_embedding ON notes
     USING hnsw (embedding vector_cosine_ops)
     WITH (m = 16, ef_construction = 128);
+
+-- ---------------------------------------------------------------------------
+-- note_chunks — Phase B of the chunking/embedding plan (late-chunked,
+-- paragraph-aligned, ~512 tokens, overlap=0; see chunking.py/late_chunking.py).
+-- ---------------------------------------------------------------------------
+-- Maintained by the same write paths as `notes` (index_file/sync_all/
+-- sync_incremental) — see postgres_store.py's _sync_chunks_for_note(). Rows are
+-- fully replaced (DELETE + re-INSERT) on any content_hash change, never updated
+-- in place. ON DELETE CASCADE means a note's chunks disappear automatically
+-- whenever sync_all's reconciliation step removes the parent notes row (vault
+-- file deleted / archived-and-pruned) — no separate chunk-cleanup call needed.
+CREATE TABLE IF NOT EXISTS note_chunks (
+    note_path    TEXT NOT NULL REFERENCES notes(path) ON DELETE CASCADE,
+    chunk_idx    INTEGER NOT NULL,
+    chunk_text   TEXT NOT NULL,
+    content_hash TEXT,                 -- notes.content_hash at chunk build time — see decision 1
+    embedding    vector(1024),         -- must equal vault_db.EMBED_DIM; test_embedding_dim.py
+                                        -- guards both this and notes.embedding together.
+    PRIMARY KEY (note_path, chunk_idx)
+);
+
+CREATE INDEX IF NOT EXISTS idx_note_chunks_path ON note_chunks(note_path);
+
+-- Keyword search on chunk_text — the point of Phase B's B-1: without this,
+-- hybrid_search's keyword path stays limited to notes.body_snippet's leading
+-- 500 chars no matter how far chunking extends semantic search's reach.
+CREATE INDEX IF NOT EXISTS idx_note_chunks_trgm ON note_chunks
+    USING gin (chunk_text gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_note_chunks_tsv ON note_chunks
+    USING gin (to_tsvector('english', chunk_text));
+
+-- Same HNSW parameters as idx_notes_embedding, for the same reason.
+CREATE INDEX IF NOT EXISTS idx_note_chunks_embedding ON note_chunks
+    USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 128);

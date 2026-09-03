@@ -22,15 +22,23 @@ SCHEMA_SQL = Path(vault_db.__file__).resolve().parent / "store" / "postgres_sche
 
 
 def test_schema_vector_dim_matches_embed_dim():
-    """`vector(N)` in the Postgres schema must equal vault_db.EMBED_DIM."""
+    """Every `embedding vector(N)` column in the Postgres schema must equal
+    vault_db.EMBED_DIM — not just the first one. `notes.embedding` and
+    `note_chunks.embedding` (Phase B) must never drift apart from each other."""
     sql = SCHEMA_SQL.read_text(encoding="utf-8")
-    match = re.search(r"embedding\s+vector\((\d+)\)", sql)
-    assert match, "postgres_schema.sql no longer declares embedding as vector(N)"
-    assert int(match.group(1)) == vault_db.EMBED_DIM, (
-        f"postgres_schema.sql declares vector({match.group(1)}) but EMBED_DIM is "
-        f"{vault_db.EMBED_DIM}. Changing the embedding model means changing both, "
-        f"plus an ALTER on every existing database."
+    matches = re.findall(r"embedding\s+vector\((\d+)\)", sql)
+    assert matches, "postgres_schema.sql no longer declares embedding as vector(N)"
+    assert len(matches) >= 2, (
+        "expected at least two embedding vector(N) columns (notes, note_chunks) — "
+        f"found {len(matches)}. Did note_chunks get removed, or was this test's "
+        "own assumption stale?"
     )
+    for dim in matches:
+        assert int(dim) == vault_db.EMBED_DIM, (
+            f"postgres_schema.sql declares vector({dim}) but EMBED_DIM is "
+            f"{vault_db.EMBED_DIM}. Changing the embedding model means changing "
+            f"every one of these, plus an ALTER on every existing database."
+        )
 
 
 def test_embed_dim_default_is_bge_m3():

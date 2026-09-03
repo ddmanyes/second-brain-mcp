@@ -59,6 +59,21 @@ class VaultStore(Protocol):
         """
         ...
 
+    def sync_chunks(self, vault: Path) -> dict:
+        """Backfill note_chunks for notes whose chunks are missing or stale
+        (Phase B of the chunking/embedding plan — late-chunked, paragraph-
+        aligned chunk embeddings, separate from the single-vector notes.embedding).
+
+        Ordinary sync (sync_all/sync_incremental) keeps chunks current for any
+        note whose content actually changes; this backfills notes that predate
+        the feature (or whose chunks failed on a previous pass). DuckDBStore
+        does not implement Phase B chunking (Postgres is the only backend
+        deployed live for sb/lcdda) and returns a no-op result.
+
+        Returns {"updated": N, "failed": M, "candidates": K}.
+        """
+        ...
+
     def compute_neighbor_keywords(
         self, threshold: float = 0.75, top_n: int = 5
     ) -> dict[str, dict]:

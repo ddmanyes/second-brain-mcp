@@ -1302,11 +1302,14 @@ def sync_index() -> str:
     """
     result = _store.sync_all(VAULT)
     emb = _store.sync_embeddings(vault=VAULT)
+    chunks = _store.sync_chunks(VAULT)
     stats = _store.db_stats()
     embed_warn = f" ⚠️ {result['embed_failed']} notes missing embedding" if result["embed_failed"] else ""
+    chunk_line = f"\nChunks: +{chunks['updated']} notes backfilled" if chunks["updated"] else ""
     return (
         f"Synced {result['synced']} files → {stats['total_notes']} notes in index.{embed_warn}\n"
-        f"Embeddings: +{emb['updated']} new (llama-server {'✓' if emb['updated'] or emb['failed'] == 0 else '✗ unavailable'})\n"
+        f"Embeddings: +{emb['updated']} new (llama-server {'✓' if emb['updated'] or emb['failed'] == 0 else '✗ unavailable'})"
+        f"{chunk_line}\n"
         f"DB: {stats['db_path']}\n"
         f"By type: {stats['by_type']}"
     )

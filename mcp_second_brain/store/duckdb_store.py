@@ -55,6 +55,14 @@ class DuckDBStore:
     def sync_embeddings(self, vault: Path | None = None) -> dict:
         return vault_db.sync_embeddings(vault)
 
+    def sync_chunks(self, vault: Path) -> dict:
+        # Phase B chunking (note_chunks, late chunking) is Postgres-only —
+        # sb/lcdda's live deployment is exclusively SB_DB_BACKEND=postgres
+        # (see CLAUDE.md), and DuckDB is the offline fallback only. A no-op
+        # here (rather than an error) keeps DuckDBStore usable for everything
+        # else without pretending to support a feature it doesn't.
+        return {"updated": 0, "failed": 0, "candidates": 0}
+
     def compute_neighbor_keywords(
         self, threshold: float = 0.75, top_n: int = 5
     ) -> dict[str, dict]:

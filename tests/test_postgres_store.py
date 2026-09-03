@@ -49,7 +49,8 @@ def store():
     # Clean slate for tests
     with s._pool.connection() as conn:
         conn.execute("DELETE FROM figures")
-        conn.execute("DELETE FROM notes")
+        conn.execute("DELETE FROM note_chunks")  # notes(path) ON DELETE CASCADE covers
+        conn.execute("DELETE FROM notes")        # this too, but be explicit anyway
         conn.commit()
 
     yield s

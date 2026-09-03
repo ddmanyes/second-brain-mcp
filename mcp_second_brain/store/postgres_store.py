@@ -24,11 +24,15 @@ from psycopg_pool import ConnectionPool
 
 # The markdown → index projection is shared with DuckDBStore; the seam between the
 # two backends is "how it is stored", not "what a note is".
-from ..note_row import project_note
+from ..note_row import project_note, FRONTMATTER_RE
 
 # vault_db still owns the embedding client and the vault schema validator, plus the
 # pure vector helpers (_cosine, _path_penalty). Those don't touch DuckDB.
 from .. import vault_db as _vdb
+
+# Phase B — chunk-level embeddings (late chunking, see chunking.py/late_chunking.py).
+from ..late_chunking import chunk_and_embed, LateChunkingUnavailable
+from ..snippets import strip_references
 
 _SCORE_SQL = """
 (access_count + 1.0) / (1.0 + ln(GREATEST(
@@ -56,6 +60,24 @@ def _parse_vec(v: object) -> list[float] | None:
     if isinstance(v, str):
         return json.loads(v)
     return [float(x) for x in v]  # type: ignore[union-attr]
+
+
+def _merge_by_path_max_score(*result_lists: list[dict]) -> list[dict]:
+    """Merge several {"path","title","score"} lists, keeping the best score per
+    path, re-sorted descending by score.
+
+    Used to combine chunk-level and notes-level search results (Phase B-4):
+    the caller's downstream RRF fusion ranks by *position* in this list, so
+    re-sorting after the merge (not just deduplicating) is what actually
+    matters — an unsorted merge would silently corrupt every rank-based score.
+    """
+    best: dict[str, dict] = {}
+    for results in result_lists:
+        for r in results:
+            p = r["path"]
+            if p not in best or r["score"] > best[p]["score"]:
+                best[p] = r
+    return sorted(best.values(), key=lambda r: r["score"], reverse=True)
 
 
 def _redact_dsn(dsn: str) -> str:
@@ -173,6 +195,73 @@ class PostgresStore:
                 note.cluster_topic,
             ],
         )
+
+        self._sync_chunks_for_note(cur, note.path, note.content_hash, md_file)
+
+    def _sync_chunks_for_note(
+        self,
+        cur: psycopg.Cursor,
+        note_path: str,
+        content_hash: str,
+        md_file: Path,
+    ) -> None:
+        """Rebuild note_chunks for one note when its content changed (decision 1
+        of the chunking/embedding plan).
+
+        Skips entirely when the stored chunk hash already matches the note's
+        current content_hash — avoids recomputing embeddings for a multi-MB
+        paper on every sync pass. Full replace (DELETE + re-INSERT), never an
+        in-place update — computes the new chunk set *before* deleting the old
+        one, so a transient late-chunking-server outage leaves the previous
+        (stale but present) chunks in place instead of leaving the note with
+        zero chunks until the next successful sync.
+
+        Reads the file's full text independently of project_note() — that
+        projection truncates files over note_row.LARGE_FILE_THRESHOLD
+        (Phase B-0), which would defeat the point of chunking (built
+        specifically to reach the parts of long documents the single-vector
+        embedding can't).
+        """
+        row = cur.execute(
+            "SELECT content_hash FROM note_chunks WHERE note_path = %s LIMIT 1",
+            [note_path],
+        ).fetchone()
+        if row and row[0] == content_hash:
+            return
+
+        try:
+            full_text = md_file.read_text(encoding="utf-8", errors="ignore")
+        except OSError as e:
+            print(f"[pg_store] chunk sync: read failed for {note_path}: {e}", file=sys.stderr)
+            return
+
+        # References are the cited papers' claims, not this note's own (same
+        # rationale as embed_text_for's Phase B-0 fix) — no reason to spend
+        # chunks, an HNSW index, and a trgm index on someone else's bibliography.
+        body = strip_references(FRONTMATTER_RE.sub("", full_text).strip())
+        if not body.strip():
+            cur.execute("DELETE FROM note_chunks WHERE note_path = %s", [note_path])
+            return
+
+        try:
+            chunks = chunk_and_embed(body)
+        except LateChunkingUnavailable as e:
+            print(
+                f"[pg_store] chunk sync: embedding unavailable for {note_path}, "
+                f"keeping existing chunks: {e}",
+                file=sys.stderr,
+            )
+            return
+
+        cur.execute("DELETE FROM note_chunks WHERE note_path = %s", [note_path])
+        for idx, (chunk_text, emb) in enumerate(chunks):
+            cur.execute(
+                """
+                INSERT INTO note_chunks (note_path, chunk_idx, chunk_text, content_hash, embedding)
+                VALUES (%s, %s, %s, %s, %s::vector)
+                """,
+                [note_path, idx, chunk_text, content_hash, str(emb) if emb else None],
+            )
 
     # ------------------------------------------------------------------
     # Core indexing
@@ -350,6 +439,46 @@ class PostgresStore:
                 conn.commit()
 
         return {"updated": updated, "failed": failed, "skipped": len(rows) - updated - failed}
+
+    def sync_chunks(self, vault: Path) -> dict:
+        """Backfill note_chunks for notes that don't have a matching hash yet.
+
+        Mirrors sync_embeddings()'s "backfill what's missing" semantics but for
+        the chunks table. Necessary as a *separate* pass because
+        _upsert_note_row's content_hash short-circuit means an unchanged note
+        is never revisited by sync_all/sync_incremental — a brand-new
+        note_chunks table (or any note that predates this feature) needs this
+        explicit backfill once. After that, ordinary edits keep chunks current
+        via _upsert_note_row automatically (decision 1).
+        """
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT n.path, n.content_hash
+                FROM notes n
+                LEFT JOIN note_chunks c
+                    ON c.note_path = n.path AND c.content_hash = n.content_hash
+                WHERE c.note_path IS NULL
+                GROUP BY n.path, n.content_hash
+                """
+            ).fetchall()
+
+        updated, failed = 0, 0
+        for path, content_hash in rows:
+            md_file = vault / path
+            if not md_file.exists():
+                continue
+            try:
+                with self._pool.connection() as conn:
+                    with conn.cursor() as cur:
+                        self._sync_chunks_for_note(cur, path, content_hash, md_file)
+                    conn.commit()
+                updated += 1
+            except Exception as e:
+                print(f"[pg_store] sync_chunks failed for {path}: {e}", file=sys.stderr)
+                failed += 1
+
+        return {"updated": updated, "failed": failed, "candidates": len(rows)}
 
     def compute_neighbor_keywords(
         self, threshold: float = 0.75, top_n: int = 5
@@ -535,6 +664,82 @@ class PostgresStore:
             ).fetchall()
         return [{"path": r[0], "title": r[1], "score": float(r[2])} for r in rows]
 
+    # ------------------------------------------------------------------
+    # Chunk-level search — Phase B-4 of the chunking/embedding plan.
+    # ------------------------------------------------------------------
+    #
+    # Both paths query note_chunks *in addition to* notes, merged by taking
+    # the max score per path (see _merge_by_path_max_score below) — not a
+    # full swap. A note that hasn't been chunked yet (mid-backfill, or a
+    # transient late-chunking-server outage at write time — see
+    # _sync_chunks_for_note) would otherwise vanish from search entirely
+    # until its chunks catch up; keeping the notes-level query as a floor
+    # means coverage only ever gets wider, never narrower, exactly the
+    # "silent regression" failure mode decision 1 calls out.
+
+    def _trgm_search_chunks(self, query: str, limit: int) -> list[dict]:
+        """Chunk-level trigram search, aggregated to note level (max score).
+
+        Reaches text the notes-level search cannot: body_snippet only covers
+        a note's first 500 chars; chunk_text covers the whole document
+        (minus references) via note_chunks (see B-1's index-choice note for
+        why this needs its own trgm/GIN index rather than reusing notes').
+        """
+        q = f"%{query}%"
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT c.note_path, n.title, max(similarity(%s, c.chunk_text)) AS score
+                FROM note_chunks c
+                JOIN notes n ON n.path = c.note_path
+                WHERE c.chunk_text ILIKE %s
+                GROUP BY c.note_path, n.title
+                ORDER BY score DESC
+                LIMIT %s
+                """,
+                [query, q, limit],
+            ).fetchall()
+        return [{"path": r[0], "title": r[1], "score": float(r[2])} for r in rows]
+
+    def _semantic_search_chunks(self, query: str, limit: int) -> list[dict]:
+        """Chunk-level cosine search, aggregated to note level (max score, i.e.
+        each note's single best-matching chunk — "B-4: chunk 命中聚合回筆記用
+        max-score，不是平均" in the plan).
+
+        The inner CTE is an ANN funnel: fetch a wide multiple of `limit`
+        nearest *chunks* (HNSW-accelerated) before grouping by note_path, so
+        Postgres still uses the index for the expensive part instead of
+        scoring every chunk. A note can own many chunks, so the funnel has to
+        be wider than a plain top-K to leave room for enough distinct notes
+        to surface — 20x is a documented, tunable-later heuristic, not a
+        precise bound.
+        """
+        q_vec = _vdb.embed_text(query)
+        if not q_vec:
+            return []
+        vec_str = str(q_vec)
+        funnel = max(limit * 20, 200)
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """
+                WITH top_chunks AS (
+                    SELECT c.note_path, (c.embedding <=> %s::vector) AS distance
+                    FROM note_chunks c
+                    WHERE c.embedding IS NOT NULL
+                    ORDER BY c.embedding <=> %s::vector
+                    LIMIT %s
+                )
+                SELECT tc.note_path, n.title, 1 - min(tc.distance) AS score
+                FROM top_chunks tc
+                JOIN notes n ON n.path = tc.note_path
+                GROUP BY tc.note_path, n.title
+                ORDER BY score DESC
+                LIMIT %s
+                """,
+                [vec_str, vec_str, funnel, limit],
+            ).fetchall()
+        return [{"path": r[0], "title": r[1], "score": float(r[2])} for r in rows]
+
     def hybrid_search(
         self,
         query: str,
@@ -544,8 +749,14 @@ class PostgresStore:
         fusion: str = "rrf",  # noqa: ARG002 — always RRF for Postgres; kept for compat
         apply_path_penalty: bool = True,
     ) -> list[dict]:
-        bm25 = self._trgm_search(query, limit=limit * 2)
-        sem = self._semantic_search(query, limit=limit * 2)
+        bm25 = _merge_by_path_max_score(
+            self._trgm_search(query, limit=limit * 2),
+            self._trgm_search_chunks(query, limit=limit * 2),
+        )
+        sem = _merge_by_path_max_score(
+            self._semantic_search(query, limit=limit * 2),
+            self._semantic_search_chunks(query, limit=limit * 2),
+        )
 
         if exclude_types and (bm25 or sem):
             excluded = set(exclude_types)
