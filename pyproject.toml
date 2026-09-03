@@ -51,5 +51,8 @@ second-brain = "mcp_second_brain.server:main"
 [tool.hatch.build.targets.wheel]
 packages = ["mcp_second_brain"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"AGENTS.md" = "mcp_second_brain/AGENTS.md"
+
 [tool.uv]
 override-dependencies = ["magika>=1.0.0"]
