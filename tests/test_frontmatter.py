@@ -5,6 +5,8 @@ These are the primary test surface for the block surgery that was previously han
 caller concern, so every ``value`` here is already the intended verbatim YAML representation.
 """
 
+import pytest
+
 from mcp_second_brain import frontmatter as fm
 
 
@@ -122,3 +124,26 @@ def test_set_fields_in_file_skips_write_when_unchanged(tmp_path):
     mtime_before = p.stat().st_mtime_ns
     fm.set_fields_in_file(p, {"status": "active"})  # same value → no rewrite
     assert p.stat().st_mtime_ns == mtime_before
+
+
+def test_malformed_frontmatter_is_refused_not_duplicated():
+    # A note whose closing delimiter got glued to the first body line still *has* a
+    # frontmatter; treating it as "no frontmatter" and prepending a second block left
+    # two blocks and two copies of the same key. Refuse instead of corrupting.
+    broken = '---\ntitle: "X"\nsemantic_keywords: ["old"]\n---# Heading\n\nbody\n'
+    with pytest.raises(ValueError, match="malformed frontmatter"):
+        fm.set_fields(broken, {"semantic_keywords": '["new"]'})
+
+
+def test_body_separator_is_not_mistaken_for_the_frontmatter_close():
+    # The closing delimiter must be the first "---" line, not any later horizontal rule.
+    # Scanning on lets the whole article be swallowed into the YAML block.
+    broken = '---\ntitle: "X"\n---# Heading\n\nbody text\n\n---\n\nfooter\n'
+    with pytest.raises(ValueError, match="malformed frontmatter"):
+        fm.set_fields(broken, {"title": '"Y"'})
+
+
+def test_well_formed_note_with_a_horizontal_rule_still_works():
+    content = '---\ntitle: "X"\n---\n\nbody\n\n---\n\nfooter\n'
+    result = fm.set_fields(content, {"title": '"Y"'})
+    assert result == '---\ntitle: "Y"\n---\n\nbody\n\n---\n\nfooter\n'

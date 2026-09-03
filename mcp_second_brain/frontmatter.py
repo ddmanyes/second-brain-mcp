@@ -25,6 +25,18 @@ from pathlib import Path
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
 
+def _spans_past_the_block(match: "re.Match[str]") -> bool:
+    """True when the match ran past the real block to a later "---" line.
+
+    ``_FRONTMATTER_RE`` searches forward for the next "---" line. When the opening block's
+    own closing delimiter is malformed, the next candidate can be a horizontal rule far down
+    the document, and everything in between — the whole article — would be rewritten as
+    YAML. A well-formed block can never contain a line opening with "---", because such a
+    line would have closed it, so that is the tell.
+    """
+    return any(line.startswith("---") for line in match.group(1).splitlines())
+
+
 def set_fields(content: str, fields: dict[str, str]) -> str:
     """Set ``key: value`` lines inside ``content``'s frontmatter block and return the result.
 
@@ -39,7 +51,16 @@ def set_fields(content: str, fields: dict[str, str]) -> str:
     Pure: no I/O. Multiple fields are applied left-to-right in one pass.
     """
     match = _FRONTMATTER_RE.match(content)
-    if match is None:
+    if match is None or _spans_past_the_block(match):
+        # A document that opens with "---" claims to have a frontmatter. If the block does
+        # not close cleanly, prepending a second one leaves two blocks and two copies of
+        # every key, which is what happened when a caller glued the closing delimiter to the
+        # first body line. "No frontmatter" and "a frontmatter I cannot parse" are different
+        # situations and must not share a branch.
+        if content.startswith("---"):
+            raise ValueError(
+                "malformed frontmatter: the block opens but never closes on its own line"
+            )
         header = "---\n" + "\n".join(f"{k}: {v}" for k, v in fields.items()) + "\n---\n\n"
         return header + content
 
