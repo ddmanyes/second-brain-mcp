@@ -50,7 +50,7 @@
       **前次 abort 留下的損壞 db/WAL 狀態**。舊 db 備份於 `vault.db.bak-20260723`、WAL 備份 `vault.db.wal.bak-20260723`。
       教訓：DuckDB 若被 C++ abort 中斷，殘留 WAL 可能導致下次 replay 撞 PK → 需刪 db+wal 重建。
 - [x] **中央主機 launchd 排程已啟用（2026-08-29）** — mac-mini（Tailscale
-      `100.87.59.15`）是唯一寫入主機；client 維持 HTTP MCP 連線，不啟動本機 server 或維護排程。
+      `<tailscale-ip>`）是唯一寫入主機；client 維持 HTTP MCP 連線，不啟動本機 server 或維護排程。
       `com.user.vault-janitor` 每日 07:30 以 `--push --execute` 執行，
       `com.user.vault-sleep` 每週日 02:00 執行，最近一次 exit code 均為 0。
 - [ ] **（可選）janitor conflict-copy 韌性** — 目前 regex 不吃 Drive 衝突副本（`..._20260701 2.md`、

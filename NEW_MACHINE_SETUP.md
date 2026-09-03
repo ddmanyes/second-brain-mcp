@@ -43,8 +43,8 @@ The current setup is **one central HTTP server + Postgres**, not a local server 
 
 A new Mac that just needs to *use* the brain. **No Python, no venv, no DuckDB, no indexing.**
 
-The central host is the **mac-mini (`lab-center`), Tailscale `100.87.59.15`** — SSH in as
-`lab_center` (key auth). It also serves three sibling instances off the same package:
+The central host is the **mac-mini (`<central-host>`), Tailscale `<tailscale-ip>`** — SSH in as
+`<user>` (key auth). It also serves three sibling instances off the same package:
 
 | Port | Instance | Vault / purpose |
 | --- | --- | --- |
@@ -61,7 +61,7 @@ configs).
 
 ```bash
 claude mcp add --scope user --transport http second-brain \
-  "http://100.87.59.15:9100/mcp" \
+  "http://<tailscale-ip>:9100/mcp" \
   --header "X-API-Key: <the-key>"
 ```
 
@@ -73,7 +73,7 @@ claude mcp add --scope user --transport http second-brain \
   "mcpServers": {
     "second-brain": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "http://100.87.59.15:9100/mcp", "--header", "X-API-Key: <the-key>"]
+      "args": ["-y", "mcp-remote", "http://<tailscale-ip>:9100/mcp", "--header", "X-API-Key: <the-key>"]
     }
   }
 }
@@ -90,7 +90,7 @@ proxy to bridge stdio → the central HTTP server and inject `X-API-Key` (needs 
   "mcpServers": {
     "second-brain": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "http://100.87.59.15:9100/mcp", "--header", "X-API-Key: <the-key>"]
+      "args": ["-y", "mcp-remote", "http://<tailscale-ip>:9100/mcp", "--header", "X-API-Key: <the-key>"]
     }
   }
 }
@@ -112,7 +112,7 @@ proxy to bridge stdio → the central HTTP server and inject `X-API-Key` (needs 
 > with the `mcp-remote` form above.
 >
 > Prerequisite: the client is a member of the same Tailscale tailnet (so the
-> `100.87.59.15` address is reachable). Without a valid `X-API-Key` the server returns `401`.
+> `<tailscale-ip>` address is reachable). Without a valid `X-API-Key` the server returns `401`.
 
 **Verify a new client works:**
 
@@ -222,7 +222,7 @@ The deploy source on the central host is its **own local git clone**, `~/git-rep
 (the `SB_DIR` variable in the start scripts is vestigial and unused).
 
 ```bash
-ssh lab_center@100.87.59.15
+ssh <user>@<tailscale-ip>
 cd ~/git-repos/second-brain
 git log --oneline -3          # ← compare against your machine FIRST, see the warning below
 ~/.venvs/second-brain/bin/python -m pip install --no-deps --force-reinstall "$PWD"
@@ -248,11 +248,11 @@ Verify the new code is actually live (not just running):
 >
 > ```bash
 > # on your machine — pull the host's work in first
-> git fetch ssh://lab_center@100.87.59.15/Users/lab_center/git-repos/second-brain master
+> git fetch ssh://<user>@<tailscale-ip>/Users/<user>/git-repos/second-brain master
 > git cherry-pick <their-commit>            # then run the tests
 > # push yours over — a checked-out branch can't be pushed to directly
-> git push ssh://lab_center@.../second-brain master:refs/heads/incoming
-> ssh lab_center@... 'cd ~/git-repos/second-brain && git merge --ff-only incoming'
+> git push ssh://<user>@.../second-brain master:refs/heads/incoming
+> ssh <user>@... 'cd ~/git-repos/second-brain && git merge --ff-only incoming'
 > ```
 
 ### Running the Postgres test suite
@@ -260,7 +260,7 @@ Verify the new code is actually live (not just running):
 `tests/test_postgres_store.py` needs a live Postgres, so it only runs on the central host:
 
 ```bash
-ssh lab_center@100.87.59.15
+ssh <user>@<tailscale-ip>
 # one-time: the schema (incl. CREATE EXTENSION vector/pg_trgm) is applied automatically
 docker exec sb-pg psql -U postgres -c "CREATE DATABASE sb_test;"
 

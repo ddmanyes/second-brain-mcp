@@ -30,7 +30,7 @@ Second Brain is a personal knowledge management server that exposes vault read/w
 The production setup is **one central HTTP server + Postgres**; clients never touch
 Postgres directly.
 
-- **Central host**: the mac-mini `lab-center`, Tailscale `100.87.59.15` (SSH as `lab_center`).
+- **Central host**: the mac-mini `<central-host>`, Tailscale `<tailscale-ip>` (SSH as `<user>`).
 - **Central server**: launchd `com.user.second-brain-remote`, `streamable-http` bound to
   the Tailscale IP `:9100`, `SB_DB_BACKEND=postgres`. Single instance (PID guard).
 - **Sibling instances on the same host and the same package**: `lcdda` (`:9104`, a second
@@ -38,7 +38,7 @@ Postgres directly.
   venv, so **one `pip install` changes all three** — deploying means restarting all three, or
   new and old code run side by side. (`finance-kit` on `:9108` is a separate codebase.)
 - **Postgres**: Docker `sb-pg`, bound to `127.0.0.1:5432` only — **never** exposed off-host.
-- **Clients connect via MCP over HTTP**: `http://100.87.59.15:9100/mcp` with header
+- **Clients connect via MCP over HTTP**: `http://<tailscale-ip>:9100/mcp` with header
   `X-API-Key: <key>` (auth is enforced when `SB_API_KEY`/`SB_API_KEYS` is set on the server).
   Setup per client type is in [NEW_MACHINE_SETUP.md](NEW_MACHINE_SETUP.md) §A.
 - **Index freshness**: `com.user.second-brain-pg-sync` runs `sync_incremental` against

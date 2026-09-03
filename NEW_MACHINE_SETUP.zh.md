@@ -18,10 +18,10 @@
             Postgres (sb-pg, Docker)        ← 只綁 127.0.0.1:5432，絕不對外
                   ▲ localhost
    中央 host ─────┤ MCP server :9100（streamable-http，綁 Tailscale IP）
-   lab_center     │   SB_DB_BACKEND=postgres、SB_API_KEY=<key>…
-   100.87.59.15   │   + pg-sync（每逢 :00／:30）+ pg-backup（每日）
+   <user>     │   SB_DB_BACKEND=postgres、SB_API_KEY=<key>…
+   <tailscale-ip>   │   + pg-sync（每逢 :00／:30）+ pg-backup（每日）
                   ▼ Tailscale
-   client Mac ─────── 連 http://100.87.59.15:9100/mcp + X-API-Key header
+   client Mac ─────── 連 http://<tailscale-ip>:9100/mcp + X-API-Key header
                       （免 venv、免 DuckDB、免 sync — 只要 MCP 設定）
 ```
 
@@ -42,16 +42,16 @@
 
 只是要「用」這個腦的新 Mac。**免 Python、免 venv、免 DuckDB、免建索引、免 llama-server、免 Ollama。**
 
-> embedding 和 LLM（Gemma）都跑在中央 host（100.87.59.15），client 完全不知道也不在乎。
+> embedding 和 LLM（Gemma）都跑在中央 host（<tailscale-ip>），client 完全不知道也不在乎。
 
 ### 連線資訊（直接複製，不需修改）
 
 ```
-Server URL : http://100.87.59.15:9100/mcp
+Server URL : http://<tailscale-ip>:9100/mcp
 X-API-Key  : <SB_API_KEY>
 ```
 
-前提：這台 client 已加入同一個 Tailscale tailnet（連不到 100.87.59.15 = Tailscale 未登入）。
+前提：這台 client 已加入同一個 Tailscale tailnet（連不到 <tailscale-ip> = Tailscale 未登入）。
 
 ---
 
@@ -61,7 +61,7 @@ X-API-Key  : <SB_API_KEY>
 
 ```bash
 claude mcp add --scope user --transport http second-brain \
-  "http://100.87.59.15:9100/mcp" \
+  "http://<tailscale-ip>:9100/mcp" \
   --header "X-API-Key: <SB_API_KEY>"
 ```
 
@@ -69,10 +69,10 @@ claude mcp add --scope user --transport http second-brain \
 
 ```bash
 claude mcp add --scope user finance-kit \
-  -e "PATH=/Users/lab_center/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
-  -e "HOME=/Users/lab_center" \
-  -- /Users/lab_center/.venvs/finance-kit/bin/python \
-     /Users/lab_center/.local/finance-kit/server.py
+  -e "PATH=/Users/<user>/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+  -e "HOME=/Users/<user>" \
+  -- /Users/<user>/.venvs/finance-kit/bin/python \
+     /Users/<user>/.local/finance-kit/server.py
 ```
 
 驗證：
@@ -98,7 +98,7 @@ claude mcp list        # 應看到 second-brain ✔ Connected、finance-kit ✔ 
       "command": "npx",
       "args": [
         "-y", "mcp-remote",
-        "http://100.87.59.15:9100/mcp",
+        "http://<tailscale-ip>:9100/mcp",
         "--allow-http",
         "--header", "X-API-Key: <SB_API_KEY>"
       ]
@@ -123,7 +123,7 @@ claude mcp list        # 應看到 second-brain ✔ Connected、finance-kit ✔ 
       "command": "/Users/<你的帳號>/.local/bin/npx",
       "args": [
         "-y", "mcp-remote",
-        "http://100.87.59.15:9100/mcp",
+        "http://<tailscale-ip>:9100/mcp",
         "--allow-http",
         "--header", "X-API-Key: <SB_API_KEY>"
       ]
@@ -154,7 +154,7 @@ claude mcp list        # 應看到 second-brain ✔ Connected、finance-kit ✔ 
       "command": "/Users/<你的帳號>/.local/bin/npx",
       "args": [
         "-y", "mcp-remote",
-        "http://100.87.59.15:9100/mcp",
+        "http://<tailscale-ip>:9100/mcp",
         "--allow-http",
         "--header", "X-API-Key: <SB_API_KEY>"
       ]
@@ -176,7 +176,7 @@ claude mcp list        # 應看到 second-brain ✔ Connected、finance-kit ✔ 
       "command": "/Users/<你的帳號>/.local/bin/npx",
       "args": [
         "-y", "mcp-remote",
-        "http://100.87.59.15:9100/mcp",
+        "http://<tailscale-ip>:9100/mcp",
         "--allow-http",
         "--header", "X-API-Key: <SB_API_KEY>"
       ]
@@ -190,7 +190,7 @@ claude mcp list        # 應看到 second-brain ✔ Connected、finance-kit ✔ 
 ### 快速驗證（client）
 
 ```bash
-curl -s http://100.87.59.15:9100/mcp \
+curl -s http://<tailscale-ip>:9100/mcp \
   -H "X-API-Key: <SB_API_KEY>" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
@@ -202,7 +202,7 @@ curl -s http://100.87.59.15:9100/mcp \
 
 ---
 
-## B. 中央 host（lab_center，100.87.59.15）— 已設定完成
+## B. 中央 host（<user>，<tailscale-ip>）— 已設定完成
 
 > **這台機器已於 2026-06-26 完成全部設定，通常不需要重做 B 段。**
 > 僅在換機或重裝時參考。
