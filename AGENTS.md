@@ -6,7 +6,7 @@
 >
 > **When adding documentation**: modify the relevant section here, then update the Last updated date.
 >
-> **Last updated:** 2026-08-30
+> **Last updated:** 2026-09-03
 
 ---
 
@@ -188,17 +188,25 @@ When answering a question that *might* need a figure, climb only as far as neede
 ### B. Search / query
 
 ```text
-1. Fuzzy semantic search  → search_notes(query)
-2. Grouped display        → search_grouped(query)
-3. News / articles        → search_news_tool(query, days)
-4. Decision log           → get_decisions(project)
-5. Read full note         → read_note(path)
+1. Broad candidate pool     → search_notes(query) / search_grouped(query)
+2. News / articles          → search_news_tool(query, days)
+3. Verbatim source + cite   → search_snippets(query)              — exact source sentence, never paraphrased
+4. Entity / mechanism graph → query_graph(entity=..., mode="both") — pass entity explicitly, don't rely on auto-extraction
+5. Cited synthesis (last)   → litnet_answer(question)              — synthesis step, not a retrieval step; run after the above
+6. Decision log             → get_decisions(project)
+7. Read full note           → read_note(path)
 ```
 
 **Tool boundary:** use `search_notes` to retrieve content, `health_check` to diagnose
 server/index/runtime health, and `audit_article_records` only for article-record
 housekeeping. The audit is read-only: duplicate groups and recommended actions always
 require human confirmation before merge, archive, or deletion.
+
+**Graph tools are vault-dependent:** `query_graph` only returns structured typed edges
+in a vault that has a `.graph/statements.jsonl` knowledge graph; in a vault without one,
+`mode="both"` still runs but Path 1 (edges) comes back empty and only Path 2 (snippet
+recall net) has content. An empty edge result is not evidence the literature is silent —
+it may just mean this vault has no graph; check before treating it as final.
 
 ### C. Vault maintenance (periodic or on demand)
 
