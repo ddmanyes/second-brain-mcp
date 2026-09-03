@@ -96,3 +96,42 @@ def test_every_configured_template_exists(template: str):
     assert (PACKAGE_ROOT / template).is_file(), (
         f"NOTE_CONFIG routes notes to {template}, which does not exist in the package."
     )
+
+
+# --- decision 3 of the chunking/embedding plan ----------------------------------------------
+# litnet_answer used to have two hardcoded numbers with no name and no docstring mention: a
+# bare `[:3]` on the auto-extracted entity list, and a bare `10` passed as query_graph's top_k
+# — different from query_graph's own default (12), for no documented reason. Both are now named
+# (_LA_MAX_AUTO_ENTITIES) or removed in favour of letting query_graph's default apply. These
+# tests pin the source so a future edit can't reintroduce either silently.
+
+def _litnet_answer_source() -> str:
+    import inspect
+
+    from mcp_second_brain.server import litnet_answer
+
+    return inspect.getsource(litnet_answer)
+
+
+def test_la_ent_prompt_states_the_same_limit_as_the_constant():
+    """The LLM is told "最多 N 個"; the Python-side slice is a backstop for the model not
+    complying, not an independent limit — they must name the same N."""
+    from mcp_second_brain.server import _LA_ENT_PROMPT, _LA_MAX_AUTO_ENTITIES
+
+    assert f"最多 {_LA_MAX_AUTO_ENTITIES} 個" in _LA_ENT_PROMPT
+
+
+def test_auto_extracted_entities_are_capped_by_the_named_constant():
+    src = _litnet_answer_source()
+    assert "[:_LA_MAX_AUTO_ENTITIES]" in src, (
+        "the auto-extracted entity list should be sliced by the named constant, "
+        "not a bare literal that can drift from the prompt text"
+    )
+
+
+def test_query_graph_call_does_not_override_top_k():
+    """No hardcoded top_k here means this call can never drift from query_graph's own
+    default — the fix is the absence of a second number, not a matching one."""
+    src = _litnet_answer_source()
+    assert 'query_graph(e, "both")' in src
+    assert re.search(r"query_graph\(e,\s*\"both\",\s*\d+\)", src) is None

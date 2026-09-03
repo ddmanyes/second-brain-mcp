@@ -959,9 +959,15 @@ def query_graph(entity: str, mode: str = "both", top_k: int = 12) -> str:
 
 
 # --- litnet_answer: retrieve (query_graph) → synthesize (Claude) → cited note --------------
+# Decision 3 of the chunking/embedding plan: this used to be a bare `[:3]` at the call
+# site with no name and no docstring mention. Named here so the prompt text below (which
+# already told the model "最多 3 個") and the Python-side truncation can't drift apart from
+# EACH OTHER either — the slice is a defensive backstop for the model not complying, not an
+# independent limit.
+_LA_MAX_AUTO_ENTITIES = 3
 _LA_ENT_PROMPT = (
     "從下面這個生醫研究問題，抽出要在知識圖譜查詢的核心實體（基因/蛋白/因子/細胞型/表型/疾病），"
-    "最多 3 個，用英文正規名、逗號分隔，只輸出實體、不要其他字。\n\n問題："
+    f"最多 {_LA_MAX_AUTO_ENTITIES} 個，用英文正規名、逗號分隔，只輸出實體、不要其他字。\n\n問題："
 )
 _LA_MIDDLE = {
     "auto": "  - 依問題類型自行選最合適的中段結構（機制清單 / 比較表 / 分組列舉 / 方法對照）。",
@@ -1028,20 +1034,26 @@ def litnet_answer(question: str, entity: str = "", fmt: str = "auto",
     the 正本 (saved outside 20-areas/research/).
 
     Args:
-        entity: comma-separated entities to look up; if empty, extracted from the question.
+        entity: comma-separated entities to look up; if empty, extracted from the question
+            (auto-extraction caps at _LA_MAX_AUTO_ENTITIES=3 entities — pass entity explicitly
+            to query more than that in one call; see AGENTS.md's SOP note on this).
         fmt: middle-section shape — auto | mechanism | compare | list | methods (auto = model picks).
         save: if true, write the note into VAULT/20-areas/syntheses/ (else just return it).
         model: Claude synthesis model.
+
+    Each entity is queried via query_graph(e, "both") — top_k intentionally omitted so it
+    always tracks query_graph's own default (currently 12) instead of a second hardcoded
+    number that can silently drift from it.
     """
     ents = [e.strip() for e in entity.split(",") if e.strip()]
     if not ents:
         raw = llm_cli.llm_text(_LA_ENT_PROMPT + question, timeout=60) or ""
-        ents = [e.strip() for e in re.split(r"[,，、\n]", raw) if e.strip()][:3] or [question]
+        ents = [e.strip() for e in re.split(r"[,，、\n]", raw) if e.strip()][:_LA_MAX_AUTO_ENTITIES] or [question]
     # per-entity: keep only entities that actually returned material (one empty entity must not
     # abort a multi-entity query where others have data).
     blocks = []
     for e in ents:
-        out = query_graph(e, "both", 10)
+        out = query_graph(e, "both")  # top_k omitted — see docstring above
         if out and "No graph data" not in out:
             blocks.append(f"# 查詢實體：{e}\n{out}")
     grounding = "\n\n".join(blocks)
