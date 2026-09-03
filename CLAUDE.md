@@ -4,9 +4,27 @@
 > **遠端 MCP 連入**：呼叫 `get_agent_instructions()` 工具可取得 AGENTS.md 完整內容。
 > **CLAUDE.md 位置**：`second-brain/CLAUDE.md`（由 Claude Code 在此目錄啟動時自動載入）。
 
-## 執行
+## 執行（開發）
 
 `uv run --with "mcp[cli]" --with "markitdown[all]" python -m mcp_second_brain`
+
+## 部署（改完碼要做的事）
+
+⚠️ **線上服務跑的是「安裝好的 wheel」，不是這個 checkout**（`lcdda-start-remote.sh` 明寫
+"The live service imports the installed wheel"）。**只改 repo + 重啟服務不會生效**：
+
+```bash
+~/.venvs/second-brain/bin/pip install --force-reinstall --no-deps ~/git-repos/second-brain
+launchctl kickstart -k gui/501/com.user.second-brain-remote
+launchctl kickstart -k gui/501/com.user.lcdda-remote
+```
+
+- 三個 server（sb `:9100` / lcdda `:9104` / lcdda-harvest `:9106`）**共用同一個 venv**，
+  一次 `pip install` 全部改到——要嘛全部重啟，要嘛新舊碼並存。
+- **`AGENTS.md` 也是 wheel 的一部分**（`pyproject.toml` 的 `force-include`），所以改手冊
+  同樣要重新打包才會送到遠端 agent。`tests/test_wheel_packaging.py` 會驗產物內容。
+- 這個落差曾讓 `get_agent_instructions()` 靜默回傳 placeholder 數個月都沒被發現，
+  見 CHANGELOG「wheel never packaged AGENTS.md」。
 
 ## 架構（中央活腦）
 
