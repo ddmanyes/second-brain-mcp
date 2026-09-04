@@ -68,22 +68,13 @@ def _parse_vec(v: object) -> list[float] | None:
     return [float(x) for x in v]  # type: ignore[union-attr]
 
 
-def _merge_by_path_max_score(*result_lists: list[dict]) -> list[dict]:
-    """Merge several {"path","title","score"} lists, keeping the best score per
-    path, re-sorted descending by score.
-
-    Used to combine chunk-level and notes-level search results (Phase B-4):
-    the caller's downstream RRF fusion ranks by *position* in this list, so
-    re-sorting after the merge (not just deduplicating) is what actually
-    matters — an unsorted merge would silently corrupt every rank-based score.
-    """
-    best: dict[str, dict] = {}
-    for results in result_lists:
-        for r in results:
-            p = r["path"]
-            if p not in best or r["score"] > best[p]["score"]:
-                best[p] = r
-    return sorted(best.values(), key=lambda r: r["score"], reverse=True)
+# NOTE: an earlier version of this module had a _merge_by_path_max_score()
+# helper here that pre-merged the notes-level and chunk-level result lists
+# for each modality (by keeping the higher raw score per path) before RRF
+# fusion. Removed 2026-09-04 — see hybrid_search()'s docstring for why
+# score-merging two differently-scaled embedding sources silently defeated
+# Phase B's purpose (the "back_half_1" retrieval gap). hybrid_search() now
+# feeds all four ranked lists into RRF directly instead.
 
 
 def _redact_dsn(dsn: str) -> str:
@@ -760,14 +751,15 @@ class PostgresStore:
     # Chunk-level search — Phase B-4 of the chunking/embedding plan.
     # ------------------------------------------------------------------
     #
-    # Both paths query note_chunks *in addition to* notes, merged by taking
-    # the max score per path (see _merge_by_path_max_score below) — not a
-    # full swap. A note that hasn't been chunked yet (mid-backfill, or a
-    # transient late-chunking-server outage at write time — see
-    # _sync_chunks_for_note) would otherwise vanish from search entirely
-    # until its chunks catch up; keeping the notes-level query as a floor
-    # means coverage only ever gets wider, never narrower, exactly the
-    # "silent regression" failure mode decision 1 calls out.
+    # Both paths query note_chunks *in addition to* notes — hybrid_search()
+    # feeds all four resulting lists into RRF directly (see its docstring for
+    # why not score-merging notes+chunks first) — not a full swap. A note
+    # that hasn't been chunked yet (mid-backfill, or a transient
+    # late-chunking-server outage at write time — see _plan_chunks_for_note)
+    # would otherwise vanish from search entirely until its chunks catch up;
+    # keeping the notes-level query as a floor means coverage only ever gets
+    # wider, never narrower, exactly the "silent regression" failure mode
+    # decision 1 calls out.
 
     def _trgm_search_chunks(self, query: str, limit: int) -> list[dict]:
         """Chunk-level trigram search, aggregated to note level (max score).
@@ -886,27 +878,48 @@ class PostgresStore:
         unreachable reranker leaves RRF order unchanged rather than erroring
         (see reranker.rerank()). Callers that want the pre-rerank baseline
         (e.g. tests, or a future A/B comparison) pass rerank=False.
-        """
-        bm25 = _merge_by_path_max_score(
-            self._trgm_search(query, limit=limit * 2),
-            self._trgm_search_chunks(query, limit=limit * 2),
-        )
-        sem = _merge_by_path_max_score(
-            self._semantic_search(query, limit=limit * 2),
-            self._semantic_search_chunks(query, limit=limit * 2),
-        )
 
-        if exclude_types and (bm25 or sem):
+        Fusion strategy (fixed 2026-09-04, the "back_half_1" retrieval-gap
+        candidate from the plan note): all four ranked lists — notes-BM25,
+        chunks-BM25, notes-semantic, chunks-semantic — feed RRF *directly*,
+        each contributing its own 1/(rank+k) term. An earlier version first
+        score-merged notes+chunks within each modality (keeping the higher
+        raw cosine score per path) before RRF. That silently defeated Phase
+        B's own purpose: a whole-note embedding averages over up to ~32K
+        chars (Phase B-0) and so scores *systematically* higher on a broad,
+        thematically-clustered corpus than any single paragraph's embedding
+        does for a narrow, back-half-only query — even when that paragraph is
+        the one genuinely relevant chunk. Score-merging by raw value then
+        buried the chunk-only match under dozens of note-level matches with
+        merely-thematic similarity (confirmed live: a target whose best chunk
+        ranked #10 of 18 in an isolated chunk-only semantic search fell to
+        rank 46 of 52 once merged with the notes-level list by score, pushing
+        it out of the candidate pool entirely). RRF is specifically designed
+        to fuse heterogeneous ranked lists *without* needing their scores to
+        be on a comparable scale — feeding all four lists into it directly,
+        instead of pre-merging two of them by score first, is what actually
+        uses that property instead of working around it.
+        """
+        bm25_notes = self._trgm_search(query, limit=limit * 2)
+        bm25_chunks = self._trgm_search_chunks(query, limit=limit * 2)
+        sem_notes = self._semantic_search(query, limit=limit * 2)
+        sem_chunks = self._semantic_search_chunks(query, limit=limit * 2)
+        all_lists = (bm25_notes, bm25_chunks, sem_notes, sem_chunks)
+
+        if exclude_types and any(all_lists):
             excluded = set(exclude_types)
-            candidate_paths = list({r["path"] for r in bm25 + sem})
+            candidate_paths = list({r["path"] for lst in all_lists for r in lst})
             with self._pool.connection() as conn:
                 rows = conn.execute(
                     "SELECT path, note_type FROM notes WHERE path = ANY(%s)",
                     [candidate_paths],
                 ).fetchall()
             excluded_paths = {path for path, ntype in rows if ntype in excluded}
-            bm25 = [r for r in bm25 if r["path"] not in excluded_paths]
-            sem = [r for r in sem if r["path"] not in excluded_paths]
+            bm25_notes = [r for r in bm25_notes if r["path"] not in excluded_paths]
+            bm25_chunks = [r for r in bm25_chunks if r["path"] not in excluded_paths]
+            sem_notes = [r for r in sem_notes if r["path"] not in excluded_paths]
+            sem_chunks = [r for r in sem_chunks if r["path"] not in excluded_paths]
+            all_lists = (bm25_notes, bm25_chunks, sem_notes, sem_chunks)
 
         rrf_scores: dict[str, float] = {}
         penalty_map: dict[str, float] = {}
@@ -914,15 +927,12 @@ class PostgresStore:
         def _rrf(rank: int, k: int = 60) -> float:
             return 1.0 / (rank + k)
 
-        for rank, r in enumerate(bm25):
-            p = r["path"]
-            rrf_scores[p] = rrf_scores.get(p, 0) + _rrf(rank)
-            penalty_map[p] = _vdb._path_penalty(p) if apply_path_penalty else 1.0
-        for rank, r in enumerate(sem):
-            p = r["path"]
-            rrf_scores[p] = rrf_scores.get(p, 0) + _rrf(rank)
-            if p not in penalty_map:
-                penalty_map[p] = _vdb._path_penalty(p) if apply_path_penalty else 1.0
+        for lst in all_lists:
+            for rank, r in enumerate(lst):
+                p = r["path"]
+                rrf_scores[p] = rrf_scores.get(p, 0) + _rrf(rank)
+                if p not in penalty_map:
+                    penalty_map[p] = _vdb._path_penalty(p) if apply_path_penalty else 1.0
 
         # Reranking needs a wider funnel than the final `limit` — it can only
         # promote candidates that are already in the pool, not find new ones.

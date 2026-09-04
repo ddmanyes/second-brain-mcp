@@ -1,9 +1,13 @@
 """Tests for Phase B-4: chunk-level search merged into hybrid_search.
 
-_merge_by_path_max_score is pure (no DB). The integration tests need a real
-Postgres (sb_test convention, see test_postgres_store.py) and monkeypatch
-chunk_and_embed with a deterministic fake — same reasoning as
-test_note_chunks_sync.py.
+hybrid_search() feeds notes-BM25/chunks-BM25/notes-semantic/chunks-semantic
+directly into RRF (see its docstring — a pre-RRF score-merge step used to sit
+here, removed 2026-09-04 after it was found to silently bury genuine
+chunk-only matches under thematically-similar notes-level noise; see
+TestBackHalfRetrievalGap below for the regression test). The integration
+tests need a real Postgres (sb_test convention, see test_postgres_store.py)
+and monkeypatch chunk_and_embed with a deterministic fake — same reasoning
+as test_note_chunks_sync.py.
 """
 from __future__ import annotations
 
@@ -11,8 +15,6 @@ import os
 from pathlib import Path
 
 import pytest
-
-from mcp_second_brain.store.postgres_store import _merge_by_path_max_score
 
 TEST_DSN = os.environ.get(
     "SB_PG_TEST_DSN",
@@ -25,36 +27,6 @@ if TEST_DSN.rsplit("/", 1)[-1] in {"sb_personal", "sb_lab"}:
     )
 
 FM = "---\ntitle: T\ntype: note\nstatus: active\ntags: []\n---\n\n"
-
-
-class TestMergeByPathMaxScore:
-    def test_keeps_the_higher_score_for_a_path_in_both_lists(self):
-        a = [{"path": "x.md", "title": "X", "score": 0.5}]
-        b = [{"path": "x.md", "title": "X", "score": 0.9}]
-        merged = _merge_by_path_max_score(a, b)
-        assert merged == [{"path": "x.md", "title": "X", "score": 0.9}]
-
-    def test_unions_paths_present_in_only_one_list(self):
-        a = [{"path": "a.md", "title": "A", "score": 0.3}]
-        b = [{"path": "b.md", "title": "B", "score": 0.7}]
-        merged = _merge_by_path_max_score(a, b)
-        assert {r["path"] for r in merged} == {"a.md", "b.md"}
-
-    def test_result_is_sorted_descending_by_score(self):
-        a = [{"path": "low.md", "title": "L", "score": 0.1}]
-        b = [{"path": "high.md", "title": "H", "score": 0.9}, {"path": "mid.md", "title": "M", "score": 0.5}]
-        merged = _merge_by_path_max_score(a, b)
-        assert [r["path"] for r in merged] == ["high.md", "mid.md", "low.md"]
-
-    def test_empty_lists_give_empty_result(self):
-        assert _merge_by_path_max_score([], []) == []
-
-    def test_merges_more_than_two_lists(self):
-        a = [{"path": "x.md", "title": "X", "score": 0.1}]
-        b = [{"path": "x.md", "title": "X", "score": 0.4}]
-        c = [{"path": "x.md", "title": "X", "score": 0.2}]
-        merged = _merge_by_path_max_score(a, b, c)
-        assert merged[0]["score"] == 0.4
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +77,66 @@ def vault(tmp_path: Path) -> Path:
     v = tmp_path / "vault"
     v.mkdir()
     return v
+
+
+class TestFusionDoesNotBuryChunkOnlyMatches:
+    """Regression test for the 2026-09-04 fix (the "back_half_1" retrieval
+    gap — see hybrid_search()'s docstring for the full root-cause writeup):
+    a target findable only through the chunk-semantic list, at a modest rank
+    within that list, must not be pushed out of the candidate pool by a flood
+    of notes-level matches that merely score higher in raw (uncalibrated)
+    terms — the exact failure mode of the removed score-merge-then-RRF design.
+    """
+
+    def test_target_found_only_via_chunks_survives_a_flood_of_notes_level_matches(
+        self, store, monkeypatch
+    ):
+        # Every one of these 30 "decoys" only appears in the notes-level
+        # semantic list, all scored higher in raw terms than target's chunk
+        # hit — mimicking a thematically-clustered corpus where whole-note
+        # embeddings systematically outscore any single paragraph's. 30 decoys
+        # + 6 chunk-only entries = 36 total candidates, comfortably more than
+        # the funnel (20): under the old score-merge design this guarantees
+        # the funnel truncates before ever reaching target (dead last by raw
+        # score); under RRF-direct fusion target lands with a comfortable
+        # margin inside the top 20 (worked out by hand: ~12th) rather than
+        # sitting right at the boundary.
+        decoys = [
+            {"path": f"decoy{i}.md", "title": f"D{i}", "score": 0.9 - i * 0.01}
+            for i in range(30)
+        ]
+        # target.md is findable *only* via chunks, and not even at the top of
+        # that list — 5 weaker chunk-only hits rank ahead of it there.
+        chunk_list = [
+            {"path": f"chunkonly{i}.md", "title": f"C{i}", "score": 0.5 - i * 0.01}
+            for i in range(5)
+        ] + [{"path": "target.md", "title": "Target", "score": 0.35}]
+
+        monkeypatch.setattr(store, "_trgm_search", lambda q, limit: [])
+        monkeypatch.setattr(store, "_trgm_search_chunks", lambda q, limit: [])
+        monkeypatch.setattr(store, "_semantic_search", lambda q, limit: decoys)
+        monkeypatch.setattr(store, "_semantic_search_chunks", lambda q, limit: chunk_list)
+
+        all_paths = [r["path"] for r in decoys] + [r["path"] for r in chunk_list]
+        with store._pool.connection() as conn:
+            with conn.cursor() as cur:
+                for p in all_paths:
+                    cur.execute(
+                        "INSERT INTO notes (path, title, note_type, status, tags, content_hash) "
+                        "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (path) DO NOTHING",
+                        [p, p, "note", "active", "[]", f"hash-{p}"],
+                    )
+            conn.commit()
+
+        results = store.hybrid_search(
+            "irrelevant query text", limit=20, apply_path_penalty=False, rerank=False
+        )
+        paths = [r["path"] for r in results]
+        assert "target.md" in paths, (
+            "target.md was buried out of the candidate pool by notes-level "
+            "matches that only scored higher in raw (uncalibrated) terms — "
+            "this is exactly the back_half_1 dilution bug"
+        )
 
 
 class TestHybridSearchReachesChunkText:
