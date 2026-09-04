@@ -7,7 +7,6 @@ import inspect
 import json
 import os
 import re
-import shutil
 import signal
 import subprocess
 import sys
@@ -1483,7 +1482,8 @@ def extract_rules_tool(note_path: str = "") -> str:
 
 @write_tool(target="note_path")
 def expand_semantic_keywords_tool(note_path: str = "", force: bool = False) -> str:
-    """Batch-extract or refresh semantic_keywords for notes using Gemini CLI.
+    """Batch-extract or refresh semantic_keywords for notes via llm_cli (local Gemma4 →
+    Claude CLI → Gemini CLI, in that priority order — see llm_cli.py's module docstring).
 
     Writes extracted keywords into each note's frontmatter and rebuilds FTS index.
     Skips notes that already have semantic_keywords unless force=True.
@@ -1496,9 +1496,15 @@ def expand_semantic_keywords_tool(note_path: str = "", force: bool = False) -> s
     Returns:
         Summary dict: {"processed": N, "skipped": M, "failed": K}
     """
-    gemini_cli = shutil.which("gemini")
-    if not gemini_cli:
-        return "Gemini CLI not found — install with `npm install -g @google/generative-ai`"
+    # 2026-09-04 fix: this used to hard-gate on `shutil.which("gemini")` and refuse to
+    # run at all without it — stale from when this tool's only backend really was Gemini
+    # CLI. _extract_semantic_keywords_via_gemini() now goes through llm_cli's fallback
+    # chain (local Gemma4 → Claude CLI → Gemini), which already fails soft (returns [])
+    # when nothing is available — the loop below already treats that as `skipped`, so no
+    # upfront gate is needed, and the gate was actively wrong once a local backend became
+    # available (it would refuse to even try). See the architecture doc's Phase 12/13
+    # section for the discovery that this made semantic_keywords extraction silently
+    # broken vault-wide for sb.
 
     if note_path:
         paths = [note_path]

@@ -796,13 +796,12 @@ class TestServerHelpers:
         assert "熊市" in result
 
     def test_extract_semantic_keywords_gemini_failure_graceful(self, monkeypatch):
-        """subprocess raising exception returns empty list, never raises."""
-        import sys
-        
-        from mcp_second_brain import server
+        """llm_text raising/failing returns empty list, never raises."""
+        from mcp_second_brain import server, llm_cli
 
-        monkeypatch.setattr(server.shutil, "which", lambda _: "/usr/bin/gemini")
-        monkeypatch.setattr(server.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("timeout")))
+        monkeypatch.setattr(
+            llm_cli, "llm_text", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("timeout"))
+        )
         result = server._extract_semantic_keywords_via_gemini("content")
         assert result == []
 
@@ -860,7 +859,6 @@ class TestServerHelpers:
         from mcp_second_brain import server
 
         monkeypatch.setattr(server, "VAULT", tmp_path)
-        monkeypatch.setattr(server.shutil, "which", lambda _: "/usr/bin/gemini")
         called = []
         monkeypatch.setattr(server, "_extract_semantic_keywords_via_gemini", lambda c: called.append(c) or ["詞"])
 
@@ -883,7 +881,6 @@ class TestServerHelpers:
         from unittest.mock import patch
 
         monkeypatch.setattr(server, "VAULT", tmp_path)
-        monkeypatch.setattr(server.shutil, "which", lambda _: "/usr/bin/gemini")
         processed_paths = []
 
         def _fake_extract(content):
