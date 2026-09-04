@@ -60,3 +60,62 @@ All notable source-tree changes are recorded here.
   and `templates` do not produce false-positive `index_gap` values.
 - Replaced the stalled 30-minute launchd interval with calendar triggers at minute 0
   and 30 in the pg-sync deployment template.
+
+### Added
+
+- Added Phase B of the chunking/embedding plan: a `note_chunks` table (paragraph-aligned,
+  late-chunked embeddings — `chunking.py`, `late_chunking.py`) alongside the existing
+  single-vector `notes.embedding`, plus HNSW/trgm/tsvector indexes. `hybrid_search()`
+  queries both layers and merges by path so a note without chunks yet (mid-backfill, or a
+  transient late-chunking-server outage) never disappears from search. A dedicated
+  `--pooling none` llama-server instance (`com.llama-server-late-chunking`, :8082) does the
+  late-chunking encode — `--pooling` is a launch-time flag, not per-request, so it can't
+  share the existing embedding server. New `sync_chunks(vault, limit=None)` backfill path
+  and `sync_chunks_tool(limit=200)` MCP tool for draining a backlog in bounded batches
+  (`sync_index()` itself now only processes a small bounded slice per call, for the same
+  reason). See `10-projects/second-brain/phases/second-brain-分塊-embedding-與-late-chunking-實施計畫.md`.
+- Added `reranker.py`: reranks `hybrid_search()`'s fused candidates via a dedicated
+  Qwen3-Reranker-0.6B llama-server instance (`--reranking --pooling rank`, :8083).
+  `hybrid_search(..., rerank=True)` (default on) sends each candidate's top-3 nearest
+  chunks (not just the single nearest — a lone administrative boilerplate chunk, e.g.
+  "Author Contributions", can spuriously win on cosine distance and tank an otherwise
+  top-ranked document) and takes the max reranker score. Fails soft to unmodified RRF
+  order if the reranker is unreachable. `chunking.py` also gained
+  `filter_administrative_sections()` to drop boilerplate sections before chunking at all,
+  independent of whether reranking is on. See
+  `decisions/second-brain-reranker-ab對照實驗結果-決策2.md` for the A/B results.
+
+### Fixed
+
+- Fixed two architecture debts from Phase B: (1) chunk-sync used to call the slow external
+  late-chunking HTTP request while still holding the Postgres transaction/connection the
+  caller had opened, which could starve unrelated concurrent MCP calls under load — split
+  into a compute phase (all HTTP calls, no transaction open) and a write phase (pure SQL,
+  short transaction) across `index_file`/`sync_all`/`sync_incremental`/`sync_chunks`.
+  (2) `sync_chunks()` being unconditionally wired into `sync_index()` made that tool's
+  runtime unbounded when a large backfill backlog was outstanding (observed: 90+ minutes,
+  colliding with a concurrent backfill script on the same rows) — see the `limit`/
+  `sync_chunks_tool()` addition above.
+- Fixed `hybrid_search()` silently burying genuine chunk-only matches under
+  thematically-similar notes-level noise: it used to score-merge the notes-level and
+  chunk-level result list for each modality (keeping the higher raw cosine score per path)
+  *before* RRF fusion. A whole-note embedding scores systematically higher on a
+  thematically-clustered corpus than any single paragraph's embedding does for a narrow,
+  back-half-only query, even when that paragraph is the one genuinely relevant chunk —
+  confirmed live, a target's best chunk ranked #10 of 18 in isolation but fell to #46 of 52
+  once merged by score, pushing it out of the candidate pool entirely. Fixed by feeding all
+  four ranked lists (notes-BM25, chunks-BM25, notes-semantic, chunks-semantic) into RRF
+  directly instead of pre-merging two of them by score — RRF is specifically designed to
+  fuse heterogeneous ranked lists without comparable score scales, so pre-merging by score
+  defeated its own purpose. `_merge_by_path_max_score` and its unit tests removed as
+  dead/misleading once nothing called it for this any more.
+- Fixed `semantic_keywords` extraction being silently dead for the sb vault specifically:
+  `second-brain-remote`'s launchd plist never set `SB_LLM_BASE_URL` (the local-Gemma4
+  backend `llm_cli.py` prefers), and neither the `claude` nor `gemini` CLI resolves on that
+  service's `PATH` — so all three of `llm_cli.llm_text()`'s backends fell through to `None`
+  on every note, with no error surfaced. Confirmed live: only 47 of 4251 sb notes had
+  `semantic_keywords` set. `expand_semantic_keywords_tool()` additionally had its own,
+  separate hard gate — `shutil.which("gemini")`, refusing to run at all without the literal
+  `gemini` binary — left over from before the backend moved to `llm_cli`'s fallback chain;
+  removed, since `_extract_semantic_keywords_via_gemini()` already fails soft. Backfilled
+  all 4294 sb notes to 100% `semantic_keywords` coverage after the fix.
