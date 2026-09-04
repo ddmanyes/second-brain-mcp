@@ -53,7 +53,7 @@ vault 目錄與模板會在首次啟動時自動建立。之後叫 agent 執行 
 | `vault_sleep` | 壓縮老舊、低活躍度的筆記 |
 | `get_agent_instructions` | 把完整歸檔 SOP（AGENTS.md）提供給遠端 agent |
 
-完整工具清單（39 個）見 **[AGENTS.md](AGENTS.md)**。
+完整工具清單（40 個）見 **[AGENTS.md](AGENTS.md)**。
 
 需要內容時使用 `search_notes`；server 或索引可能異常時使用 `health_check`；
 需要文章整理報告時使用 `audit_article_records`。稽核結果不會自動合併、歸檔或刪除筆記。

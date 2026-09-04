@@ -14,7 +14,7 @@
 
 Second Brain is a personal knowledge management server that exposes vault read/write, search, archiving, and maintenance via MCP.
 
-- **MCP server**: `server.py` (39 tools — see Tool Reference; keep this count in sync when adding/removing tools)
+- **MCP server**: `server.py` (40 tools — see Tool Reference; keep this count in sync when adding/removing tools)
 - **Index backend**: pluggable `VaultStore` (`store/`), selected by `SB_DB_BACKEND`:
   - `postgres` (central brain) — `store/postgres_store.py`, Postgres 16 + pgvector + pg_trgm, connection-pooled, multi-machine concurrent read/write via MVCC.
   - `duckdb` (default / offline fallback) — `store/duckdb_store.py` wrapping `vault_db.py`.
@@ -83,6 +83,7 @@ Postgres directly.
 | "Find related notes" | `find_related_notes(path, limit)` | Semantic similarity, threshold 0.7 |
 | "Top notes" | `top_notes(by, limit)` | by: "score" or "recency" |
 | "Rebuild index / update semantic search" | `sync_index()` | Run after bulk note changes |
+| "Backfill chunk embeddings (large backlog)" | `sync_chunks_tool(limit=200)` | Call repeatedly until "remaining" is 0; `sync_index()`'s own chunk pass is capped small |
 | "Index stats / how many notes" | `index_stats()` | |
 | "Archive old notes" | `vault_sleep(dry_run=True)` | Always dry_run first |
 | "Which notes will be archived" | `sleep_status()` | |

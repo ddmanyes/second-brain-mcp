@@ -24,7 +24,9 @@ from psycopg_pool import ConnectionPool
 
 # The markdown → index projection is shared with DuckDBStore; the seam between the
 # two backends is "how it is stored", not "what a note is".
-from ..note_row import project_note, FRONTMATTER_RE
+from dataclasses import dataclass
+
+from ..note_row import project_note, FRONTMATTER_RE, NoteRow
 
 # vault_db still owns the embedding client and the vault schema validator, plus the
 # pure vector helpers (_cosine, _path_penalty). Those don't touch DuckDB.
@@ -132,32 +134,131 @@ class PostgresStore:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _upsert_note_row(
-        self,
-        cur: psycopg.Cursor,
-        vault: Path,
-        md_file: Path,
-    ) -> None:
-        """Project md_file into a NoteRow and upsert it into the Postgres notes table.
+    # ------------------------------------------------------------------
+    # Plan / write split (architecture debt fix, 2026-09-04)
+    # ------------------------------------------------------------------
+    #
+    # _plan_note_upsert() / _plan_chunks_for_note() do all the slow work — file
+    # reads, embed_text() and chunk_and_embed()'s external HTTP calls — with no
+    # Postgres transaction open. _write_note_plan() / _write_chunks() are pure
+    # SQL, safe to run inside a short-lived transaction. Before this split,
+    # _sync_chunks_for_note() ran chunk_and_embed() (which can take minutes on
+    # a long document's sliding windows) while holding the very cursor/
+    # transaction its caller (index_file/sync_all/sync_incremental) had opened
+    # — an idle-in-transaction connection for the whole HTTP round trip. Under
+    # load this was observed to make unrelated read_note/new_note calls time
+    # out (see the plan note's Phase B execution record). Splitting compute
+    # from write removes that window entirely: every transaction opened below
+    # now contains INSERT/UPDATE/DELETE only.
 
-        What a note looks like in the index is owned by note_row.project_note();
-        this method only binds that projection into Postgres SQL.
+    @dataclass
+    class _NotePlan:
+        note: NoteRow
+        chunks: list[tuple[str, list[float]]] | None  # None = leave existing chunks untouched
+
+    def _plan_note_upsert(self, vault: Path, md_file: Path) -> "PostgresStore._NotePlan | None":
+        """Compute (no DB writes) everything needed to upsert one note + its
+        chunks. Returns None if the note's content_hash is unchanged — mirrors
+        the pre-refactor early-return, including that chunks are *not*
+        revisited for an unchanged note (that's sync_chunks()'s job, per
+        decision 1: an unchanged note is never revisited by sync_all/
+        sync_incremental's hash short-circuit).
         """
         rel = str(md_file.relative_to(vault))
-
-        # Skip if unchanged — hash first so an untouched file costs no embedding call.
         chash = _vdb._content_hash_of_file(md_file)
-        row = cur.execute(
-            "SELECT content_hash FROM notes WHERE path = %s", [rel]
-        ).fetchone()
+
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT content_hash FROM notes WHERE path = %s", [rel]
+            ).fetchone()
         if row and row[0] == chash:
-            return
+            return None
 
         note = project_note(
             vault, md_file, embed=_vdb.embed_text, validate=_vdb.validate_note,
             log_prefix="pg_store",
         )
+        chunks = self._plan_chunks_for_note(note.path, note.content_hash, md_file)
+        return PostgresStore._NotePlan(note=note, chunks=chunks)
 
+    def _plan_chunks_for_note(
+        self, note_path: str, content_hash: str, md_file: Path
+    ) -> list[tuple[str, list[float]]] | None:
+        """Compute (no DB writes) the new chunk set for one note (decision 1
+        of the chunking/embedding plan).
+
+        Returns None when: the stored chunk hash already matches (skip, avoids
+        recomputing embeddings for a multi-MB paper on every sync pass), the
+        file can't be read, or the late-chunking server is unavailable — in
+        all three cases the caller must leave existing chunks untouched rather
+        than delete-with-nothing-to-replace-them (a transient outage should
+        never leave a note with zero chunks). Returns [] to mean "delete only,
+        nothing to insert" (empty body after stripping references).
+
+        Reads the file's full text independently of project_note() — that
+        projection truncates files over note_row.LARGE_FILE_THRESHOLD
+        (Phase B-0), which would defeat the point of chunking (built
+        specifically to reach the parts of long documents the single-vector
+        embedding can't).
+        """
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT content_hash FROM note_chunks WHERE note_path = %s LIMIT 1",
+                [note_path],
+            ).fetchone()
+        if row and row[0] == content_hash:
+            return None
+
+        try:
+            full_text = md_file.read_text(encoding="utf-8", errors="ignore")
+        except OSError as e:
+            print(f"[pg_store] chunk sync: read failed for {note_path}: {e}", file=sys.stderr)
+            return None
+
+        # References are the cited papers' claims, not this note's own (same
+        # rationale as embed_text_for's Phase B-0 fix) — no reason to spend
+        # chunks, an HNSW index, and a trgm index on someone else's bibliography.
+        body = strip_references(FRONTMATTER_RE.sub("", full_text).strip())
+        if not body.strip():
+            return []
+
+        try:
+            return chunk_and_embed(body)
+        except LateChunkingUnavailable as e:
+            print(
+                f"[pg_store] chunk sync: embedding unavailable for {note_path}, "
+                f"keeping existing chunks: {e}",
+                file=sys.stderr,
+            )
+            return None
+
+    def _write_chunks(
+        self,
+        cur: psycopg.Cursor,
+        note_path: str,
+        content_hash: str,
+        chunks: list[tuple[str, list[float]]],
+    ) -> None:
+        """Pure SQL: full replace (DELETE + re-INSERT) of one note's chunks.
+
+        Never an in-place update — the caller (_write_note_plan / sync_chunks)
+        only calls this once the new chunk set is already computed in hand,
+        so the DELETE is never left with nothing to replace it.
+        """
+        cur.execute("DELETE FROM note_chunks WHERE note_path = %s", [note_path])
+        for idx, (chunk_text, emb) in enumerate(chunks):
+            cur.execute(
+                """
+                INSERT INTO note_chunks (note_path, chunk_idx, chunk_text, content_hash, embedding)
+                VALUES (%s, %s, %s, %s, %s::vector)
+                """,
+                [note_path, idx, chunk_text, content_hash, str(emb) if emb else None],
+            )
+
+    def _write_note_plan(self, cur: psycopg.Cursor, plan: "PostgresStore._NotePlan") -> None:
+        """Pure SQL: write a precomputed _NotePlan. No HTTP, safe inside a
+        short-lived transaction."""
+        note = plan.note
         cur.execute(
             """
             INSERT INTO notes (
@@ -200,81 +301,20 @@ class PostgresStore:
             ],
         )
 
-        self._sync_chunks_for_note(cur, note.path, note.content_hash, md_file)
-
-    def _sync_chunks_for_note(
-        self,
-        cur: psycopg.Cursor,
-        note_path: str,
-        content_hash: str,
-        md_file: Path,
-    ) -> None:
-        """Rebuild note_chunks for one note when its content changed (decision 1
-        of the chunking/embedding plan).
-
-        Skips entirely when the stored chunk hash already matches the note's
-        current content_hash — avoids recomputing embeddings for a multi-MB
-        paper on every sync pass. Full replace (DELETE + re-INSERT), never an
-        in-place update — computes the new chunk set *before* deleting the old
-        one, so a transient late-chunking-server outage leaves the previous
-        (stale but present) chunks in place instead of leaving the note with
-        zero chunks until the next successful sync.
-
-        Reads the file's full text independently of project_note() — that
-        projection truncates files over note_row.LARGE_FILE_THRESHOLD
-        (Phase B-0), which would defeat the point of chunking (built
-        specifically to reach the parts of long documents the single-vector
-        embedding can't).
-        """
-        row = cur.execute(
-            "SELECT content_hash FROM note_chunks WHERE note_path = %s LIMIT 1",
-            [note_path],
-        ).fetchone()
-        if row and row[0] == content_hash:
-            return
-
-        try:
-            full_text = md_file.read_text(encoding="utf-8", errors="ignore")
-        except OSError as e:
-            print(f"[pg_store] chunk sync: read failed for {note_path}: {e}", file=sys.stderr)
-            return
-
-        # References are the cited papers' claims, not this note's own (same
-        # rationale as embed_text_for's Phase B-0 fix) — no reason to spend
-        # chunks, an HNSW index, and a trgm index on someone else's bibliography.
-        body = strip_references(FRONTMATTER_RE.sub("", full_text).strip())
-        if not body.strip():
-            cur.execute("DELETE FROM note_chunks WHERE note_path = %s", [note_path])
-            return
-
-        try:
-            chunks = chunk_and_embed(body)
-        except LateChunkingUnavailable as e:
-            print(
-                f"[pg_store] chunk sync: embedding unavailable for {note_path}, "
-                f"keeping existing chunks: {e}",
-                file=sys.stderr,
-            )
-            return
-
-        cur.execute("DELETE FROM note_chunks WHERE note_path = %s", [note_path])
-        for idx, (chunk_text, emb) in enumerate(chunks):
-            cur.execute(
-                """
-                INSERT INTO note_chunks (note_path, chunk_idx, chunk_text, content_hash, embedding)
-                VALUES (%s, %s, %s, %s, %s::vector)
-                """,
-                [note_path, idx, chunk_text, content_hash, str(emb) if emb else None],
-            )
+        if plan.chunks is not None:
+            self._write_chunks(cur, note.path, note.content_hash, plan.chunks)
 
     # ------------------------------------------------------------------
     # Core indexing
     # ------------------------------------------------------------------
 
     def index_file(self, vault: Path, md_file: Path) -> None:
+        plan = self._plan_note_upsert(vault, md_file)  # HTTP calls happen here, no transaction open
+        if plan is None:
+            return
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                self._upsert_note_row(cur, vault, md_file)
+                self._write_note_plan(cur, plan)
             conn.commit()
 
     def sync_all(self, vault: Path) -> dict:
@@ -309,12 +349,19 @@ class PostgresStore:
         for i, md_file in enumerate(all_files):
             batch.append(md_file)
             if len(batch) >= _SYNC_BATCH_SIZE or i == len(all_files) - 1:
+                # Compute phase first (HTTP calls, no transaction open), then one
+                # short write transaction for the whole batch — see the "Plan /
+                # write split" note above _plan_note_upsert.
+                plans = []
+                for f in batch:
+                    plans.append(self._plan_note_upsert(vault, f))
+                    seen.add(str(f.relative_to(vault)))
+                    count += 1
                 with self._pool.connection() as conn:
                     with conn.cursor() as cur:
-                        for f in batch:
-                            self._upsert_note_row(cur, vault, f)
-                            seen.add(str(f.relative_to(vault)))
-                            count += 1
+                        for plan in plans:
+                            if plan is not None:
+                                self._write_note_plan(cur, plan)
                     conn.commit()
                 batch = []
 
@@ -364,15 +411,19 @@ class PostgresStore:
         if not changed:
             return {"updated": 0, "skipped": "all fresh"}
         updated, skipped = 0, 0
+        plans = []
+        for f in changed:
+            try:
+                plans.append(self._plan_note_upsert(vault, f))  # HTTP here, no transaction open
+                updated += 1
+            except OSError as e:
+                print(f"[pg-sync] skip {f.name}: {e}", file=sys.stderr)
+                skipped += 1
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                for f in changed:
-                    try:
-                        self._upsert_note_row(cur, vault, f)
-                        updated += 1
-                    except OSError as e:
-                        print(f"[pg-sync] skip {f.name}: {e}", file=sys.stderr)
-                        skipped += 1
+                for plan in plans:
+                    if plan is not None:
+                        self._write_note_plan(cur, plan)
             conn.commit()
         return {"updated": updated, "skipped": skipped}
 
@@ -444,28 +495,57 @@ class PostgresStore:
 
         return {"updated": updated, "failed": failed, "skipped": len(rows) - updated - failed}
 
-    def sync_chunks(self, vault: Path) -> dict:
+    def sync_chunks(self, vault: Path, limit: int | None = None) -> dict:
         """Backfill note_chunks for notes that don't have a matching hash yet.
 
         Mirrors sync_embeddings()'s "backfill what's missing" semantics but for
         the chunks table. Necessary as a *separate* pass because
-        _upsert_note_row's content_hash short-circuit means an unchanged note
+        _plan_note_upsert's content_hash short-circuit means an unchanged note
         is never revisited by sync_all/sync_incremental — a brand-new
         note_chunks table (or any note that predates this feature) needs this
         explicit backfill once. After that, ordinary edits keep chunks current
-        via _upsert_note_row automatically (decision 1).
+        automatically (decision 1).
+
+        limit: cap how many candidate notes this call processes (ordered by
+        path, for determinism across repeated calls). None means "no cap,
+        process everything" — used by the dedicated backfill tool. A bounded
+        default is what sync_index() passes on every call, so that tool's
+        runtime stays predictable instead of unbounded when a large backlog
+        is outstanding (architecture debt fixed 2026-09-04, see the plan
+        note's Phase B execution record: sync_index() was observed to run
+        90+ minutes reprocessing the same 4215 notes a concurrent backfill
+        script was also working through). The returned "remaining" count lets
+        a caller decide whether to run it again.
         """
         with self._pool.connection() as conn:
-            rows = conn.execute(
+            total_row = conn.execute(
                 """
+                SELECT COUNT(*) FROM (
+                    SELECT n.path
+                    FROM notes n
+                    LEFT JOIN note_chunks c
+                        ON c.note_path = n.path AND c.content_hash = n.content_hash
+                    WHERE c.note_path IS NULL
+                    GROUP BY n.path
+                ) t
+                """
+            ).fetchone()
+            total_candidates = total_row[0] if total_row else 0
+
+            sql = """
                 SELECT n.path, n.content_hash
                 FROM notes n
                 LEFT JOIN note_chunks c
                     ON c.note_path = n.path AND c.content_hash = n.content_hash
                 WHERE c.note_path IS NULL
                 GROUP BY n.path, n.content_hash
-                """
-            ).fetchall()
+                ORDER BY n.path
+            """
+            params: list = []
+            if limit is not None:
+                sql += " LIMIT %s"
+                params = [limit]
+            rows = conn.execute(sql, params).fetchall()
 
         updated, failed = 0, 0
         for path, content_hash in rows:
@@ -473,16 +553,24 @@ class PostgresStore:
             if not md_file.exists():
                 continue
             try:
-                with self._pool.connection() as conn:
-                    with conn.cursor() as cur:
-                        self._sync_chunks_for_note(cur, path, content_hash, md_file)
-                    conn.commit()
+                chunks = self._plan_chunks_for_note(path, content_hash, md_file)  # HTTP, no txn
+                if chunks is not None:
+                    with self._pool.connection() as conn:
+                        with conn.cursor() as cur:
+                            self._write_chunks(cur, path, content_hash, chunks)
+                        conn.commit()
                 updated += 1
             except Exception as e:
                 print(f"[pg_store] sync_chunks failed for {path}: {e}", file=sys.stderr)
                 failed += 1
 
-        return {"updated": updated, "failed": failed, "candidates": len(rows)}
+        remaining = max(total_candidates - updated, 0)
+        return {
+            "updated": updated,
+            "failed": failed,
+            "candidates": len(rows),
+            "remaining": remaining,
+        }
 
     def compute_neighbor_keywords(
         self, threshold: float = 0.75, top_n: int = 5

@@ -59,7 +59,7 @@ class VaultStore(Protocol):
         """
         ...
 
-    def sync_chunks(self, vault: Path) -> dict:
+    def sync_chunks(self, vault: Path, limit: int | None = None) -> dict:
         """Backfill note_chunks for notes whose chunks are missing or stale
         (Phase B of the chunking/embedding plan — late-chunked, paragraph-
         aligned chunk embeddings, separate from the single-vector notes.embedding).
@@ -70,7 +70,13 @@ class VaultStore(Protocol):
         does not implement Phase B chunking (Postgres is the only backend
         deployed live for sb/lcdda) and returns a no-op result.
 
-        Returns {"updated": N, "failed": M, "candidates": K}.
+        limit: cap how many candidate notes to process this call (None = no
+        cap). sync_index() passes a small bounded limit so its own runtime
+        stays predictable; a dedicated backfill tool passes None to drain a
+        large backlog (see PostgresStore.sync_chunks's docstring for why this
+        cap exists — architecture debt fixed 2026-09-04).
+
+        Returns {"updated": N, "failed": M, "candidates": K, "remaining": R}.
         """
         ...
 

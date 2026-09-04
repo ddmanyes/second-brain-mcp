@@ -173,6 +173,78 @@ class TestSyncChunksForNote:
         assert _chunk_texts(store, "note6.md") == []
 
 
+class TestChunkSyncDoesNotHoldTransactionAcrossEmbedding:
+    """Regression test for the 2026-09-04 architecture-debt fix: the slow
+    chunk_and_embed() HTTP call must happen with no Postgres transaction/
+    connection held, so it can't starve an unrelated concurrent query. Uses a
+    dedicated max_size=1 store so the old (buggy) behavior — computing chunks
+    while still holding the cursor's connection — would provably starve the
+    pool; the fixed code releases the connection before calling
+    chunk_and_embed(), so a second query goes through immediately even with
+    only one connection available.
+    """
+
+    @pytest.fixture()
+    def single_conn_store(self):
+        from mcp_second_brain.store.postgres_store import PostgresStore
+
+        try:
+            s = PostgresStore(TEST_DSN, min_size=1, max_size=1)
+        except Exception as e:
+            pytest.skip(f"Postgres unavailable: {e}")
+        yield s
+        s.close()
+
+    def test_pool_connection_is_free_during_chunk_and_embed_call(
+        self, single_conn_store, vault, monkeypatch
+    ):
+        import threading
+        import time
+
+        entered_embed = threading.Event()
+        release_embed = threading.Event()
+
+        def slow_chunk_and_embed(text, **kwargs):
+            entered_embed.set()
+            release_embed.wait(timeout=5)
+            return _fake_chunk_and_embed(text, **kwargs)
+
+        monkeypatch.setattr(
+            "mcp_second_brain.store.postgres_store.chunk_and_embed", slow_chunk_and_embed
+        )
+
+        f = vault / "note_concurrent.md"
+        f.write_text(FM + "content for the concurrency regression test", encoding="utf-8")
+
+        outcome: dict = {}
+
+        def do_index():
+            single_conn_store.index_file(vault, f)
+            outcome["done"] = True
+
+        t = threading.Thread(target=do_index)
+        t.start()
+        try:
+            assert entered_embed.wait(timeout=5), "chunk_and_embed was never called"
+
+            # A second, unrelated query on the same size-1 pool must not be
+            # blocked by the in-flight embedding call — it would hang until
+            # release_embed.set() below if a transaction were still held.
+            start = time.monotonic()
+            with single_conn_store._pool.connection() as conn:
+                conn.execute("SELECT 1").fetchone()
+            elapsed = time.monotonic() - start
+            assert elapsed < 2.0, (
+                f"unrelated query took {elapsed:.1f}s on a size-1 pool while "
+                "chunk_and_embed was in flight — a transaction is being held "
+                "across the HTTP call again"
+            )
+        finally:
+            release_embed.set()
+            t.join(timeout=5)
+        assert outcome.get("done")
+
+
 class TestSyncChunksBackfill:
     def test_backfills_then_is_a_noop_on_the_next_pass(self, store, vault, monkeypatch):
         _patch_fake(monkeypatch)
@@ -222,3 +294,40 @@ class TestSyncChunksBackfill:
                 ["note7.md"],
             ).fetchall()
         assert still_missing == []
+
+
+class TestSyncChunksLimit:
+    """Regression test for the 2026-09-04 architecture-debt fix: sync_chunks()
+    accepts a `limit` so sync_index()'s own backfill pass can't turn into an
+    unbounded, hours-long call when a large backlog is outstanding (see
+    PostgresStore.sync_chunks's docstring)."""
+
+    def test_limit_caps_this_calls_processing_and_remaining_tracks_backlog(
+        self, store, vault, monkeypatch
+    ):
+        _patch_fake(monkeypatch)
+        from mcp_second_brain.note_row import content_hash
+
+        for i in range(3):
+            f = vault / f"limitnote{i}.md"
+            f.write_text(FM + f"content {i}", encoding="utf-8")
+            chash = content_hash(f.read_text(encoding="utf-8"))
+            with store._pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO notes (path, title, note_type, status, tags, content_hash) "
+                        "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (path) DO NOTHING",
+                        [f"limitnote{i}.md", "T", "note", "active", "[]", chash],
+                    )
+                conn.commit()
+
+        result = store.sync_chunks(vault, limit=2)
+        assert result["candidates"] == 2  # exactly the cap, even though >2 are outstanding
+        assert result["updated"] == 2
+        assert result["remaining"] >= 1  # at least limitnote2.md is still outstanding
+
+        # Draining with no cap eventually reaches zero remaining.
+        drained = store.sync_chunks(vault, limit=None)
+        assert drained["remaining"] == 0
+        for i in range(3):
+            assert _chunk_texts(store, f"limitnote{i}.md") == [f"content {i}"]

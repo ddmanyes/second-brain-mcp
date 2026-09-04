@@ -1307,23 +1307,62 @@ def audit_article_records(
     )
 
 
+#: sync_index()'s own chunk-backfill pass is capped at this many notes per call
+#: (architecture debt fixed 2026-09-04 — see the plan note's Phase B execution
+#: record). Without a cap, a large outstanding backlog made sync_index() run
+#: for 90+ minutes and collide with any concurrent backfill script working the
+#: same rows. This keeps the routine "added/edited a few notes → resync" case
+#: fast; a real backlog needs sync_chunks_tool() instead.
+_SYNC_INDEX_CHUNK_LIMIT = 20
+
+
 @mcp.tool()
 def sync_index() -> str:
     """Rebuild the DuckDB index by scanning all vault markdown files.
     Run this after adding notes manually, or when setting up on a new machine.
+
+    Also backfills note_chunks for up to _SYNC_INDEX_CHUNK_LIMIT notes that
+    predate chunking or whose chunks failed previously. If more than that are
+    outstanding, run sync_chunks_tool() separately to drain the rest — this
+    tool intentionally does not attempt the whole backlog in one call.
     """
     result = _store.sync_all(VAULT)
     emb = _store.sync_embeddings(vault=VAULT)
-    chunks = _store.sync_chunks(VAULT)
+    chunks = _store.sync_chunks(VAULT, limit=_SYNC_INDEX_CHUNK_LIMIT)
     stats = _store.db_stats()
     embed_warn = f" ⚠️ {result['embed_failed']} notes missing embedding" if result["embed_failed"] else ""
     chunk_line = f"\nChunks: +{chunks['updated']} notes backfilled" if chunks["updated"] else ""
+    if chunks.get("remaining"):
+        chunk_line += f" ({chunks['remaining']} more outstanding — run sync_chunks_tool() to continue)"
     return (
         f"Synced {result['synced']} files → {stats['total_notes']} notes in index.{embed_warn}\n"
         f"Embeddings: +{emb['updated']} new (llama-server {'✓' if emb['updated'] or emb['failed'] == 0 else '✗ unavailable'})"
         f"{chunk_line}\n"
         f"DB: {stats['db_path']}\n"
         f"By type: {stats['by_type']}"
+    )
+
+
+@mcp.tool()
+def sync_chunks_tool(limit: int = 200) -> str:
+    """Backfill note_chunks for notes whose chunks are missing or stale — the
+    dedicated tool for draining a large backlog (sync_index()'s own chunk
+    backfill is capped small so it stays fast; see its docstring).
+
+    limit: max notes to process this call (default 200). Call repeatedly
+    (the response says how many remain) until "remaining" reaches 0 — each
+    call is its own bounded unit of work rather than one unbounded one, so a
+    big backlog never turns a single call into an hours-long block (see
+    PostgresStore.sync_chunks's docstring for the architecture debt this
+    replaced, fixed 2026-09-04).
+    """
+    result = _store.sync_chunks(VAULT, limit=limit)
+    remaining = result.get("remaining", 0)
+    tail = f" — {remaining} more outstanding, call again to continue" if remaining else " — backlog drained"
+    failed_part = f", {result['failed']} failed" if result["failed"] else ""
+    return (
+        f"Chunks: +{result['updated']} notes backfilled{failed_part}"
+        f" (of {result['candidates']} candidates this call){tail}"
     )
 
 
