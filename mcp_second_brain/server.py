@@ -1183,9 +1183,11 @@ def update_note(path: str, content: str) -> str:
     """
     full_path = _vault_path(path, missing_hint=". Use new_note to create it.")
     full_path.write_text(content, encoding="utf-8")
-    n_links = after_write(full_path, path)
-    link_msg = f" ({n_links} related links refreshed)" if n_links else ""
-    return f"Updated: {path}{link_msg}"
+    # relink=False: an overwrite carries whatever `related:` the caller authored
+    # (often a hand-curated list). Auto-relinking here would silently discard it —
+    # use update_links_tool to force a semantic-similarity refresh instead.
+    after_write(full_path, path, relink=False)
+    return f"Updated: {path}"
 
 
 @write_tool(target="path")

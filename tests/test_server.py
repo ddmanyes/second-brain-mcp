@@ -604,3 +604,31 @@ class TestAfterWrite:
         self._patched(server, monkeypatch, index_raises=True)
         n = server.after_write(vault / "n.md", "n.md")  # must not raise
         assert n == 0
+
+
+class TestUpdateNotePreservesRelated:
+    """update_note must never silently clobber a caller-authored `related:` field.
+
+    Regression test for the 2026-09-07 incident: update_note's default relink=True
+    overwrote a hand-curated related list with a single semantically-computed link
+    that didn't even appear in the note. update_links_tool remains the explicit,
+    opt-in way to force a semantic-similarity relink.
+    """
+
+    def test_update_note_does_not_relink(self, vault, monkeypatch):
+        from mcp_second_brain import server
+        monkeypatch.setattr(server, "VAULT", vault)
+        relink = MagicMock(return_value=3)
+        monkeypatch.setattr(server, "_inject_related_links", relink)
+        monkeypatch.setattr(server, "_store", MagicMock())
+
+        result = server.update_note(
+            "10-projects/test-note.md",
+            '---\ntitle: Test Note\ndate: 2026-05-29\ntype: project\nstatus: active\n'
+            'tags: []\nrelated: [[[10-projects/curated-link.md]]]\n---\n\n# Test\n\nEdited.',
+        )
+
+        assert not relink.called
+        assert "Updated: 10-projects/test-note.md" == result
+        written = (vault / "10-projects" / "test-note.md").read_text(encoding="utf-8")
+        assert "curated-link" in written
