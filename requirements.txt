@@ -1,5 +1,5 @@
 # Floors bumped 2026-06-10 to current tested versions (173 tests green).
-mcp[cli]>=1.27.2
+mcp[cli]>=1.27.2,<2
 markitdown[all]>=0.1.6
 duckdb>=1.5.3
 playwright>=1.60.0
