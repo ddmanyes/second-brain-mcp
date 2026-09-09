@@ -28,10 +28,10 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --group dev
+        run: uv sync --locked --group dev
 
 
       - name: Run tests with coverage
-        run: uv run pytest tests/ -q --tb=short --cov --cov-report=term-missing --cov-fail-under=65
+        run: uv run --locked pytest tests/ -q --tb=short --cov --cov-report=term-missing --cov-fail-under=65
         env:
           EMBED_AUTO_START: "false"
