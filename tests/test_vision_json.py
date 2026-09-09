@@ -84,6 +84,67 @@ class TestVisionJson:
         assert answer is not None
         assert answer.backend == "cli"
 
+    def test_local_only_never_calls_paid_or_cli_fallback(self, png, monkeypatch):
+        """A local-only pilot must be structurally unable to reach paid backends."""
+        monkeypatch.setenv("SB_VISION_BACKEND", "local-only")
+        with patch.object(
+            llm_cli,
+            "_local_chat",
+            return_value='{"ocr_text": "local", "description": "plot"}',
+        ) as local, patch.object(llm_cli, "_anthropic_vision") as anthropic, patch.object(
+            llm_cli, "llm_image"
+        ) as cli:
+            answer = llm_cli.vision_json("p", png, max_tokens=777)
+
+        assert answer is not None
+        assert answer.backend == "local"
+        assert answer.usage == {"input": 0, "output": 0}
+        local.assert_called_once_with("p", image_path=png, timeout=120, max_tokens=777)
+        anthropic.assert_not_called()
+        cli.assert_not_called()
+
+    def test_local_only_failure_is_fail_closed(self, png, monkeypatch):
+        monkeypatch.setenv("SB_VISION_BACKEND", "local-only")
+        with patch.object(llm_cli, "_local_chat", return_value=None), patch.object(
+            llm_cli, "_anthropic_vision"
+        ) as anthropic, patch.object(llm_cli, "llm_image") as cli:
+            assert llm_cli.vision_json("p", png) is None
+
+        anthropic.assert_not_called()
+        cli.assert_not_called()
+
+    def test_local_only_retries_one_unparsable_reply_without_external_fallback(
+        self, png, monkeypatch
+    ):
+        monkeypatch.setenv("SB_VISION_BACKEND", "local-only")
+        with patch.object(
+            llm_cli,
+            "_local_chat",
+            side_effect=["not json", '{"ocr_text": "retry ok"}'],
+        ) as local, patch.object(llm_cli, "_anthropic_vision") as anthropic, patch.object(
+            llm_cli, "llm_image"
+        ) as cli:
+            answer = llm_cli.vision_json("p", png)
+
+        assert answer is not None
+        assert answer.data == {"ocr_text": "retry ok"}
+        assert local.call_count == 2
+        anthropic.assert_not_called()
+        cli.assert_not_called()
+
+    def test_unknown_backend_policy_fails_before_any_model_call(self, png, monkeypatch):
+        monkeypatch.setenv("SB_VISION_BACKEND", "typo")
+        with patch.object(llm_cli, "_local_chat") as local, patch.object(
+            llm_cli, "_anthropic_vision"
+        ) as anthropic, patch.object(llm_cli, "llm_image") as cli, pytest.raises(
+            ValueError, match="SB_VISION_BACKEND"
+        ):
+            llm_cli.vision_json("p", png)
+
+        local.assert_not_called()
+        anthropic.assert_not_called()
+        cli.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # analyse_figure
@@ -112,6 +173,25 @@ class TestAnalyseFigure:
         with patch.object(llm_cli, "vision_json", return_value=None) as mock:
             figures.analyse_figure(png, caption="Figure 3: survival")
         assert "Figure 3: survival" in mock.call_args[0][0]
+
+    def test_prompt_echo_is_not_saved_as_ocr_text(self, png):
+        answer = llm_cli.VisionAnswer(
+            data={
+                "ocr_text": (
+                    "Analyse this scientific figure. Respond in JSON with two fields: "
+                    "all text visible in the figure (labels, axes, legends, values)"
+                ),
+                "description": "A histology image.",
+            },
+            usage={"input": 0, "output": 0},
+            backend="local",
+        )
+        with patch.object(llm_cli, "vision_json", return_value=answer):
+            got = figures.analyse_figure(png)
+
+        assert got is not None
+        assert got["ocr_text"] == ""
+        assert got["description"] == "A histology image."
 
     def test_warn_wrapper_keeps_the_figure_but_announces_the_failure(self, png, capsys):
         with patch.object(figures, "analyse_figure", return_value=None):

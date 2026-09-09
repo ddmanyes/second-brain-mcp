@@ -48,6 +48,22 @@ class TestLocalChatMaxTokens:
 
         assert captured["payload"]["max_tokens"] == 4096
 
+    def test_multimodal_data_url_uses_the_real_image_media_type(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(llm_cli, "_LOCAL_BASE", "http://localhost:11434/v1")
+        image = tmp_path / "figure.jpeg"
+        image.write_bytes(b"jpeg-placeholder")
+        captured = {}
+
+        def fake_urlopen(req, timeout):
+            captured["payload"] = json.loads(req.data)
+            return _fake_response("ok")
+
+        with patch.object(llm_cli.urllib.request, "urlopen", side_effect=fake_urlopen):
+            llm_cli._local_chat("read", image_path=image, timeout=10)
+
+        image_url = captured["payload"]["messages"][0]["content"][0]["image_url"]["url"]
+        assert image_url.startswith("data:image/jpeg;base64,")
+
 
 class TestLlmTextThreadsMaxTokens:
     def test_llm_text_default_matches_local_chat_default(self, monkeypatch):

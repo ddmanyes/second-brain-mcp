@@ -10,6 +10,8 @@ env：
   - ``SB_LLM_BASE_URL``  例如 ``http://localhost:11434/v1``（未設則跳過本機後端）
   - ``SB_LLM_MODEL``     預設 ``gemma``
   - ``SB_LLM_NO_THINK``  預設 ``1``（Gemma 推理型模型需關 thinking，否則 content 空白）
+  - ``SB_VISION_BACKEND`` 預設 ``anthropic-first``；設為 ``local-only`` 時只准本機
+    multimodal endpoint，失敗即停止，絕不 fallback 到 Anthropic SDK 或 Claude CLI
 
 本機後端純用 urllib（stdlib），不引入新依賴。任一後端失敗即往下一個備援，全失敗回 None。
 
@@ -68,7 +70,7 @@ def _local_chat(prompt: str, *, image_path: Path | str | None = None, timeout: i
             return None
         b64 = base64.b64encode(p.read_bytes()).decode()
         content = [
-            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+            {"type": "image_url", "image_url": {"url": f"data:{_media_type(p)};base64,{b64}"}},
             {"type": "text", "text": prompt},
         ]
     else:
@@ -169,6 +171,7 @@ def llm_image(prompt: str, image_path: Path | str, *, timeout: int = 120) -> str
 #   VisionAnswer    → 模型答了；data 可能是空 list（真的沒東西），那是有效答案
 
 _VISION_MODEL = os.environ.get("SB_VISION_MODEL", "claude-haiku-4-5-20251001")
+_VISION_BACKEND_POLICIES = frozenset({"anthropic-first", "local-only"})
 
 _IMAGE_MEDIA_TYPES = {
     "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
@@ -256,7 +259,7 @@ def vision_json(
         prompt: 提示詞，應明確要求只輸出 JSON。
         image_path: 圖檔路徑。
         expect: ``"object"`` 撈 ``{...}``、``"array"`` 撈 ``[...]``。
-        model: 覆寫模型（預設 ``SB_VISION_MODEL``）。
+        model: 覆寫 Anthropic 模型（預設 ``SB_VISION_MODEL``）。local-only 模式忽略。
         max_tokens / timeout: 分別給 SDK 與 CLI 後端。
 
     Returns:
@@ -265,6 +268,34 @@ def vision_json(
     """
     p = Path(image_path)
     if not p.exists():
+        return None
+
+    backend_policy = os.environ.get("SB_VISION_BACKEND", "anthropic-first").strip().lower()
+    if backend_policy not in _VISION_BACKEND_POLICIES:
+        allowed = ", ".join(sorted(_VISION_BACKEND_POLICIES))
+        raise ValueError(f"invalid SB_VISION_BACKEND={backend_policy!r}; expected one of: {allowed}")
+
+    if backend_policy == "local-only":
+        for _attempt in range(2):
+            raw = _local_chat(
+                prompt,
+                image_path=p,
+                timeout=timeout,
+                max_tokens=max_tokens,
+            )
+            if not raw:
+                continue
+            data = _extract_json(raw, expect)
+            if data is not None:
+                return VisionAnswer(
+                    data=data,
+                    usage={"input": 0, "output": 0},
+                    backend="local",
+                )
+        print(
+            "[llm_cli] local-only vision returned no parsable JSON after 2 attempts",
+            file=sys.stderr,
+        )
         return None
 
     sdk = _anthropic_vision(prompt, p, model=model or _VISION_MODEL, max_tokens=max_tokens)

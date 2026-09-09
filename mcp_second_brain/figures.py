@@ -148,6 +148,21 @@ def _image_to_base64(path: Path) -> str:
     return base64.standard_b64encode(path.read_bytes()).decode()
 
 
+_OCR_PROMPT_ECHO_MARKERS = (
+    "analyse this scientific figure",
+    "all text visible in the figure",
+)
+
+
+def _clean_ocr_text(value: object) -> str:
+    """Drop a local VLM prompt echo without rewriting genuine figure text."""
+    text = str(value or "").strip()
+    lowered = text.lower()
+    if any(marker in lowered for marker in _OCR_PROMPT_ECHO_MARKERS):
+        return ""
+    return text
+
+
 # ---------------------------------------------------------------------------
 # VLM analysis via Claude API
 # ---------------------------------------------------------------------------
@@ -176,7 +191,7 @@ def analyse_figure(image_path: Path, caption: str = "") -> dict | None:
         return None
     data = answer.data if isinstance(answer.data, dict) else {}
     return {
-        "ocr_text": data.get("ocr_text", ""),
+        "ocr_text": _clean_ocr_text(data.get("ocr_text", "")),
         "description": data.get("description", ""),
         "_usage": answer.usage,
     }
