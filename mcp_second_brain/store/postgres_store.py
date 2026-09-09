@@ -1064,6 +1064,24 @@ class PostgresStore:
             "caption": row[6], "token_est": row[7],
         }
 
+    def get_figures_for_note(self, note_path: str) -> list[dict]:
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT note_path, fig_index, image_url, local_path, ocr_text, "
+                "description, coalesce(caption,''), coalesce(token_est,0) "
+                "FROM figures WHERE note_path = %s ORDER BY fig_index",
+                [note_path],
+            ).fetchall()
+        return [
+            {
+                "note_path": row[0], "fig_index": row[1],
+                "image_url": row[2], "local_path": row[3],
+                "ocr_text": row[4], "description": row[5],
+                "caption": row[6], "token_est": row[7],
+            }
+            for row in rows
+        ]
+
     def find_related(
         self,
         path: str,

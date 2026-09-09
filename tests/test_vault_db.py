@@ -380,6 +380,18 @@ class TestSearchFigures:
         results = vault_db.search_figures("token compression")
         assert len(results) == 1
 
+    def test_get_figures_for_note_is_complete_and_ordered(self, isolated_db):
+        vault_db.upsert_figure(
+            "30-resources/c.md", 2, "", "/local/2.png", "", "", 2,
+        )
+        vault_db.upsert_figure(
+            "30-resources/c.md", 0, "", "/local/0.png", "", "", 0,
+        )
+
+        rows = vault_db.get_figures_for_note("30-resources/c.md")
+
+        assert [row["fig_index"] for row in rows] == [0, 2]
+
 
 # ---------------------------------------------------------------------------
 # Phase 2.1 — sync_all reconcile

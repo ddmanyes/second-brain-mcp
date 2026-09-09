@@ -14,7 +14,7 @@
 
 Second Brain is a personal knowledge management server that exposes vault read/write, search, archiving, and maintenance via MCP.
 
-- **MCP server**: `server.py` (41 tools — see Tool Reference; keep this count in sync when adding/removing tools)
+- **MCP server**: `server.py` (42 tools — see Tool Reference; keep this count in sync when adding/removing tools)
 - **Index backend**: pluggable `VaultStore` (`store/`), selected by `SB_DB_BACKEND`:
   - `postgres` (central brain) — `store/postgres_store.py`, Postgres 16 + pgvector + pg_trgm, connection-pooled, multi-machine concurrent read/write via MVCC.
   - `duckdb` (default / offline fallback) — `store/duckdb_store.py` wrapping `vault_db.py`.
@@ -93,6 +93,7 @@ Postgres directly.
 | "Extract rules from note" | `extract_rules_tool(note_path)` | Extracts `- [ ]` rule items |
 | "Update links" | `update_links_tool(note_path)` | Rebuilds wiki links |
 | "Extract figures" | `extract_figures_for(note_path)` | Saves to figures/ |
+| "Reconcile figure files/index without Vision" | `reconcile_figures(note_paths, dry_run, limit)` | Explicit paths only; max 20; never edits research Markdown |
 | "Search figures" | `search_figures(query)` | Text proxy (caption+OCR+description) — usually answers without loading pixels |
 | "Show me figure N" | `read_figure(note_path, fig_index)` | Loads ONE figure thumbnail (~256-400 tok); use only when text isn't enough |
 | "Remember this about figure N" | `annotate_figure(note_path, fig_index, insight)` | Saves a read-time insight as an atomic note so next time text answers (no re-load) |

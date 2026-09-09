@@ -191,6 +191,41 @@ class TestFigures:
         results = store.search_figures("new ocr")
         assert any(r["note_path"] == "note1.md" for r in results)
 
+    def test_get_figures_for_note_is_complete_and_ordered(self, store, vault):
+        store.index_file(vault, vault / "note1.md")
+        store.upsert_figure("note1.md", 2, "", "/local/2.png", "", "", 2)
+        store.upsert_figure("note1.md", 0, "", "/local/0.png", "", "", 0)
+
+        rows = store.get_figures_for_note("note1.md")
+
+        indices = [row["fig_index"] for row in rows]
+        assert indices == sorted(indices)
+        assert {0, 2}.issubset(indices)
+        assert {row["fig_index"]: row for row in rows}[0]["local_path"] == "/local/0.png"
+
+    def test_reconcile_local_file_end_to_end_is_idempotent(self, store, vault):
+        from PIL import Image
+
+        from mcp_second_brain.figure_reconciliation import reconcile_figures
+
+        note = vault / "repair-note.md"
+        note.write_text("---\ntitle: Repair\n---\n\nbody", encoding="utf-8")
+        store.index_file(vault, note)
+        image = vault / "figures/repair-note/fig-00.png"
+        image.parent.mkdir(parents=True)
+        Image.new("RGB", (2, 2), "white").save(image)
+
+        first = reconcile_figures(
+            ["repair-note.md"], vault, store, dry_run=False, limit=20,
+        )
+        second = reconcile_figures(
+            ["repair-note.md"], vault, store, dry_run=False, limit=20,
+        )
+
+        assert first["summary"]["applied"] == 1
+        assert second["summary"]["applied"] == 0
+        assert store.get_figure("repair-note.md", 0)["local_path"] == str(image.resolve())
+
     def test_figure_identity_is_unique(self, store):
         from psycopg import errors
 

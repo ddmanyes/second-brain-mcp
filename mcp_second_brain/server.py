@@ -23,15 +23,19 @@ from mcp.server.fastmcp import FastMCP, Image
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from . import vault_db
-from .article_audit import audit_article_records as _audit_article_records
-from .vault_db import KNOWLEDGE_EXCLUDE
-from . import vault_sleep as _vs
+from . import figure_reconciliation as _fig_reconcile
 from . import figures as _fig
-from . import llm_cli
 from . import frontmatter as _fm
+from . import llm_cli, vault_db
+from . import vault_sleep as _vs
+from .article_audit import audit_article_records as _audit_article_records
+from .identity import (
+    check_admin_permission,
+    check_write_permission,
+    get_current_identity,
+)
 from .store import get_store
-from .identity import check_admin_permission, check_write_permission, get_current_identity
+from .vault_db import KNOWLEDGE_EXCLUDE
 from .vault_paths import VaultPathError, resolve_in_vault
 
 VAULT = Path(os.environ.get(
@@ -1845,6 +1849,40 @@ def extract_figures_for(note_path: str) -> str:
         except Exception as fe:
             print(f"[second-brain] figure sync to store failed: {fe}", file=sys.stderr)
     return result
+
+
+@write_tool(target="note_paths")
+def reconcile_figures(
+    note_paths: list[str],
+    dry_run: bool = True,
+    limit: Annotated[int, Field(ge=1, le=20)] = 20,
+) -> str:
+    """Reconcile figure files and index rows without Vision-model calls.
+
+    Only deterministic evidence is applied: a unique canonical local file, a
+    unique same-stem replacement for a missing path, or a guarded public image
+    URL with an existing text proxy. Ambiguous cases remain in the manual queue.
+    Research Markdown is never modified.
+
+    Args:
+        note_paths: Explicit vault-relative Markdown paths; at most 20.
+        dry_run: Report actions without downloading files or updating rows.
+        limit: Maximum notes to inspect from the supplied list; 1 through 20.
+    """
+    if not note_paths:
+        return "Error: reconcile_figures requires at least one note path."
+    if len(note_paths) > 20:
+        return "Error: reconcile_figures accepts at most 20 note paths per call."
+    for note_path in note_paths:
+        _vault_path(note_path)
+    result = _fig_reconcile.reconcile_figures(
+        note_paths,
+        VAULT,
+        _store,
+        dry_run=dry_run,
+        limit=limit,
+    )
+    return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 @mcp.tool()

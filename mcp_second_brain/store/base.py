@@ -161,6 +161,10 @@ class VaultStore(Protocol):
         """Return a single figure row (for read_figure), or None if absent."""
         ...
 
+    def get_figures_for_note(self, note_path: str) -> list[dict]:
+        """Return all figure rows for one note, ordered by figure index."""
+        ...
+
     def find_related(
         self,
         path: str,

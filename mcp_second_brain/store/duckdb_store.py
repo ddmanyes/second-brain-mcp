@@ -146,6 +146,9 @@ class DuckDBStore:
     def get_figure(self, note_path: str, fig_index: int) -> dict | None:
         return vault_db.get_figure(note_path, fig_index)
 
+    def get_figures_for_note(self, note_path: str) -> list[dict]:
+        return vault_db.get_figures_for_note(note_path)
+
     def find_related(
         self,
         path: str,
