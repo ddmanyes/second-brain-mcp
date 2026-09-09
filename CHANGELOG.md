@@ -4,6 +4,17 @@ All notable source-tree changes are recorded here.
 
 ## Unreleased
 
+### Fixed
+
+- Late chunking now mean-pools spans one embedding window at a time instead of
+  retaining every per-token vector for the whole document. This bounds memory
+  for multi-megabyte papers while preserving the same chunk vectors.
+
+### Added
+
+- Added the guarded `sync_notes(note_paths)` MCP tool for explicitly targeted
+  index repair, capped at 20 vault paths per call.
+
 ### Changed
 
 - `embed_text_for()` now strips the References section before capping length

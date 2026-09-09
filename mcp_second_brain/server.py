@@ -1317,6 +1317,18 @@ def audit_article_records(
 _SYNC_INDEX_CHUNK_LIMIT = 20
 
 
+@write_tool(target="note_paths")
+def sync_notes(note_paths: list[str]) -> str:
+    """Reindex only the explicitly requested vault notes."""
+    if len(note_paths) > 20:
+        return "Error: sync_notes accepts at most 20 note paths per call."
+    resolved = [_vault_path(note_path) for note_path in note_paths]
+    for md_file in resolved:
+        _store.index_file(VAULT, md_file)
+    noun = "note" if len(resolved) == 1 else "notes"
+    return f"Synced {len(resolved)} requested {noun}."
+
+
 @mcp.tool()
 def sync_index() -> str:
     """Rebuild the DuckDB index by scanning all vault markdown files.

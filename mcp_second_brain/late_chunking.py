@@ -47,15 +47,20 @@ import os
 import urllib.error
 import urllib.request
 
-from .chunking import ChunkSpan, filter_administrative_sections, plan_chunk_spans, split_paragraphs
+from .chunking import (
+    ChunkSpan,
+    filter_administrative_sections,
+    plan_chunk_spans,
+    split_paragraphs,
+)
 
 __all__ = [
     "LATE_CHUNK_URL",
     "N_CTX",
     "WINDOW_BODY_TOKENS",
     "WINDOW_OVERLAP_TOKENS",
-    "chunk_and_embed",
     "LateChunkingUnavailable",
+    "chunk_and_embed",
 ]
 
 LATE_CHUNK_PORT = int(os.environ.get("LATE_CHUNK_PORT", "8082"))
@@ -197,6 +202,77 @@ def _encode_body_vectors(
     return stitched
 
 
+def _pool_chunk_spans_streaming(
+    token_ids: list[int], spans: list[ChunkSpan]
+) -> list[list[float]]:
+    """Mean-pool chunk spans while retaining only one token-vector window.
+
+    Long papers can contain millions of tokens.  Keeping one 1024-dimensional
+    Python vector per token until the document finishes exhausts the MCP
+    process even though the caller only needs one mean vector per chunk.
+    Accumulate each chunk's sum as windows arrive and release the window before
+    requesting the next one.
+    """
+    sums: list[list[float] | None] = [None] * len(spans)
+    counts = [0] * len(spans)
+    span_index = 0
+
+    def consume(global_start: int, vectors: list[list[float]]) -> None:
+        nonlocal span_index
+        for offset, vector in enumerate(vectors):
+            position = global_start + offset
+            while span_index < len(spans) and position >= spans[span_index].end:
+                span_index += 1
+            if span_index >= len(spans):
+                break
+            span = spans[span_index]
+            if position < span.start:
+                continue
+            if sums[span_index] is None:
+                sums[span_index] = [float(value) for value in vector]
+            else:
+                total = sums[span_index]
+                assert total is not None
+                for dimension, value in enumerate(vector):
+                    total[dimension] += value
+            counts[span_index] += 1
+
+    bos, eos = _bos_eos_ids()
+    n = len(token_ids)
+    if n + 2 <= N_CTX:
+        vectors = _embed_token_ids([bos, *token_ids, eos])
+        body_vectors = vectors[1:-1]
+        consume(0, body_vectors)
+        del body_vectors, vectors
+    else:
+        pos = 0
+        while True:
+            window_end = min(pos + WINDOW_BODY_TOKENS, n)
+            vectors = _embed_token_ids([bos, *token_ids[pos:window_end], eos])
+            body_vectors = vectors[1:-1]
+            keep_from = 0 if pos == 0 else WINDOW_OVERLAP_TOKENS
+            consume(pos + keep_from, body_vectors[keep_from:])
+            del body_vectors, vectors
+            if window_end >= n:
+                break
+            pos = window_end - WINDOW_OVERLAP_TOKENS
+
+    pooled: list[list[float]] = []
+    for index, span in enumerate(spans):
+        expected = span.end - span.start
+        if counts[index] != expected or sums[index] is None:
+            raise LateChunkingUnavailable(
+                f"streaming pool covered {counts[index]} of {expected} tokens "
+                f"for chunk {index}"
+            )
+        vector = sums[index]
+        assert vector is not None
+        for dimension in range(len(vector)):
+            vector[dimension] /= counts[index]
+        pooled.append(vector)
+    return pooled
+
+
 def _nearest_word_boundary(text: str, pos: int, *, window: int = 50) -> int:
     """Snap `pos` to the nearest preceding whitespace within `window` chars.
 
@@ -295,11 +371,10 @@ def chunk_and_embed(
         return []
 
     full_token_ids = [tok for ids in para_token_ids for tok in ids]
-    body_vectors = _encode_body_vectors(full_token_ids)
+    pooled_vectors = _pool_chunk_spans_streaming(full_token_ids, spans)
 
     results: list[tuple[str, list[float]]] = []
-    for span in spans:
+    for span, vector in zip(spans, pooled_vectors, strict=True):
         chunk_text = _span_text(span, paragraphs, para_bounds, para_lengths)
-        vec = _mean_pool(body_vectors[span.start:span.end])
-        results.append((chunk_text, vec))
+        results.append((chunk_text, vector))
     return results

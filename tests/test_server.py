@@ -55,6 +55,45 @@ def _call_mcp(server, name: str, arguments: dict):
     return asyncio.run(server.mcp.call_tool(name, arguments))
 
 
+class TestSyncNotesMCPContract:
+    TOOL_NAME = "sync_notes"
+
+    def test_syncs_only_the_explicit_vault_paths(self, vault, monkeypatch):
+        from mcp_second_brain import server
+
+        store = MagicMock()
+        monkeypatch.setattr(server, "VAULT", vault)
+        monkeypatch.setattr(server, "_store", store)
+
+        content, _ = _call_mcp(
+            server,
+            self.TOOL_NAME,
+            {"note_paths": ["10-projects/test-note.md"]},
+        )
+
+        assert "Synced 1 requested note" in content[0].text
+        store.index_file.assert_called_once_with(
+            vault,
+            (vault / "10-projects/test-note.md").resolve(),
+        )
+
+    def test_rejects_more_than_twenty_paths_before_any_write(self, vault, monkeypatch):
+        from mcp_second_brain import server
+
+        store = MagicMock()
+        monkeypatch.setattr(server, "VAULT", vault)
+        monkeypatch.setattr(server, "_store", store)
+
+        content, _ = _call_mcp(
+            server,
+            self.TOOL_NAME,
+            {"note_paths": [f"20-areas/research/paper-{i}.md" for i in range(21)]},
+        )
+
+        assert "at most 20" in content[0].text
+        store.index_file.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Article housekeeping — audit_article_records MCP contract
 # ---------------------------------------------------------------------------

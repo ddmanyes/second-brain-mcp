@@ -45,6 +45,7 @@ EXPECTED_WRITE_TOOLS = sorted([
     "prune_archive_tool",
     "save_article",
     "snapshot_note_tool",
+    "sync_notes",
     "update_goals",
     "update_links_tool",
     "update_note",

@@ -178,3 +178,41 @@ class TestChunkAndEmbedEndToEnd:
         chunk_texts = [t for t, _e in out]
         assert not any("Author Contributions" in t or "conceived" in t for t in chunk_texts)
         assert any("macrophages" in t for t in chunk_texts)
+
+    def test_long_document_releases_each_token_vector_window(self, monkeypatch):
+        """The public chunking seam must not retain every per-token vector.
+
+        A production 5.3 MB paper previously held every 1024-dimensional token
+        vector until the whole document finished and pushed the MCP process to
+        39% memory.  This tracked one-dimensional fake keeps the regression
+        deterministic without allocating the production-sized matrix.
+        """
+        state = {"live": 0, "peak": 0}
+
+        class TrackedVector(list):
+            def __init__(self, values):
+                super().__init__(values)
+                state["live"] += 1
+                state["peak"] = max(state["peak"], state["live"])
+
+            def __del__(self):
+                state["live"] -= 1
+
+        monkeypatch.setattr(lc, "_tokenize_ids", lambda _text: list(range(20_000)))
+        monkeypatch.setattr(lc, "_bos_eos_ids", lambda: (30_000, 30_001))
+        monkeypatch.setattr(
+            lc,
+            "_embed_token_ids",
+            lambda ids: [TrackedVector([float(token_id)]) for token_id in ids],
+        )
+
+        result = lc.chunk_and_embed(
+            "word " * 20_000,
+            target_tokens=512,
+            min_tail_tokens=0,
+        )
+
+        assert len(result) > 1
+        assert result[0][1][0] == pytest.approx((0 + 511) / 2)
+        assert result[-1][1][0] == pytest.approx((19_456 + 19_999) / 2)
+        assert state["peak"] <= lc.WINDOW_BODY_TOKENS + 2
