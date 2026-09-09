@@ -15,7 +15,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
-from typing import Annotated, Literal, TypedDict
+from typing import Annotated, Literal
+from typing_extensions import TypedDict
 from urllib.parse import urlparse
 
 from markitdown import MarkItDown

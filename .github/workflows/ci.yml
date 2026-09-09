@@ -13,6 +13,9 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12"]
 
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+
     steps:
       - uses: actions/checkout@v4
 
