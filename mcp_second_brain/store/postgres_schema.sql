@@ -38,17 +38,56 @@ CREATE TABLE IF NOT EXISTS notes (
 CREATE TABLE IF NOT EXISTS figures (
     id          BIGSERIAL PRIMARY KEY,
     note_path   TEXT NOT NULL,
-    fig_index   INTEGER,
+    fig_index   INTEGER NOT NULL,
     image_url   TEXT,
     local_path  TEXT,
     ocr_text    TEXT,
     description TEXT,
     token_est   INTEGER,
-    created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT figures_note_path_fkey
+        FOREIGN KEY (note_path) REFERENCES notes(path) ON DELETE CASCADE
 );
 
 -- PDF pipeline Phase 2.5c: figure caption (detected during page-render extraction)
 ALTER TABLE figures ADD COLUMN IF NOT EXISTS caption TEXT;
+
+-- Existing databases predate the NOT NULL declaration above.  This statement
+-- is idempotent and fails closed if preflight ever finds legacy NULL rows.
+ALTER TABLE figures ALTER COLUMN fig_index SET NOT NULL;
+
+-- Figure identity is stable within a note.  The named constraint makes this
+-- migration idempotent for existing databases while giving upsert_figure an
+-- atomic ON CONFLICT target.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'figures'::regclass
+          AND conname = 'figures_note_path_fig_index_key'
+    ) THEN
+        ALTER TABLE figures
+            ADD CONSTRAINT figures_note_path_fig_index_key
+            UNIQUE (note_path, fig_index);
+    END IF;
+END
+$$;
+
+-- Existing databases also need the parent-note relationship.  Adding it is
+-- fail-closed: any orphan reported by preflight aborts the schema transaction.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'figures'::regclass
+          AND conname = 'figures_note_path_fkey'
+    ) THEN
+        ALTER TABLE figures
+            ADD CONSTRAINT figures_note_path_fkey
+            FOREIGN KEY (note_path) REFERENCES notes(path) ON DELETE CASCADE;
+    END IF;
+END
+$$;
 
 -- ---------------------------------------------------------------------------
 -- Scalar indexes

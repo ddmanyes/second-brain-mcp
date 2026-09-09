@@ -677,23 +677,19 @@ class PostgresStore:
         caption: str = "",
     ) -> None:
         with self._pool.connection() as conn:
-            existing = conn.execute(
-                "SELECT id FROM figures WHERE note_path = %s AND fig_index = %s",
-                [note_path, fig_index],
-            ).fetchone()
-            if existing:
-                conn.execute(
-                    """UPDATE figures SET image_url=%s, local_path=%s, ocr_text=%s,
-                       description=%s, token_est=%s, caption=%s WHERE id=%s""",
-                    [image_url, local_path, ocr_text, description, token_est, caption, existing[0]],
-                )
-            else:
-                conn.execute(
-                    """INSERT INTO figures
-                       (note_path, fig_index, image_url, local_path, ocr_text, description, token_est, caption)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
-                    [note_path, fig_index, image_url, local_path, ocr_text, description, token_est, caption],
-                )
+            conn.execute(
+                """INSERT INTO figures
+                   (note_path, fig_index, image_url, local_path, ocr_text, description, token_est, caption)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                   ON CONFLICT (note_path, fig_index) DO UPDATE SET
+                       image_url = EXCLUDED.image_url,
+                       local_path = EXCLUDED.local_path,
+                       ocr_text = EXCLUDED.ocr_text,
+                       description = EXCLUDED.description,
+                       token_est = EXCLUDED.token_est,
+                       caption = EXCLUDED.caption""",
+                [note_path, fig_index, image_url, local_path, ocr_text, description, token_est, caption],
+            )
             conn.commit()
 
     # ------------------------------------------------------------------

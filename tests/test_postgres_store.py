@@ -176,18 +176,101 @@ class TestSyncAll:
 # ---------------------------------------------------------------------------
 
 class TestFigures:
-    def test_upsert_and_search_figure(self, store):
+    def test_upsert_and_search_figure(self, store, vault):
+        store.index_file(vault, vault / "note1.md")
         store.upsert_figure(
             "note1.md", 1, "http://img/1.png", "/local/1.png", "diagram text", "A chart", 100
         )
         results = store.search_figures("diagram")
         assert any(r["note_path"] == "note1.md" for r in results)
 
-    def test_upsert_figure_updates_existing(self, store):
+    def test_upsert_figure_updates_existing(self, store, vault):
+        store.index_file(vault, vault / "note1.md")
         store.upsert_figure("note1.md", 1, "http://img/1.png", "/local/1.png", "old ocr", "old desc", 50)
         store.upsert_figure("note1.md", 1, "http://img/1.png", "/local/1.png", "new ocr", "new desc", 60)
         results = store.search_figures("new ocr")
         assert any(r["note_path"] == "note1.md" for r in results)
+
+    def test_figure_identity_is_unique(self, store):
+        from psycopg import errors
+
+        note_path = "__task4_schema_unique__.md"
+        with store._pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO notes(path) VALUES (%s) ON CONFLICT DO NOTHING",
+                [note_path],
+            )
+            conn.execute(
+                "INSERT INTO figures(note_path, fig_index) VALUES (%s, %s)",
+                [note_path, 0],
+            )
+            conn.commit()
+
+        with (
+            pytest.raises(errors.UniqueViolation),
+            store._pool.connection() as conn,
+            conn.transaction(force_rollback=True),
+        ):
+            conn.execute(
+                "INSERT INTO figures(note_path, fig_index) VALUES (%s, %s)",
+                [note_path, 0],
+            )
+
+    def test_figure_index_is_required(self, store):
+        from psycopg import errors
+
+        note_path = "__task4_schema_not_null__.md"
+        with store._pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO notes(path) VALUES (%s) ON CONFLICT DO NOTHING",
+                [note_path],
+            )
+            conn.commit()
+
+        with (
+            pytest.raises(errors.NotNullViolation),
+            store._pool.connection() as conn,
+            conn.transaction(force_rollback=True),
+        ):
+            conn.execute(
+                "INSERT INTO figures(note_path, fig_index) VALUES (%s, NULL)",
+                [note_path],
+            )
+
+    def test_figure_requires_parent_note(self, store):
+        from psycopg import errors
+
+        note_path = "__task4_missing_parent__.md"
+        with store._pool.connection() as conn:
+            conn.execute("DELETE FROM figures WHERE note_path = %s", [note_path])
+            conn.execute("DELETE FROM notes WHERE path = %s", [note_path])
+            conn.commit()
+
+        with (
+            pytest.raises(errors.ForeignKeyViolation),
+            store._pool.connection() as conn,
+            conn.transaction(force_rollback=True),
+        ):
+            conn.execute(
+                "INSERT INTO figures(note_path, fig_index) VALUES (%s, %s)",
+                [note_path, 0],
+            )
+
+    def test_deleting_parent_note_cascades_to_figure(self, store):
+        note_path = "__task4_schema_cascade__.md"
+        with store._pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO notes(path) VALUES (%s) ON CONFLICT DO NOTHING",
+                [note_path],
+            )
+            conn.commit()
+        store.upsert_figure(note_path, 0, "", "", "", "")
+
+        with store._pool.connection() as conn:
+            conn.execute("DELETE FROM notes WHERE path = %s", [note_path])
+            conn.commit()
+
+        assert store.get_figure(note_path, 0) is None
 
 
 # ---------------------------------------------------------------------------
@@ -252,3 +335,47 @@ class TestConcurrentWrites:
         with store._pool.connection() as conn:
             row = conn.execute("SELECT COUNT(*) FROM notes").fetchone()
         assert row[0] == 2  # exactly 2 distinct notes
+
+    def test_concurrent_figure_upsert_keeps_one_row(self, store):
+        note_path = "__task4_concurrent_figure__.md"
+        with store._pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO notes(path) VALUES (%s) ON CONFLICT DO NOTHING",
+                [note_path],
+            )
+            conn.execute("DELETE FROM figures WHERE note_path = %s", [note_path])
+            conn.commit()
+
+        worker_count = 8
+        start = threading.Barrier(worker_count)
+        errors: list[Exception] = []
+
+        def worker(worker_id: int) -> None:
+            try:
+                start.wait()
+                store.upsert_figure(
+                    note_path,
+                    0,
+                    f"https://example.test/{worker_id}.png",
+                    f"/tmp/{worker_id}.png",
+                    f"ocr-{worker_id}",
+                    f"description-{worker_id}",
+                    worker_id,
+                    f"caption-{worker_id}",
+                )
+            except Exception as error:  # noqa: BLE001 - thread reports every failure to caller
+                errors.append(error)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(worker_count)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert errors == [], f"Concurrent figure upsert raised: {errors}"
+        with store._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM figures WHERE note_path = %s AND fig_index = %s",
+                [note_path, 0],
+            ).fetchone()
+        assert row[0] == 1
