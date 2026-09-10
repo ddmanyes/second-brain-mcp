@@ -24,6 +24,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from . import figure_reconciliation as _fig_reconcile
+from . import figure_text_backfill as _fig_text_backfill
 from . import figures as _fig
 from . import frontmatter as _fm
 from . import llm_cli, vault_db
@@ -1881,6 +1882,40 @@ def reconcile_figures(
         _store,
         dry_run=dry_run,
         limit=limit,
+    )
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@write_tool(target="note_paths")
+def backfill_figure_text(
+    note_paths: list[str],
+    dry_run: bool = True,
+    note_limit: Annotated[int, Field(ge=1, le=20)] = 20,
+    image_limit: Annotated[int, Field(ge=1, le=20)] = 20,
+) -> str:
+    """Fill empty OCR/description fields using only the configured local VLM.
+
+    The call is resumable and bounded to at most 20 notes and 20 images. Each
+    successful image is committed separately; model failures remain queued.
+    ``SB_VISION_BACKEND=local-only`` is mandatory, so paid fallback is impossible.
+
+    Args:
+        note_paths: Explicit vault-relative article paths; at most 20.
+        dry_run: List the next bounded image batch without model calls or writes.
+        note_limit: Maximum supplied notes to inspect; 1 through 20.
+        image_limit: Maximum images to analyse in this call; 1 through 20.
+    """
+    if len(note_paths) > 20:
+        return "Error: backfill_figure_text accepts at most 20 note paths per call."
+    for note_path in note_paths:
+        _vault_path(note_path)
+    result = _fig_text_backfill.backfill_figure_text(
+        note_paths,
+        VAULT,
+        _store,
+        dry_run=dry_run,
+        note_limit=note_limit,
+        image_limit=image_limit,
     )
     return json.dumps(result, ensure_ascii=False, indent=2)
 

@@ -34,6 +34,7 @@ ADMIN_TOOLS = sorted(server.ADMIN_TOOLS)
 EXPECTED_WRITE_TOOLS = sorted([
     "annotate_figure",
     "append_to_note",
+    "backfill_figure_text",
     "consolidate_tool",
     "enrich_neighbor_keywords_tool",
     "expand_semantic_keywords_tool",
