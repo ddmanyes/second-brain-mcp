@@ -129,6 +129,10 @@ class TestVisionJson:
         assert answer is not None
         assert answer.data == {"ocr_text": "retry ok"}
         assert local.call_count == 2
+        assert local.call_args_list[0].args[0] == "p"
+        retry_prompt = local.call_args_list[1].args[0]
+        assert "at most 1200 characters" in retry_prompt
+        assert "Always close" in retry_prompt
         anthropic.assert_not_called()
         cli.assert_not_called()
 

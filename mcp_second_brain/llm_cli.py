@@ -282,9 +282,18 @@ def vision_json(
         raise ValueError(f"invalid SB_VISION_BACKEND={backend_policy!r}; expected one of: {allowed}")
 
     if backend_policy == "local-only":
-        for _attempt in range(2):
+        for attempt in range(2):
+            attempt_prompt = prompt
+            if attempt:
+                attempt_prompt += (
+                    "\nThe previous response was not complete valid JSON. Return concise "
+                    "valid JSON in the requested shape. If it contains ocr_text, limit that "
+                    "string to at most 1200 characters and prioritize titles, panel labels, "
+                    "axes, legends, method names, and gene names. Always close all JSON "
+                    "quotes, brackets, and braces. Do not use markdown."
+                )
             raw = _local_chat(
-                prompt,
+                attempt_prompt,
                 image_path=p,
                 timeout=timeout,
                 max_tokens=max_tokens,
