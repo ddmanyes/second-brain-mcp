@@ -255,6 +255,74 @@ class TestFigureExtractionRender:
         assert r.y1 < 320, "must stop before the body prose"
         assert "Clinical characteristics" in dets[0]["caption"]
 
+    def test_figure_labels_are_inside_the_crop(self, isolated_fig_env):
+        """Panel letters and axis labels draw no ink but belong to the figure.
+
+        Regression for vector figures: without label text in the clustering,
+        panels never fuse and the labels fall outside the crop.
+        """
+        from mcp_second_brain import figures
+
+        vault = isolated_fig_env
+        pdf_path = vault / "vector.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.draw_rect(fitz.Rect(100, 100, 300, 300), color=(0, 0, 1), fill=(0.8, 0.8, 1))
+        page.insert_text((105, 316), "Time (min)", fontsize=7, fontname="helv")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        doc = fitz.open(str(pdf_path))
+        dets = figures._detect_figures_geometric(doc[0])
+        doc.close()
+
+        assert len(dets) == 1
+        assert dets[0]["rect"].y1 > 316, "the axis label must be inside the crop"
+
+    def test_overlapping_components_are_merged(self, isolated_fig_env):
+        """Two crops covering the same ink are always wrong — fuse them."""
+        from mcp_second_brain import figures
+
+        a = fitz.Rect(0, 0, 100, 100)
+        b = fitz.Rect(50, 50, 150, 150)      # 25% of a, 25% of b — below threshold
+        far = fitz.Rect(400, 400, 500, 500)
+
+        assert len(figures._merge_overlapping([a, far])) == 2
+        inner = fitz.Rect(10, 10, 60, 60)    # wholly inside a
+        merged = figures._merge_overlapping([a, inner])
+        assert len(merged) == 1
+        assert merged[0].get_area() == a.get_area()
+        assert len(figures._merge_overlapping([a, b])) == 2
+
+    def test_front_matter_sidebar_is_not_a_figure(self, isolated_fig_env):
+        """A text sidebar carrying one stray glyph must not read as a figure.
+
+        Journal front matter ("OPEN ACCESS / EDITED BY / CORRESPONDENCE") is a
+        column of short non-prose lines with an envelope or ORCID mark in it.
+        Requiring merely "contains some ink" let the whole column through.
+        """
+        from mcp_second_brain import figures
+
+        vault = isolated_fig_env
+        pdf_path = vault / "frontmatter.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        for i, line in enumerate([
+            "OPEN ACCESS", "EDITED BY", "Prashant Giri", "REVIEWED BY",
+            "Harshida Gamit", "*CORRESPONDENCE", "Haoyong Yu",
+            "RECEIVED 13 October 2025", "ACCEPTED 28 February 2026",
+        ]):
+            page.insert_text((60, 100 + i * 22), line, fontsize=8, fontname="helv")
+        # the lone glyph that used to bless the whole column
+        page.draw_rect(fitz.Rect(60, 216, 68, 224), color=(0, 0, 0), fill=(0, 0, 0))
+        doc.save(str(pdf_path))
+        doc.close()
+
+        doc = fitz.open(str(pdf_path))
+        dets = figures._detect_figures_geometric(doc[0])
+        doc.close()
+        assert dets == []
+
     def test_body_text_is_not_a_figure(self, isolated_fig_env):
         """Pages of prose must yield nothing — no crops of paragraphs."""
         from mcp_second_brain import figures

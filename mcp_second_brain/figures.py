@@ -348,7 +348,7 @@ _GEOM_MIN_AREA = 9000.0  # pt^2
 _CAPTION_GAP = 70.0     # pt — how far a caption may sit from its figure
 _CROP_DPI = 200         # crops are rendered from the page, not from a page PNG
 _MAX_PAGES = 20
-_DETECTOR_VERSION = "geom-2"
+_DETECTOR_VERSION = "geom-3"
 
 _CAPTION_RE = re.compile(
     r"^\s*(fig(?:ure)?\.?\s*\d|table\s*\d|extended\s+data|"
@@ -462,12 +462,18 @@ def _ink_rects(page) -> list:
     return out
 
 
-def _cluster_rects(rects: list, pr) -> list:
-    """Dilated-grid connected components, each tightened back onto its own rects."""
+def _cluster_rects(items: list[tuple], pr) -> list[tuple]:
+    """Dilated-grid connected components, each tightened back onto its own rects.
+
+    Takes ``(rect, is_ink)`` pairs and returns ``(bbox, contains_ink)``. Label
+    text is allowed to bridge and extend a component but can never constitute
+    one on its own.
+    """
     import fitz
 
-    if not rects:
+    if not items:
         return []
+    rects = [r for r, _ink in items]
     cell = _GEOM_CELL
     nx = max(1, int(pr.width / cell) + 2)
     ny = max(1, int(pr.height / cell) + 2)
@@ -503,14 +509,17 @@ def _cluster_rects(rects: list, pr) -> list:
                         stack.append(j)
 
     boxes: dict[int, object] = {}
-    for r in rects:
+    ink_boxes: dict[int, object] = {}
+    for r, is_ink in items:
         cx = min(nx - 1, max(0, int(((r.x0 + r.x1) / 2 - pr.x0) / cell)))
         cy = min(ny - 1, max(0, int(((r.y0 + r.y1) / 2 - pr.y0) / cell)))
         cid = label[cy * nx + cx]
         if not cid:
             continue
         boxes[cid] = (boxes[cid] | r) if cid in boxes else fitz.Rect(r)
-    return list(boxes.values())
+        if is_ink:
+            ink_boxes[cid] = (ink_boxes[cid] | r) if cid in ink_boxes else fitz.Rect(r)
+    return [(b, ink_boxes.get(cid)) for cid, b in boxes.items()]
 
 
 _TABLE_RE = re.compile(r"^\s*(table|supplementary\s+table|extended\s+data\s+table)\s*\d", re.I)
@@ -551,15 +560,80 @@ def _text_table_region(blocks: list[tuple], start: int, prose: list) -> object:
     return rect
 
 
+def _label_rects(page, prose: list, blocks: list[tuple]) -> list:
+    """Text that belongs to a figure — panel letters, axis labels, legends.
+
+    Figure-internal text draws no ink, so without it a vector figure's panels
+    never fuse into one blob and its labels fall outside the crop. Body prose
+    is excluded (it is not part of any figure) and so are captions, which are
+    attached afterwards by their own rule.
+    """
+    pr = page.rect
+    head, foot = pr.y0 + pr.height * 0.055, pr.y1 - pr.height * 0.055
+    out = []
+    for r, _size, text in blocks:
+        if not text or _CAPTION_RE.match(text):
+            continue
+        if r.y1 < head or r.y0 > foot:
+            continue
+        if any((r & p).get_area() > r.get_area() * 0.5 for p in prose):
+            continue
+        out.append(r)
+    return out
+
+
+_OVERLAP_MERGE = 0.5    # fraction of the smaller rect that forces a merge
+_INK_COVERAGE = 0.2     # ink must span this fraction of a component to be a figure
+
+
+def _merge_overlapping(rects: list) -> list:
+    """Fuse components that share most of the smaller one's area.
+
+    Two crops covering the same ink are always wrong — one figure delivered
+    twice, the panel it shares shown out of context. Whitespace inside a dense
+    multi-panel figure can leave such components unconnected on the grid, so
+    they are reconciled here on the finished boxes.
+    """
+    import fitz
+
+    out = [fitz.Rect(r) for r in rects]
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(out)):
+            for j in range(i + 1, len(out)):
+                a, b = out[i], out[j]
+                inter = (a & b).get_area()
+                if inter <= 0:
+                    continue
+                if inter >= _OVERLAP_MERGE * min(a.get_area(), b.get_area()):
+                    out[i] = a | b
+                    del out[j]
+                    changed = True
+                    break
+            if changed:
+                break
+    return out
+
+
 def _detect_figures_geometric(page) -> list[dict]:
     """Figures on one page as {"rect": fitz.Rect (PDF points), "caption": str}."""
     import fitz
 
     pr = page.rect
     prose = _prose_rects(page)
+    blocks = _sized_blocks(page)
+    items = [(r, True) for r in _ink_rects(page)]
+    items += [(r, False) for r in _label_rects(page, prose, blocks)]
 
     kept = []
-    for r in _cluster_rects(_ink_rects(page), pr):
+    for r, ink_box in _cluster_rects(items, pr):
+        # A figure is mostly ink. Front-matter sidebars and end-of-paper
+        # declarations are blocks of short lines carrying one stray glyph — an
+        # envelope, an ORCID mark — so "contains some ink" is not enough; the
+        # ink has to span the region.
+        if ink_box is None or ink_box.get_area() < _INK_COVERAGE * r.get_area():
+            continue
         if r.width < _GEOM_MIN_SIDE or r.height < _GEOM_MIN_SIDE:
             continue
         if r.get_area() < _GEOM_MIN_AREA:
@@ -569,7 +643,8 @@ def _detect_figures_geometric(page) -> list[dict]:
             continue
         kept.append(r)
 
-    blocks = _sized_blocks(page)
+    kept = _merge_overlapping(kept)
+
     cap_idx = [i for i, (_r, _s, t) in enumerate(blocks) if _CAPTION_RE.match(t)]
     used: set[int] = set()
     out: list[dict] = []
