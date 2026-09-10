@@ -45,6 +45,7 @@ EXPECTED_WRITE_TOOLS = sorted([
     "new_note",
     "prune_archive_tool",
     "reconcile_figures",
+    "restore_missing_pdf_images",
     "save_article",
     "snapshot_note_tool",
     "sync_notes",

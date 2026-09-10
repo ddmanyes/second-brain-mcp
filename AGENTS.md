@@ -14,7 +14,7 @@
 
 Second Brain is a personal knowledge management server that exposes vault read/write, search, archiving, and maintenance via MCP.
 
-- **MCP server**: `server.py` (43 tools — see Tool Reference; keep this count in sync when adding/removing tools)
+- **MCP server**: `server.py` (44 tools — see Tool Reference; keep this count in sync when adding/removing tools)
 - **Index backend**: pluggable `VaultStore` (`store/`), selected by `SB_DB_BACKEND`:
   - `postgres` (central brain) — `store/postgres_store.py`, Postgres 16 + pgvector + pg_trgm, connection-pooled, multi-machine concurrent read/write via MVCC.
   - `duckdb` (default / offline fallback) — `store/duckdb_store.py` wrapping `vault_db.py`.
@@ -95,6 +95,7 @@ Postgres directly.
 | "Extract figures" | `extract_figures_for(note_path)` | Saves to figures/ |
 | "Reconcile figure files/index without Vision" | `reconcile_figures(note_paths, dry_run, limit)` | Explicit paths only; max 20; never edits research Markdown |
 | "Backfill empty figure OCR/description locally" | `backfill_figure_text(note_paths, dry_run, note_limit, image_limit)` | Requires `SB_VISION_BACKEND=local-only`; max 20 notes/images; resumable per-row writes |
+| "Restore missing legacy PDF image files" | `restore_missing_pdf_images(note_paths, dry_run, note_limit, image_limit)` | Requires an exact full-sequence and byte match before writing; max 20 notes/images |
 | "Search figures" | `search_figures(query)` | Text proxy (caption+OCR+description) — usually answers without loading pixels |
 | "Show me figure N" | `read_figure(note_path, fig_index)` | Loads ONE figure thumbnail (~256-400 tok); use only when text isn't enough |
 | "Remember this about figure N" | `annotate_figure(note_path, fig_index, insight)` | Saves a read-time insight as an atomic note so next time text answers (no re-load) |

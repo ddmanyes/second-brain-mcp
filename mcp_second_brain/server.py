@@ -26,6 +26,7 @@ from pydantic import Field
 from . import figure_reconciliation as _fig_reconcile
 from . import figure_text_backfill as _fig_text_backfill
 from . import figures as _fig
+from . import pdf_image_restore as _pdf_image_restore
 from . import frontmatter as _fm
 from . import llm_cli, vault_db
 from . import vault_sleep as _vs
@@ -1910,6 +1911,40 @@ def backfill_figure_text(
     for note_path in note_paths:
         _vault_path(note_path)
     result = _fig_text_backfill.backfill_figure_text(
+        note_paths,
+        VAULT,
+        _store,
+        dry_run=dry_run,
+        note_limit=note_limit,
+        image_limit=image_limit,
+    )
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@write_tool(target="note_paths")
+def restore_missing_pdf_images(
+    note_paths: list[str],
+    dry_run: bool = True,
+    note_limit: Annotated[int, Field(ge=1, le=20)] = 20,
+    image_limit: Annotated[int, Field(ge=1, le=20)] = 20,
+) -> str:
+    """Restore missing legacy embedded-image files from their original PDFs.
+
+    Restoration is fail-closed: the reconstructed PDF sequence must match every
+    database row and every surviving file byte-for-byte before any file is written.
+    The call never changes research Markdown or figure database rows.
+
+    Args:
+        note_paths: Explicit vault-relative article paths; at most 20.
+        dry_run: Validate and list the next bounded restore batch without writes.
+        note_limit: Maximum supplied notes to inspect; 1 through 20.
+        image_limit: Maximum missing image files to restore; 1 through 20.
+    """
+    if len(note_paths) > 20:
+        return "Error: restore_missing_pdf_images accepts at most 20 note paths per call."
+    for note_path in note_paths:
+        _vault_path(note_path)
+    result = _pdf_image_restore.restore_missing_pdf_images(
         note_paths,
         VAULT,
         _store,
