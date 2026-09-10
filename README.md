@@ -93,6 +93,22 @@ vault/
 └── templates/      Note templates
 ```
 
+### Legacy author metadata
+
+`search_articles` reads structured frontmatter, so older article notes without
+`authors` are not guessed from body text or references. A bounded two-phase CLI can
+prepare those notes safely: first create and review a manifest, then apply it separately.
+
+```bash
+python -m mcp_second_brain.author_backfill \
+  --vault "<vault>" --limit 20 --out /tmp/author-backfill.json
+python -m mcp_second_brain.author_backfill \
+  --vault "<vault>" --apply --manifest /tmp/author-backfill.json
+```
+
+Apply on the central writer host only. Each entry requires an exact DOI/PMID/PMCID or
+title match and unchanged content/body hashes; successful writes are reindexed.
+
 ## Documentation
 
 - **[AGENTS.md](AGENTS.md)** — filing SOP, naming conventions, full tool reference (single source of truth)

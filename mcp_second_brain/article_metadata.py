@@ -222,8 +222,14 @@ def normalise_bibliographic_metadata(metadata: dict | None) -> dict:
 
 def bibliographic_frontmatter(metadata: dict | None) -> str:
     """Return YAML-compatible one-line fields, including the final newline."""
+    fields = bibliographic_fields(metadata)
+    return "".join(f"{key}: {value}\n" for key, value in fields.items())
+
+
+def bibliographic_fields(metadata: dict | None) -> dict[str, str]:
+    """Return validated metadata as frontmatter-ready scalar strings."""
     normalised = normalise_bibliographic_metadata(metadata)
-    lines = []
+    fields: dict[str, str] = {}
     for key in FIELDS:
         if key not in normalised:
             continue
@@ -232,5 +238,5 @@ def bibliographic_frontmatter(metadata: dict | None) -> str:
             rendered = json.dumps(value, ensure_ascii=False)
         else:
             rendered = str(value)
-        lines.append(f"{key}: {rendered}")
-    return "".join(f"{line}\n" for line in lines)
+        fields[key] = rendered
+    return fields

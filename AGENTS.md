@@ -6,7 +6,7 @@
 >
 > **When adding documentation**: modify the relevant section here, then update the Last updated date.
 >
-> **Last updated:** 2026-09-09
+> **Last updated:** 2026-09-10
 
 ---
 
@@ -213,6 +213,11 @@ server/index/runtime health, and `audit_article_records` only for article-record
 housekeeping. The audit is read-only: duplicate groups and recommended actions always
 require human confirmation before merge, archive, or deletion.
 
+For author, ORCID, DOI, PMID, PMCID, or publication-year lookup, use
+`search_articles` instead of general semantic search. Legacy articles without an
+`authors` frontmatter field are intentionally absent from author results until a
+reviewed `author_backfill` manifest has been applied and the affected paths reindexed.
+
 **Graph tools are vault-dependent:** `query_graph` only returns structured typed edges
 in a vault that has a `.graph/statements.jsonl` knowledge graph; in a vault without one,
 `mode="both"` still runs but Path 1 (edges) comes back empty and only Path 2 (snippet
@@ -255,6 +260,26 @@ python mcp_second_brain/vault_janitor.py --execute  # move files
   DuckDB fallback index and run **only** when `SB_DB_BACKEND=duckdb`. In the Postgres-central
   setup they are skipped (pg-sync owns freshness); this avoids an uncatchable DuckDB C++ abort.
   The bare-script `import` bug is fixed (lazy dual-mode `_import_vault_db()`).
+
+### C-ter. Legacy article author backfill (`author_backfill.py` CLI)
+
+Run this only on the central host under the normal single-writer maintenance discipline.
+Planning is read-only for vault notes and writes a reviewable manifest; applying is a
+separate explicit operation capped at 20 notes. The planner trusts DOI, PMID, PMCID, or an
+exact title from frontmatter only—never identifiers or names found in prose/references.
+
+```bash
+# Phase 1: inspect this JSON before any note is changed
+python -m mcp_second_brain.author_backfill \
+  --vault "<vault>" --limit 20 --out /tmp/author-backfill.json
+
+# Phase 2: only after reviewing the manifest; verifies content/body hashes and reindexes
+python -m mcp_second_brain.author_backfill \
+  --vault "<vault>" --apply --manifest /tmp/author-backfill.json
+```
+
+Do not reuse a manifest after any listed note changes. Such entries fail closed with
+`content_changed`; create and review a new manifest instead.
 
 ### D. Code changes
 

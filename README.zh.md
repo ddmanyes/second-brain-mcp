@@ -92,6 +92,22 @@ vault/
 └── templates/      筆記模板
 ```
 
+### 舊文章作者 metadata 回填
+
+`search_articles` 只讀結構化 frontmatter，因此舊文章若沒有 `authors`，系統不會從
+正文或參考文獻猜作者。可用有上限的兩階段 CLI 安全補齊：先產生並審核 manifest，
+再另外執行套用。
+
+```bash
+python -m mcp_second_brain.author_backfill \
+  --vault "<vault>" --limit 20 --out /tmp/author-backfill.json
+python -m mcp_second_brain.author_backfill \
+  --vault "<vault>" --apply --manifest /tmp/author-backfill.json
+```
+
+只能在中央寫入主機執行 apply。每筆都必須符合完全相同的 DOI／PMID／PMCID 或
+標題，且檔案與正文雜湊未改變；成功後會立即重建該筆索引。
+
 ## 文件
 
 - **[AGENTS.md](AGENTS.md)**——歸檔 SOP、命名慣例、完整工具參考（單一真相來源）
