@@ -38,11 +38,15 @@ def _extract_legacy_sequence(pdf_path: Path) -> list[EmbeddedImage]:
     return images
 
 
-def _source_pdf(note_file: Path) -> Path | None:
-    match = _SOURCE_PDF_RE.search(note_file.read_text(encoding="utf-8"))
-    if not match:
-        return None
-    source = Path(match.group(1)).expanduser().resolve()
+def _source_pdf(note_file: Path, override: str | None = None) -> Path | None:
+    if override is None:
+        match = _SOURCE_PDF_RE.search(note_file.read_text(encoding="utf-8"))
+        if not match:
+            return None
+        raw_source = match.group(1)
+    else:
+        raw_source = override
+    source = Path(raw_source).expanduser().resolve()
     if source.suffix.lower() != ".pdf" or not source.is_file():
         return None
     return source
@@ -64,6 +68,7 @@ def restore_missing_pdf_images(
     dry_run: bool = True,
     note_limit: int = 20,
     image_limit: int = 20,
+    source_pdfs: list[str] | None = None,
     extract: Extractor = _extract_legacy_sequence,
 ) -> dict:
     """Restore missing PDF image files only after the full sequence matches.
@@ -81,9 +86,14 @@ def restore_missing_pdf_images(
         raise ValueError("note_limit must be between 1 and 20")
     if not 1 <= image_limit <= 20:
         raise ValueError("image_limit must be between 1 and 20")
+    if source_pdfs is not None and len(source_pdfs) != len(note_paths):
+        raise ValueError("source_pdfs must align one-to-one with note_paths")
 
     vault = vault.expanduser().resolve()
     selected = list(dict.fromkeys(note_paths))[:note_limit]
+    override_by_note = (
+        dict(zip(note_paths, source_pdfs, strict=True)) if source_pdfs is not None else {}
+    )
     plans: list[dict] = []
     errors: list[dict] = []
 
@@ -92,7 +102,7 @@ def restore_missing_pdf_images(
         if not note_file.is_relative_to(vault) or not note_file.is_file():
             errors.append(_error(note_path, "missing_or_unsafe_note"))
             continue
-        pdf_path = _source_pdf(note_file)
+        pdf_path = _source_pdf(note_file, override_by_note.get(note_path))
         if pdf_path is None:
             errors.append(_error(note_path, "missing_source_pdf"))
             continue

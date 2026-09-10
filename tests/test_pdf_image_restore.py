@@ -102,6 +102,26 @@ def test_sequence_must_match_contiguous_database_rows(tmp_path):
     assert result["items"][0]["reason"] == "sequence_row_count_mismatch"
 
 
+def test_explicit_source_pdf_override_avoids_unavailable_file_provider_path(tmp_path):
+    original = tmp_path / "unavailable.pdf"
+    note_path = _note(tmp_path, original)
+    rows = _rows(tmp_path, note_path)
+    local_copy = tmp_path / "local-copy.pdf"
+    local_copy.write_bytes(b"pdf")
+
+    result = restore_missing_pdf_images(
+        [note_path],
+        tmp_path,
+        FakeStore(rows),
+        dry_run=True,
+        source_pdfs=[str(local_copy)],
+        extract=_extract,
+    )
+
+    assert result["summary"]["planned"] == 1
+    assert result["items"][0]["pdf_path"] == str(local_copy)
+
+
 def test_mcp_tool_exposes_bounded_dry_run_schema():
     from mcp_second_brain import server
 

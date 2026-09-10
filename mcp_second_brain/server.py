@@ -1927,6 +1927,7 @@ def restore_missing_pdf_images(
     dry_run: bool = True,
     note_limit: Annotated[int, Field(ge=1, le=20)] = 20,
     image_limit: Annotated[int, Field(ge=1, le=20)] = 20,
+    source_pdfs: list[str] | None = None,
 ) -> str:
     """Restore missing legacy embedded-image files from their original PDFs.
 
@@ -1939,6 +1940,8 @@ def restore_missing_pdf_images(
         dry_run: Validate and list the next bounded restore batch without writes.
         note_limit: Maximum supplied notes to inspect; 1 through 20.
         image_limit: Maximum missing image files to restore; 1 through 20.
+        source_pdfs: Optional local PDF paths aligned with note_paths, for an
+            explicitly verified copy when the recorded File Provider path is unavailable.
     """
     if len(note_paths) > 20:
         return "Error: restore_missing_pdf_images accepts at most 20 note paths per call."
@@ -1951,6 +1954,7 @@ def restore_missing_pdf_images(
         dry_run=dry_run,
         note_limit=note_limit,
         image_limit=image_limit,
+        source_pdfs=source_pdfs,
     )
     return json.dumps(result, ensure_ascii=False, indent=2)
 

@@ -95,7 +95,7 @@ Postgres directly.
 | "Extract figures" | `extract_figures_for(note_path)` | Saves to figures/ |
 | "Reconcile figure files/index without Vision" | `reconcile_figures(note_paths, dry_run, limit)` | Explicit paths only; max 20; never edits research Markdown |
 | "Backfill empty figure OCR/description locally" | `backfill_figure_text(note_paths, dry_run, note_limit, image_limit)` | Requires `SB_VISION_BACKEND=local-only`; max 20 notes/images; resumable per-row writes |
-| "Restore missing legacy PDF image files" | `restore_missing_pdf_images(note_paths, dry_run, note_limit, image_limit)` | Requires an exact full-sequence and byte match before writing; max 20 notes/images |
+| "Restore missing legacy PDF image files" | `restore_missing_pdf_images(note_paths, dry_run, note_limit, image_limit, source_pdfs)` | Requires an exact full-sequence and byte match before writing; optional verified local PDF copies bypass unavailable File Provider paths; max 20 notes/images |
 | "Search figures" | `search_figures(query)` | Text proxy (caption+OCR+description) — usually answers without loading pixels |
 | "Show me figure N" | `read_figure(note_path, fig_index)` | Loads ONE figure thumbnail (~256-400 tok); use only when text isn't enough |
 | "Remember this about figure N" | `annotate_figure(note_path, fig_index, insight)` | Saves a read-time insight as an atomic note so next time text answers (no re-load) |
