@@ -182,9 +182,11 @@ def analyse_figure(image_path: Path, caption: str = "") -> dict | None:
     caption_ctx = f"Caption: {caption}\n" if caption else ""
     prompt = (
         f"{caption_ctx}"
-        "Analyse this scientific figure. Respond in JSON with two fields:\n"
-        '{"ocr_text": "all text visible in the figure (labels, axes, legends, values)", '
-        '"description": "one sentence describing what this figure shows"}'
+        "Analyse this scientific figure. Return one valid JSON object with exactly two "
+        "string fields: ocr_text and description. Limit ocr_text to at most 1200 "
+        "characters; prioritize titles, panel labels, axes, legends, method and gene "
+        "names. Limit description to one sentence. Always close all JSON quotes and "
+        "braces. No markdown."
     )
     answer = llm_cli.vision_json(prompt, image_path, expect="object")
     if answer is None:

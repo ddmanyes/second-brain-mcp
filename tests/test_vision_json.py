@@ -178,6 +178,15 @@ class TestAnalyseFigure:
             figures.analyse_figure(png, caption="Figure 3: survival")
         assert "Figure 3: survival" in mock.call_args[0][0]
 
+    def test_figure_prompt_bounds_ocr_before_the_first_attempt(self, png):
+        with patch.object(llm_cli, "vision_json", return_value=None) as mock:
+            figures.analyse_figure(png)
+
+        prompt = mock.call_args[0][0]
+        assert "at most 1200 characters" in prompt
+        assert "prioritize titles" in prompt
+        assert "No markdown" in prompt
+
     def test_prompt_echo_is_not_saved_as_ocr_text(self, png):
         answer = llm_cli.VisionAnswer(
             data={

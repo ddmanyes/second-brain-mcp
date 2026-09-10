@@ -4,6 +4,8 @@ _local_chat() defaulted max_tokens to a hardcoded 1024, silently truncating any 
 needed more — indistinguishable from a malformed/empty reply to the caller. These tests pin
 down that the value is now threaded through from llm_text() and overridable per call.
 """
+import base64
+import io
 import json
 from unittest.mock import MagicMock, patch
 
@@ -63,6 +65,28 @@ class TestLocalChatMaxTokens:
 
         image_url = captured["payload"]["messages"][0]["content"][0]["image_url"]["url"]
         assert image_url.startswith("data:image/jpeg;base64,")
+
+    def test_multimodal_data_url_normalizes_mislabelled_webp_for_local_vlm(
+        self, monkeypatch, tmp_path
+    ):
+        from PIL import Image
+
+        monkeypatch.setattr(llm_cli, "_LOCAL_BASE", "http://localhost:11434/v1")
+        image = tmp_path / "mislabelled.png"
+        Image.new("RGB", (72, 101), "blue").save(image, format="WEBP")
+        captured = {}
+
+        def fake_urlopen(req, timeout):
+            captured["payload"] = json.loads(req.data)
+            return _fake_response("ok")
+
+        with patch.object(llm_cli.urllib.request, "urlopen", side_effect=fake_urlopen):
+            llm_cli._local_chat("read", image_path=image, timeout=10)
+
+        image_url = captured["payload"]["messages"][0]["content"][0]["image_url"]["url"]
+        assert image_url.startswith("data:image/png;base64,")
+        normalized = Image.open(io.BytesIO(base64.b64decode(image_url.split(",", 1)[1])))
+        assert max(normalized.size) == 768
 
     def test_multimodal_request_can_use_a_dedicated_vision_endpoint(
         self, monkeypatch, tmp_path

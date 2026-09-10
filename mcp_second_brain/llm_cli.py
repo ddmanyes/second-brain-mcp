@@ -15,7 +15,8 @@ env：
   - ``SB_VISION_BACKEND`` 預設 ``anthropic-first``；設為 ``local-only`` 時只准本機
     multimodal endpoint，失敗即停止，絕不 fallback 到 Anthropic SDK 或 Claude CLI
 
-本機後端純用 urllib（stdlib），不引入新依賴。任一後端失敗即往下一個備援，全失敗回 None。
+本機 HTTP 後端使用 urllib；WebP 視覺輸入會以既有 Pillow 依賴在記憶體轉為 PNG。
+任一後端失敗即往下一個備援，全失敗回 None。
 
 launchd 批次環境 PATH 常很精簡，``shutil.which`` 可能回 None，故退回硬路徑
 ``/usr/local/bin``（同 cnyes_archiver / finance-kit news_sentiment_analyzer 的做法）。
@@ -23,6 +24,7 @@ launchd 批次環境 PATH 常很精簡，``shutil.which`` 可能回 None，故�
 from __future__ import annotations
 
 import base64
+import io
 import json
 import os
 import re
@@ -52,6 +54,30 @@ _LOCAL_MODEL = os.environ.get("SB_LLM_MODEL", "gemma")
 _LOCAL_NO_THINK = os.environ.get("SB_LLM_NO_THINK", "1") not in ("0", "false", "False", "")
 
 
+def _local_image_data(path: Path) -> tuple[str, str]:
+    """Return a llama.cpp-compatible MIME/base64 pair without changing the file."""
+    raw = path.read_bytes()
+    media_type = _media_type(path)
+    if media_type == "image/webp":
+        try:
+            from PIL import Image
+
+            with Image.open(io.BytesIO(raw)) as source:
+                image = source.convert("RGB")
+            if max(image.size) < 768:
+                scale = 768 / max(image.size)
+                image = image.resize(
+                    (round(image.width * scale), round(image.height * scale)),
+                    Image.Resampling.LANCZOS,
+                )
+            output = io.BytesIO()
+            image.save(output, format="PNG")
+            return "image/png", base64.b64encode(output.getvalue()).decode()
+        except Exception:  # noqa: BLE001 - unreadable input falls back to raw bytes
+            pass
+    return media_type, base64.b64encode(raw).decode()
+
+
 def _local_chat(prompt: str, *, image_path: Path | str | None = None, timeout: int,
                  max_tokens: int = 1024) -> str | None:
     """POST 到本機 OpenAI 相容 /chat/completions。無 SB_LLM_BASE_URL 則回 None（跳過）。
@@ -72,9 +98,9 @@ def _local_chat(prompt: str, *, image_path: Path | str | None = None, timeout: i
         p = Path(image_path)
         if not p.exists():
             return None
-        b64 = base64.b64encode(p.read_bytes()).decode()
+        media_type, b64 = _local_image_data(p)
         content = [
-            {"type": "image_url", "image_url": {"url": f"data:{_media_type(p)};base64,{b64}"}},
+            {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{b64}"}},
             {"type": "text", "text": prompt},
         ]
     else:
@@ -199,6 +225,15 @@ class VisionAnswer:
 
 
 def _media_type(path: Path) -> str:
+    header = path.read_bytes()[:16]
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if header.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if header.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if header.startswith(b"RIFF") and header[8:12] == b"WEBP":
+        return "image/webp"
     return _IMAGE_MEDIA_TYPES.get(path.suffix.lower().lstrip("."), "image/png")
 
 
