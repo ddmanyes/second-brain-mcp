@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from mcp_second_brain.author_backfill import (
+    EuropePmcProvider,
     apply_backfill,
     plan_backfill,
     write_manifest,
@@ -24,6 +25,17 @@ class FakeProvider:
         return self.result
 
 
+class FakeResponse:
+    def __init__(self, payload: dict):
+        self.payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self.payload
+
+
 def _write_note(vault: Path, relative: str, frontmatter: str, body: str) -> Path:
     path = vault / relative
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -35,6 +47,50 @@ def _body_hash(path: Path) -> str:
     text = path.read_text(encoding="utf-8")
     body = FRONTMATTER_RE.sub("", text, count=1)
     return hashlib.sha256(body.encode()).hexdigest()
+
+
+def test_europe_pmc_provider_requests_core_results_for_structured_authors(monkeypatch):
+    seen_params: list[dict] = []
+
+    def fake_get(url, *, params, timeout):
+        assert url == EuropePmcProvider.endpoint
+        assert timeout == 20.0
+        seen_params.append(params)
+        row = {
+            "title": "Exact Study",
+            "authorString": "Lin SJ",
+            "doi": "10.1234/exact",
+            "pmid": "123",
+        }
+        if params.get("resultType") == "core":
+            row["authorList"] = {
+                "author": [
+                    {
+                        "fullName": "Sung-Jan Lin",
+                        "authorId": {
+                            "type": "ORCID",
+                            "value": "0000-0001-2345-6789",
+                        },
+                    }
+                ]
+            }
+        return FakeResponse({"resultList": {"result": [row]}})
+
+    monkeypatch.setattr("mcp_second_brain.author_backfill.requests.get", fake_get)
+
+    result = EuropePmcProvider().lookup(title="Exact Study")
+
+    assert seen_params == [
+        {
+            "query": 'TITLE:"Exact Study"',
+            "format": "json",
+            "pageSize": 5,
+            "resultType": "core",
+        }
+    ]
+    assert result is not None
+    assert result["authors"] == ["Sung-Jan Lin"]
+    assert result["author_ids"] == ["0000-0001-2345-6789"]
 
 
 def test_plan_uses_only_frontmatter_identifier_and_emits_deterministic_manifest(tmp_path):

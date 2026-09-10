@@ -319,7 +319,12 @@ class EuropePmcProvider:
         field = {"doi": "DOI", "pmid": "EXT_ID", "pmcid": "PMCID", "title": "TITLE"}[key]
         response = requests.get(
             self.endpoint,
-            params={"query": f'{field}:"{value}"', "format": "json", "pageSize": 5},
+            params={
+                "query": f'{field}:"{value}"',
+                "format": "json",
+                "pageSize": 5,
+                "resultType": "core",
+            },
             timeout=self.timeout,
         )
         response.raise_for_status()
