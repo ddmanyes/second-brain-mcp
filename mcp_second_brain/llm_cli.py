@@ -323,8 +323,9 @@ def vision_json(
                 attempt_prompt += (
                     "\nThe previous response was not complete valid JSON. Return concise "
                     "valid JSON in the requested shape. If it contains ocr_text, limit that "
-                    "string to at most 1200 characters and prioritize titles, panel labels, "
-                    "axes, legends, method names, and gene names. Always close all JSON "
+                    "string to at most 300 characters with the most important labels only: "
+                    "titles, panel labels, axes, legends, method names, and gene names. "
+                    "Always close all JSON "
                     "quotes, brackets, and braces. Do not use markdown."
                 )
             raw = _local_chat(
