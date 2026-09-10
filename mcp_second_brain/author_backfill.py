@@ -79,6 +79,8 @@ def _safe_markdown_files(root: Path, paths: list[str] | None) -> list[Path]:
             relative = candidate.relative_to(root)
         except ValueError:
             continue
+        if any(part.startswith(".") for part in relative.parts):
+            continue
         if _EXCLUDED_PARTS.intersection(relative.parts):
             continue
         try:

@@ -230,6 +230,32 @@ def test_plan_skips_notes_that_already_have_authors_and_obeys_limit(tmp_path):
     assert manifest["summary"]["planned"] == 1
 
 
+def test_plan_excludes_hidden_backup_directories(tmp_path):
+    _write_note(
+        tmp_path,
+        ".repair-backup-20260903/paper.md",
+        'title: "Backup Copy"\ntype: research\ndoi: "10.1234/backup"\n',
+        "Archived body\n",
+    )
+    _write_note(
+        tmp_path,
+        "20-areas/research/paper.md",
+        'title: "Live Copy"\ntype: research\ndoi: "10.1234/live"\n',
+        "Live body\n",
+    )
+    provider = FakeProvider(
+        {"title": "Live Copy", "authors": ["Author A"], "doi": "10.1234/live"}
+    )
+
+    manifest = plan_backfill(tmp_path, provider=provider)
+
+    assert provider.calls == [{"doi": "10.1234/live"}]
+    assert manifest["summary"] == {"eligible": 1, "planned": 1, "needs_review": 0}
+    assert [entry["path"] for entry in manifest["entries"]] == [
+        "20-areas/research/paper.md"
+    ]
+
+
 def test_plan_treats_an_empty_authors_array_as_missing(tmp_path):
     _write_note(
         tmp_path,
