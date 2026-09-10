@@ -10,6 +10,8 @@ env：
   - ``SB_LLM_BASE_URL``  例如 ``http://localhost:11434/v1``（未設則跳過本機後端）
   - ``SB_LLM_MODEL``     預設 ``gemma``
   - ``SB_LLM_NO_THINK``  預設 ``1``（Gemma 推理型模型需關 thinking，否則 content 空白）
+  - ``SB_VISION_LLM_BASE_URL`` / ``SB_VISION_LLM_MODEL`` 可把多模態請求送往
+    獨立本機 endpoint，同時保留文字抽取使用 ``SB_LLM_*``
   - ``SB_VISION_BACKEND`` 預設 ``anthropic-first``；設為 ``local-only`` 時只准本機
     multimodal endpoint，失敗即停止，絕不 fallback 到 Anthropic SDK 或 Claude CLI
 
@@ -62,9 +64,11 @@ def _local_chat(prompt: str, *, image_path: Path | str | None = None, timeout: i
       被判定成 no_json_in_reply 的 chunk，唯一差別只是 max_tokens 從 1024 調到 4096，跟有沒有套
       grammar/schema 約束無關。
     """
-    if not _LOCAL_BASE:
-        return None
+    local_base = _LOCAL_BASE
+    local_model = _LOCAL_MODEL
     if image_path is not None:
+        local_base = os.environ.get("SB_VISION_LLM_BASE_URL", local_base).rstrip("/")
+        local_model = os.environ.get("SB_VISION_LLM_MODEL", local_model)
         p = Path(image_path)
         if not p.exists():
             return None
@@ -75,9 +79,11 @@ def _local_chat(prompt: str, *, image_path: Path | str | None = None, timeout: i
         ]
     else:
         content = [{"type": "text", "text": prompt}]
+    if not local_base:
+        return None
 
     payload = {
-        "model": _LOCAL_MODEL,
+        "model": local_model,
         "messages": [{"role": "user", "content": content}],
         "temperature": 0.2,
         "max_tokens": max_tokens,
@@ -87,7 +93,7 @@ def _local_chat(prompt: str, *, image_path: Path | str | None = None, timeout: i
 
     try:
         req = urllib.request.Request(
-            f"{_LOCAL_BASE}/chat/completions",
+            f"{local_base}/chat/completions",
             data=json.dumps(payload).encode(),
             headers={"Content-Type": "application/json"},
         )

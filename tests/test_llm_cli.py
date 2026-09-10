@@ -64,6 +64,46 @@ class TestLocalChatMaxTokens:
         image_url = captured["payload"]["messages"][0]["content"][0]["image_url"]["url"]
         assert image_url.startswith("data:image/jpeg;base64,")
 
+    def test_multimodal_request_can_use_a_dedicated_vision_endpoint(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(llm_cli, "_LOCAL_BASE", "http://localhost:11434/v1")
+        monkeypatch.setattr(llm_cli, "_LOCAL_MODEL", "gemma-12b")
+        monkeypatch.setenv("SB_VISION_LLM_BASE_URL", "http://localhost:11437/v1")
+        monkeypatch.setenv("SB_VISION_LLM_MODEL", "gemma-4-26b-a4b")
+        image = tmp_path / "figure.png"
+        image.write_bytes(b"png-placeholder")
+        captured = {}
+
+        def fake_urlopen(req, timeout):
+            captured["url"] = req.full_url
+            captured["payload"] = json.loads(req.data)
+            return _fake_response("ok")
+
+        with patch.object(llm_cli.urllib.request, "urlopen", side_effect=fake_urlopen):
+            llm_cli._local_chat("read", image_path=image, timeout=10)
+
+        assert captured["url"] == "http://localhost:11437/v1/chat/completions"
+        assert captured["payload"]["model"] == "gemma-4-26b-a4b"
+
+    def test_text_request_ignores_the_dedicated_vision_endpoint(self, monkeypatch):
+        monkeypatch.setattr(llm_cli, "_LOCAL_BASE", "http://localhost:11434/v1")
+        monkeypatch.setattr(llm_cli, "_LOCAL_MODEL", "gemma-12b")
+        monkeypatch.setenv("SB_VISION_LLM_BASE_URL", "http://localhost:11437/v1")
+        monkeypatch.setenv("SB_VISION_LLM_MODEL", "gemma-4-26b-a4b")
+        captured = {}
+
+        def fake_urlopen(req, timeout):
+            captured["url"] = req.full_url
+            captured["payload"] = json.loads(req.data)
+            return _fake_response("ok")
+
+        with patch.object(llm_cli.urllib.request, "urlopen", side_effect=fake_urlopen):
+            llm_cli._local_chat("extract statements", timeout=10)
+
+        assert captured["url"] == "http://localhost:11434/v1/chat/completions"
+        assert captured["payload"]["model"] == "gemma-12b"
+
 
 class TestLlmTextThreadsMaxTokens:
     def test_llm_text_default_matches_local_chat_default(self, monkeypatch):
