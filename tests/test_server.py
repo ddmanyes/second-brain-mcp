@@ -391,6 +391,86 @@ class TestNormaliseSourceUrl:
         assert server._normalise_source_url(url) == url
 
 
+class TestSaveArticleBibliographicMetadata:
+    def test_writes_flat_json_compatible_frontmatter(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        from mcp_second_brain import server
+
+        monkeypatch.setattr(server, "VAULT", tmp_path)
+        monkeypatch.setattr(server, "_ALLOWED_LOCAL_ROOTS", [tmp_path])
+        monkeypatch.setattr(
+            server,
+            "_md_converter",
+            SimpleNamespace(
+                convert=lambda source: SimpleNamespace(text_content="# Body\n\nText")
+            ),
+        )
+        monkeypatch.setattr(server, "after_write", lambda *args, **kwargs: 0)
+        source = tmp_path / "incoming.txt"
+        source.write_text("source", encoding="utf-8")
+
+        result = server.save_article(
+            str(source),
+            title="Paper",
+            tags="research",
+            dest_folder="20-areas/research",
+            filename="2024_Lin_Paper",
+            metadata={
+                "authors": ["Sung-Jan Lin", "Ada Lovelace"],
+                "author_ids": ["0000-0002-1825-0097"],
+                "doi": "https://doi.org/10.1000/TEST.",
+                "pmid": "123456",
+                "pmcid": "12345",
+                "journal": "Journal of Tests",
+                "publication_year": "2024",
+                "canonical_url": "https://example.test/paper",
+                "abstract": "must be ignored",
+            },
+        )
+
+        note = tmp_path / "20-areas/research/2024_Lin_Paper.md"
+        text = note.read_text(encoding="utf-8")
+        assert result.startswith("Saved:")
+        assert 'authors: ["Sung-Jan Lin", "Ada Lovelace"]' in text
+        assert 'author_ids: ["0000-0002-1825-0097"]' in text
+        assert 'doi: "10.1000/test"' in text
+        assert 'pmid: "123456"' in text
+        assert 'pmcid: "PMC12345"' in text
+        assert 'journal: "Journal of Tests"' in text
+        assert "publication_year: 2024" in text
+        assert 'canonical_url: "https://example.test/paper"' in text
+        assert "abstract:" not in text.split("---", 2)[1]
+
+    def test_legacy_call_writes_no_empty_bibliographic_fields(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        from mcp_second_brain import server
+
+        monkeypatch.setattr(server, "VAULT", tmp_path)
+        monkeypatch.setattr(server, "_ALLOWED_LOCAL_ROOTS", [tmp_path])
+        monkeypatch.setattr(
+            server,
+            "_md_converter",
+            SimpleNamespace(convert=lambda source: SimpleNamespace(text_content="body")),
+        )
+        monkeypatch.setattr(server, "after_write", lambda *args, **kwargs: 0)
+        source = tmp_path / "legacy.txt"
+        source.write_text("source", encoding="utf-8")
+
+        server.save_article(
+            str(source),
+            title="Legacy",
+            filename="legacy",
+        )
+
+        frontmatter = (tmp_path / "30-resources/legacy.md").read_text(
+            encoding="utf-8"
+        ).split("---", 2)[1]
+        assert "authors:" not in frontmatter
+        assert "doi:" not in frontmatter
+
+
 class TestSlugify:
     def test_punctuation_becomes_separator_not_merge(self):
         from mcp_second_brain import server

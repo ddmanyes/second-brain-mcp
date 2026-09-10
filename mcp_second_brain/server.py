@@ -31,6 +31,7 @@ from . import frontmatter as _fm
 from . import llm_cli, vault_db
 from . import vault_sleep as _vs
 from .article_audit import audit_article_records as _audit_article_records
+from .article_metadata import bibliographic_frontmatter
 from .identity import (
     check_admin_permission,
     check_write_permission,
@@ -1720,6 +1721,7 @@ def save_article(
     tags: str = "",
     dest_folder: str = "30-resources",
     filename: str = "",
+    metadata: dict | None = None,
 ) -> str:
     """Convert a web article or PDF into a markdown note and save it to the vault.
 
@@ -1731,6 +1733,8 @@ def save_article(
                      Use '20-areas/research' for academic papers with DOI/journal.
         filename: Filename stem (without .md). If empty, auto-generated from title as kebab-slug.
                   Use 'YYYY_Author_ShortTitle' format for research papers, e.g. '2024_Bakr_ARID1A'.
+        metadata: Optional structured bibliographic fields. Only authors, author_ids,
+                  DOI/PMID/PMCID, journal, publication_year and canonical_url are written.
     """
     source = _normalise_source_url(source)
     safe = _validate_source(source)
@@ -1790,7 +1794,8 @@ def save_article(
     tag_list = f"[{', '.join(_safe_tag(t) for t in tags.split(',') if _safe_tag(t))}]" if tags else "[]"
     frontmatter = (
         f'---\ntitle: "{_safe_yaml(title)}"\ndate: {today}\ntype: {note_type}\n'
-        f'status: active\ntags: {tag_list}\nsource: "{_safe_yaml(source)}"\n---\n\n'
+        f'status: active\ntags: {tag_list}\nsource: "{_safe_yaml(source)}"\n'
+        f'{bibliographic_frontmatter(metadata)}---\n\n'
     )
     dest.write_text(frontmatter + body, encoding="utf-8")
 
