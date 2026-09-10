@@ -1422,6 +1422,17 @@ def mark_page_processed(note_path: str, page_hash: str, fig_count: int = 0) -> N
         )
 
 
+def clear_figures_for_note(note_path: str) -> None:
+    """Drop every figure row and page-cache entry for a note.
+
+    Used when the detector changes: old crops were cut by a different algorithm,
+    so they must go rather than be appended to under fresh indices.
+    """
+    with _connect() as con:
+        con.execute("DELETE FROM figures WHERE note_path = ?", [note_path])
+        con.execute("DELETE FROM processed_pages WHERE note_path = ?", [note_path])
+
+
 def get_figures_for_note(note_path: str) -> list[dict]:
     """Return all figure rows for a given note (used to sync to postgres)."""
     with _connect() as con:

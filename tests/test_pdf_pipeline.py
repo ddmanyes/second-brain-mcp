@@ -142,8 +142,7 @@ class TestFigureExtractionRender:
         assert "vector chart" in row["caption"]
 
     def test_page_hash_cache(self, isolated_fig_env):
-        """Second extract_figures run must not re-send any page to the VLM,
-        including text-only pages (negative cache)."""
+        """A second run must not re-detect any page, including figure-less ones."""
         from mcp_second_brain import figures
         from unittest.mock import MagicMock
 
@@ -152,24 +151,149 @@ class TestFigureExtractionRender:
         pdf = _make_pdf_with_drawing(vault / "src.pdf", n_pages=2, draw_on=0)
         note_path = _make_note_with_pdf(vault, pdf)
 
-        def detect(png, num):
-            # _detect_figures_on_page 回傳 (detections, usage_dict)
-            if num == 0:
-                return [{"bbox": [100, 150, 900, 900], "caption": "Fig 1", "type": "figure"}], {}
-            return [], {}
-
-        mock_detect = MagicMock(side_effect=detect)
+        spy = MagicMock(side_effect=figures._detect_figures_geometric)
         analyse = lambda p, caption="": {"ocr_text": "", "description": "d"}  # noqa: E731
 
-        with patch.object(figures, "_detect_figures_on_page", mock_detect), \
+        with patch.object(figures, "_detect_figures_geometric", spy), \
              patch.object(figures, "analyse_figure", side_effect=analyse):
             figures.extract_figures(note_path, vault)
-            calls_after_first = mock_detect.call_count
-            assert calls_after_first == 2  # both pages processed once
+            calls_after_first = spy.call_count
+            assert calls_after_first == 2  # both pages inspected once
 
             figures.extract_figures(note_path, vault)
-            # negative cache: no page (incl. the text-only one) is re-sent
-            assert mock_detect.call_count == calls_after_first
+            # negative cache: no page (incl. the text-only one) is re-inspected
+            assert spy.call_count == calls_after_first
+
+    def test_bbox_comes_from_pdf_geometry_not_the_vlm(self, isolated_fig_env):
+        """The crop must wrap the drawn rect + its caption, and nothing else.
+
+        Regression for VLM-guessed bboxes, which produced slivers through a
+        panel and captions cut in half.
+        """
+        from mcp_second_brain import figures
+
+        vault = isolated_fig_env
+        pdf = _make_pdf_with_drawing(vault / "src.pdf", n_pages=1, draw_on=0)
+        doc = fitz.open(str(pdf))
+        dets = figures._detect_figures_geometric(doc[0])
+        doc.close()
+
+        assert len(dets) == 1
+        r = dets[0]["rect"]
+        pad = figures._GEOM_PAD
+        # drawn rect is (72,150)-(400,400); caption sits just below it
+        assert r.x0 == pytest.approx(72, abs=pad + 2)
+        assert r.y0 == pytest.approx(150, abs=pad + 2)
+        assert r.x1 >= 400 - pad          # right edge not clipped
+        assert r.y1 > 405                 # grew down to take in the caption
+        assert r.y0 > 120                 # heading/body text left outside
+        assert "vector chart" in dets[0]["caption"]
+
+    def test_tiled_strips_fuse_into_one_figure(self, isolated_fig_env):
+        """Publishers slice one figure into thin strips; they must not be dropped.
+
+        Regression for a size gate that ran before clustering and deleted every
+        strip of a 13-slice figure.
+        """
+        from mcp_second_brain import figures
+
+        vault = isolated_fig_env
+        pdf_path = vault / "tiled.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        strip = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 240, 8))
+        strip.set_rect(strip.irect, (40, 90, 200))
+        for i in range(12):
+            y = 150 + i * 8
+            page.insert_image(fitz.Rect(90, y, 330, y + 8), pixmap=strip)
+        page.insert_text((90, 270), "Figure 1. A sliced figure.", fontsize=10, fontname="helv")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        doc = fitz.open(str(pdf_path))
+        dets = figures._detect_figures_geometric(doc[0])
+        doc.close()
+
+        assert len(dets) == 1, "the strips must fuse into a single figure"
+        r = dets[0]["rect"]
+        assert r.height > 90, "the fused figure must span every strip"
+        assert "sliced figure" in dets[0]["caption"]
+
+    def test_text_only_table_is_detected(self, isolated_fig_env):
+        """Many journals typeset tables with no ruling lines at all.
+
+        Such a table draws no ink, so ink clustering alone finds nothing —
+        it has to be assembled from the "Table N" caption and the rows below.
+        """
+        from mcp_second_brain import figures
+
+        vault = isolated_fig_env
+        pdf_path = vault / "table.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((60, 100), "Table 1. Clinical characteristics of participants",
+                         fontsize=8.5, fontname="helv")
+        for i in range(10):
+            page.insert_text((60, 120 + i * 12), f"Variable {i}    {i * 3}.1 ± 0.4    p = 0.0{i}",
+                             fontsize=8.5, fontname="helv")
+        para = ("Body prose set larger than the table, running on across the column "
+                "and wrapping onto several continuous lines of discussion text. ") * 4
+        page.insert_textbox(fitz.Rect(60, 320, 520, 600), para, fontsize=11, fontname="helv")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        doc = fitz.open(str(pdf_path))
+        page = doc[0]
+        assert figures._ink_rects(page) == [], "the page must draw no ink at all"
+        dets = figures._detect_figures_geometric(page)
+        doc.close()
+
+        assert len(dets) == 1
+        r = dets[0]["rect"]
+        assert r.y0 < 105                      # starts at the caption
+        assert r.y1 > 225                      # covers every row
+        assert r.y1 < 320, "must stop before the body prose"
+        assert "Clinical characteristics" in dets[0]["caption"]
+
+    def test_body_text_is_not_a_figure(self, isolated_fig_env):
+        """Pages of prose must yield nothing — no crops of paragraphs."""
+        from mcp_second_brain import figures
+
+        vault = isolated_fig_env
+        pdf_path = vault / "prose.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        para = ("This is a long paragraph of body text that runs across the "
+                "column and wraps onto several lines of continuous prose. ") * 6
+        page.insert_textbox(fitz.Rect(72, 72, 520, 700), para, fontsize=11, fontname="helv")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        doc = fitz.open(str(pdf_path))
+        dets = figures._detect_figures_geometric(doc[0])
+        doc.close()
+        assert dets == []
+
+    def test_stale_detector_output_is_wiped_not_appended(self, isolated_fig_env):
+        """Crops from an older detector are replaced, never accumulated beside."""
+        from mcp_second_brain import figures
+
+        vault = isolated_fig_env
+        pdf = _make_pdf_with_drawing(vault / "src.pdf", n_pages=1, draw_on=0)
+        note_path = _make_note_with_pdf(vault, pdf)
+
+        fig_dir = figures.FIGURES_DIR / figures._figure_slug(note_path)
+        fig_dir.mkdir(parents=True, exist_ok=True)
+        (fig_dir / "fig-00.png").write_bytes(b"stale")
+        (fig_dir / "fig-01.png").write_bytes(b"stale")
+
+        analyse = lambda p, caption="": {"ocr_text": "", "description": "d"}  # noqa: E731
+        with patch.object(figures, "analyse_figure", side_effect=analyse):
+            figures.extract_figures(note_path, vault)
+
+        crops = sorted(fig_dir.glob("fig-*.png"))
+        assert [c.name for c in crops] == ["fig-00.png"]
+        assert crops[0].read_bytes() != b"stale"
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +354,36 @@ class TestReadFigure:
         assert thumb.exists()
         with _PILImage.open(thumb) as im:
             assert max(im.size) <= 768
+
+    def test_thumbnail_is_regenerated_when_the_figure_changes(self, isolated_fig_env):
+        """A re-extracted figure must not keep serving its old thumbnail.
+
+        Regression: the cache keyed on (note, index) alone, so every remote
+        reader kept seeing the previous crop after re-extraction.
+        """
+        import os
+        from PIL import Image
+        from mcp_second_brain import figures
+
+        note_path = "paper.md"
+        fig_dir = figures.FIGURES_DIR / figures._figure_slug(note_path)
+        fig_dir.mkdir(parents=True, exist_ok=True)
+        src = fig_dir / "fig-00.png"
+
+        Image.new("RGB", (900, 300), (255, 0, 0)).save(src)
+        first = figures.make_figure_thumbnail(src, note_path, 0)
+        assert first is not None
+        with Image.open(first) as im:
+            assert im.size[0] > im.size[1], "wide source -> wide thumbnail"
+
+        # re-extraction rewrites the same path with a differently shaped crop
+        Image.new("RGB", (300, 900), (0, 0, 255)).save(src)
+        os.utime(src, (src.stat().st_atime + 10, src.stat().st_mtime + 10))
+
+        second = figures.make_figure_thumbnail(src, note_path, 0)
+        assert second is not None
+        with Image.open(second) as im:
+            assert im.size[1] > im.size[0], "thumbnail must follow the new crop"
 
     def test_read_figure_missing_returns_text(self, isolated_fig_env, monkeypatch):
         from mcp_second_brain import server
@@ -361,12 +515,23 @@ class TestFallbacks:
         assert "Marker output" in body
 
     def test_vlm_detection_failure_falls_back_to_pdfimages(self, isolated_fig_env):
-        """If every page detection raises, extract_figures uses pdfimages."""
+        """Scanned page + unreachable VLM = nothing readable, so pdfimages runs.
+
+        Geometry handles ordinary PDFs on its own; this fallback is only for
+        pages that are a single scanned image with no extractable text.
+        """
         from mcp_second_brain import figures
 
         vault = isolated_fig_env
-        pdf = _make_pdf_with_drawing(vault / "src.pdf", n_pages=1, draw_on=0)
-        note_path = _make_note_with_pdf(vault, pdf)
+        pdf_path = vault / "scan.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        scan = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 600, 800))
+        scan.set_rect(scan.irect, (210, 210, 200))
+        page.insert_image(page.rect, pixmap=scan)   # whole page, no text layer
+        doc.save(str(pdf_path))
+        doc.close()
+        note_path = _make_note_with_pdf(vault, pdf_path)
 
         sentinel = [{"fig_index": 0, "local_path": "/x/fig-00.png",
                      "ocr_text": "", "description": "from pdfimages"}]

@@ -327,6 +327,369 @@ def _detect_figures_on_page(page_png: Path, page_num: int) -> tuple[list[dict], 
     return out, usage
 
 
+# ---------------------------------------------------------------------------
+# Geometry-first figure detection
+#
+# A VLM asked for "normalised 0-1000 bbox" answers plausibly but not precisely,
+# and a plausible box is a bad crop: slivers through a panel, captions cut in
+# half, body text dragged in. The PDF already carries exact coordinates for
+# every image and vector path it draws, so the box is read, not guessed. Ink is
+# stamped onto a coarse grid, dilated so the panels of one figure fuse into one
+# blob, connected-component labelled, tightened back onto the real rects, then
+# grown to swallow the "Figure N." block underneath. The VLM keeps the jobs it
+# is actually good at: reading a crop, and handling pages that are pure scans.
+# ---------------------------------------------------------------------------
+
+_GEOM_CELL = 2.0        # pt per grid cell
+_GEOM_GAP = 16.0        # pt — ink closer than this belongs to the same figure
+_GEOM_PAD = 4.0         # pt of breathing room around the final crop
+_GEOM_MIN_SIDE = 55.0   # pt — below this a blob is furniture, not a figure
+_GEOM_MIN_AREA = 9000.0  # pt^2
+_CAPTION_GAP = 70.0     # pt — how far a caption may sit from its figure
+_CROP_DPI = 200         # crops are rendered from the page, not from a page PNG
+_MAX_PAGES = 20
+_DETECTOR_VERSION = "geom-2"
+
+_CAPTION_RE = re.compile(
+    r"^\s*(fig(?:ure)?\.?\s*\d|table\s*\d|extended\s+data|"
+    r"supplementary\s+(?:fig|table)|scheme\s*\d)",
+    re.I,
+)
+
+
+def _text_blocks(page) -> list:
+    return [b for b in page.get_text("blocks") if len(b) <= 6 or b[6] == 0]
+
+
+def _prose_rects(page) -> list:
+    """Body-text blocks: several lines of long lines. Axis labels never qualify."""
+    import fitz
+
+    out = []
+    for b in _text_blocks(page):
+        lines = [ln for ln in (b[4] or "").splitlines() if ln.strip()]
+        if len(lines) >= 2 and sum(len(ln) for ln in lines) / len(lines) >= 45:
+            out.append(fitz.Rect(b[:4]))
+    return out
+
+
+def _sized_blocks(page) -> list[tuple]:
+    """(rect, dominant font size, text) per text block, in reading order."""
+    import fitz
+
+    out = []
+    for b in page.get_text("dict").get("blocks", []):
+        if b.get("type") != 0:
+            continue
+        sizes, txt = [], []
+        for line in b.get("lines", []):
+            for span in line.get("spans", []):
+                sizes.append(round(span.get("size", 0.0), 1))
+                txt.append(span.get("text", ""))
+        if not sizes:
+            continue
+        size = max(set(sizes), key=sizes.count)
+        out.append((fitz.Rect(b["bbox"]), size, "".join(txt).strip()))
+    out.sort(key=lambda t: (round(t[0].y0, 1), round(t[0].x0, 1)))
+    return out
+
+
+_CAPTION_RUN_GAP = 14.0     # pt between a caption block and its continuation
+
+
+def _caption_run(blocks: list[tuple], start: int, figure_rect) -> tuple:
+    """Absorb a caption's continuation blocks.
+
+    A long caption is split into several blocks — "(A) ... (B) ..." each land
+    separately — and only the first one starts with "Figure N.". The rest are
+    recognised by sitting directly underneath at the same font size, which body
+    text set in a different size will not match.
+    """
+    import fitz
+
+    cap_rect, cap_size, cap_text = blocks[start]
+    rect = fitz.Rect(cap_rect)
+    parts = [cap_text]
+    prev = cap_rect
+    for r, size, text in blocks[start + 1:]:
+        if abs(size - cap_size) > 0.6:
+            break
+        if r.y0 - prev.y1 > _CAPTION_RUN_GAP or r.y1 <= prev.y0:
+            break
+        if r.x0 < figure_rect.x0 - 12 or r.x1 > figure_rect.x1 + 12:
+            break
+        if _CAPTION_RE.match(text):
+            break                       # the next figure's caption
+        rect |= r
+        parts.append(text)
+        prev = r
+    return rect, " ".join(" ".join(parts).split())[:500]
+
+
+def _ink_rects(page) -> list:
+    """Every mark the page draws, minus page furniture (rules, header/footer bits)."""
+    import fitz
+
+    pr = page.rect
+    head, foot = pr.y0 + pr.height * 0.055, pr.y1 - pr.height * 0.055
+    out = []
+    for img in page.get_images(full=True):
+        try:
+            rects = page.get_image_rects(img[0])
+        except Exception:
+            continue
+        for r in rects:
+            r = fitz.Rect(r) & pr
+            # No size gate here: publishers routinely slice one figure into
+            # dozens of thin strips (273x10pt seen in the wild). Clustering
+            # fuses them; the component gate below is what drops real icons.
+            if r.width > 4 and r.height > 4:
+                out.append(r)
+    for d in page.get_drawings():
+        r = fitz.Rect(d["rect"]) & pr
+        if r.is_empty or r.is_infinite or r.width <= 0 or r.height <= 0:
+            continue
+        if r.height < 3 and r.width > pr.width * 0.5:
+            continue        # full-width rule
+        if r.width < 3 and r.height > pr.height * 0.5:
+            continue        # full-height rule
+        if r.width < 1.5 and r.height < 1.5:
+            continue
+        # Only small marks get banished by band — a real figure may reach the edge.
+        if r.height < 20 and (r.y1 < head or r.y0 > foot):
+            continue
+        out.append(r)
+    return out
+
+
+def _cluster_rects(rects: list, pr) -> list:
+    """Dilated-grid connected components, each tightened back onto its own rects."""
+    import fitz
+
+    if not rects:
+        return []
+    cell = _GEOM_CELL
+    nx = max(1, int(pr.width / cell) + 2)
+    ny = max(1, int(pr.height / cell) + 2)
+    grid = bytearray(nx * ny)
+    d = int(_GEOM_GAP / cell / 2)
+
+    for r in rects:
+        x0 = max(0, int((r.x0 - pr.x0) / cell) - d)
+        x1 = min(nx - 1, int((r.x1 - pr.x0) / cell) + d)
+        y0 = max(0, int((r.y0 - pr.y0) / cell) - d)
+        y1 = min(ny - 1, int((r.y1 - pr.y0) / cell) + d)
+        for y in range(y0, y1 + 1):
+            row = y * nx
+            grid[row + x0:row + x1 + 1] = b"\x01" * (x1 - x0 + 1)
+
+    label = [0] * (nx * ny)
+    comp = 0
+    for start in range(nx * ny):
+        if not grid[start] or label[start]:
+            continue
+        comp += 1
+        stack = [start]
+        label[start] = comp
+        while stack:
+            i = stack.pop()
+            y, x = divmod(i, nx)
+            for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                yy, xx = y + dy, x + dx
+                if 0 <= yy < ny and 0 <= xx < nx:
+                    j = yy * nx + xx
+                    if grid[j] and not label[j]:
+                        label[j] = comp
+                        stack.append(j)
+
+    boxes: dict[int, object] = {}
+    for r in rects:
+        cx = min(nx - 1, max(0, int(((r.x0 + r.x1) / 2 - pr.x0) / cell)))
+        cy = min(ny - 1, max(0, int(((r.y0 + r.y1) / 2 - pr.y0) / cell)))
+        cid = label[cy * nx + cx]
+        if not cid:
+            continue
+        boxes[cid] = (boxes[cid] | r) if cid in boxes else fitz.Rect(r)
+    return list(boxes.values())
+
+
+_TABLE_RE = re.compile(r"^\s*(table|supplementary\s+table|extended\s+data\s+table)\s*\d", re.I)
+_TABLE_RUN_GAP = 24.0    # pt between a table's caption and its rows
+
+
+def _text_table_region(blocks: list[tuple], start: int, prose: list) -> object:
+    """Build a table's rect from text alone.
+
+    Journals typeset many tables with no ruling lines at all — no drawings, no
+    images, nothing for the ink clustering to find. Such a table is a "Table N"
+    caption followed by a run of short-lined blocks in the same column, ending
+    where real prose resumes.
+    """
+    import fitz
+
+    cap_rect, cap_size, _cap_text = blocks[start]
+    rect = fitz.Rect(cap_rect)
+    prev = cap_rect
+    for r, size, text in blocks[start + 1:]:
+        if r.y0 < prev.y1 - 2:
+            continue                    # sits alongside, not below — other column
+        # Rows are often a hair wider than the caption, so overlap decides the
+        # column, not containment.
+        overlap = min(r.x1, cap_rect.x1) - max(r.x0, cap_rect.x0)
+        if overlap < 0.6 * min(r.width, cap_rect.width):
+            continue
+        if r.y0 - prev.y1 > _TABLE_RUN_GAP:
+            break                       # the table ended some blocks ago
+        if abs(size - cap_size) > 1.2:
+            break                       # body text is set larger than the table
+        if _CAPTION_RE.match(text):
+            break                       # the next figure or table
+        if any((r & pr).get_area() > r.get_area() * 0.8 for pr in prose):
+            break                       # body text resumed
+        rect |= r
+        prev = r
+    return rect
+
+
+def _detect_figures_geometric(page) -> list[dict]:
+    """Figures on one page as {"rect": fitz.Rect (PDF points), "caption": str}."""
+    import fitz
+
+    pr = page.rect
+    prose = _prose_rects(page)
+
+    kept = []
+    for r in _cluster_rects(_ink_rects(page), pr):
+        if r.width < _GEOM_MIN_SIDE or r.height < _GEOM_MIN_SIDE:
+            continue
+        if r.get_area() < _GEOM_MIN_AREA:
+            continue
+        # Mostly body text underneath -> decorated prose, not a figure.
+        if sum((r & p).get_area() for p in prose) > r.get_area() * 0.55:
+            continue
+        kept.append(r)
+
+    blocks = _sized_blocks(page)
+    cap_idx = [i for i, (_r, _s, t) in enumerate(blocks) if _CAPTION_RE.match(t)]
+    used: set[int] = set()
+    out: list[dict] = []
+    for r in kept:
+        best, best_d = None, _CAPTION_GAP
+        for i in cap_idx:
+            if i in used:
+                continue
+            cr = blocks[i][0]
+            if cr.x1 < r.x0 - 12 or cr.x0 > r.x1 + 12:
+                continue        # different column
+            dv = cr.y0 - r.y1 if cr.y0 >= r.y1 else r.y0 - cr.y1
+            if 0 <= dv < best_d:
+                best, best_d = i, dv
+        caption = ""
+        if best is not None:
+            used.add(best)
+            cr, caption = _caption_run(blocks, best, r)
+            r = r | cr
+        rect = (fitz.Rect(r) + (-_GEOM_PAD, -_GEOM_PAD, _GEOM_PAD, _GEOM_PAD)) & pr
+        out.append({"rect": rect, "caption": caption})
+
+    for i in cap_idx:
+        if i in used or not _TABLE_RE.match(blocks[i][2]):
+            continue
+        r = _text_table_region(blocks, i, prose)
+        if r.width < _GEOM_MIN_SIDE or r.height < _GEOM_MIN_SIDE:
+            continue
+        if r.get_area() < _GEOM_MIN_AREA:
+            continue
+        rect = (fitz.Rect(r) + (-_GEOM_PAD, -_GEOM_PAD, _GEOM_PAD, _GEOM_PAD)) & pr
+        out.append({
+            "rect": rect,
+            "caption": " ".join(blocks[i][2].split())[:500],
+        })
+
+    out.sort(key=lambda d: (round(d["rect"].y0, 1), round(d["rect"].x0, 1)))
+    return out
+
+
+def _page_is_scan(page) -> bool:
+    """One big image and no extractable text: geometry has nothing to read here.
+
+    A page with no figures at all is NOT a scan — it is just a page with no
+    figures, and sending it to the VLM would buy nothing.
+    """
+    import fitz
+
+    if len(page.get_text("text").strip()) >= 200:
+        return False
+    area = page.rect.get_area()
+    for img in page.get_images(full=True):
+        try:
+            rects = page.get_image_rects(img[0])
+        except Exception:
+            continue
+        if any(fitz.Rect(r).get_area() > area * 0.8 for r in rects):
+            return True
+    return False
+
+
+def _page_digest(page) -> str:
+    """Stable cache key over the page's text + geometry, versioned by detector."""
+    parts = [_DETECTOR_VERSION, page.get_text("text")]
+    parts += [f"{r.x0:.1f},{r.y0:.1f},{r.x1:.1f},{r.y1:.1f}" for r in _ink_rects(page)]
+    return hashlib.md5(
+        "|".join(parts).encode("utf-8", "replace"), usedforsecurity=False
+    ).hexdigest()[:16]
+
+
+def _crop_page_region(page, rect, dest: Path) -> bool:
+    """Render one region straight off the PDF page. Sharper than cropping a page PNG."""
+    import fitz
+
+    if rect.width < 20 or rect.height < 20:
+        return False
+    try:
+        pix = page.get_pixmap(
+            matrix=fitz.Matrix(_CROP_DPI / 72, _CROP_DPI / 72),
+            clip=rect,
+            colorspace=fitz.csRGB,
+        )
+    except Exception as e:
+        print(f"[figures] crop render failed: {e}", file=sys.stderr)
+        return False
+    if pix.width < 50 or pix.height < 50:
+        return False
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    pix.save(str(dest))
+    return True
+
+
+def _reset_if_detector_changed(note_path: str, fig_dir: Path) -> None:
+    """Wipe crops made by an older detector instead of appending beside them."""
+    stamp = fig_dir / ".detector-version"
+    try:
+        current = stamp.read_text(encoding="utf-8").strip()
+    except OSError:
+        current = ""
+    if current == _DETECTOR_VERSION:
+        return
+    for old in fig_dir.glob("fig-*"):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    thumb_dir = FIGURES_DIR.parent / ".figure-thumbs" / fig_dir.name
+    for old in thumb_dir.glob("fig-*"):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    try:
+        vault_db.clear_figures_for_note(note_path)
+    except Exception as e:
+        print(f"[figures] could not clear old figure rows: {e}", file=sys.stderr)
+    fig_dir.mkdir(parents=True, exist_ok=True)
+    stamp.write_text(_DETECTOR_VERSION, encoding="utf-8")
+
+
 def _crop_figure(page_png: Path, bbox: list, dest: Path) -> bool:
     """Crop bbox (pixels) out of page_png to dest. Returns False for tiny regions."""
     from PIL import Image as _PILImage
@@ -358,7 +721,10 @@ def make_figure_thumbnail(
         out_dir = FIGURES_DIR.parent / ".figure-thumbs" / _figure_slug(note_path)
         out_dir.mkdir(parents=True, exist_ok=True)
         dest = out_dir / f"fig-{fig_index:02d}.png"
-        if dest.exists():
+        # Cache on (note, index) BUT never serve a thumbnail older than its
+        # source: re-extraction rewrites fig-NN.png in place, and a stale
+        # thumbnail would keep showing the previous crop to every reader.
+        if dest.exists() and dest.stat().st_mtime >= src.stat().st_mtime:
             return dest
         with _PILImage.open(src) as im:
             im = im.convert("RGB")
@@ -497,76 +863,120 @@ def _extract_figures_pdfimages(pdf_path: str, note_path: str, fig_dir: Path) -> 
 
 
 def _extract_figures_render(pdf_path: str, note_path: str, fig_dir: Path) -> list[dict] | None:
-    """Primary path: render pages → VLM bbox detection → crop. Captures vector figures.
+    """Primary path: bboxes read from the PDF's own geometry, cropped off the page.
+
+    Pages that carry no extractable geometry (pure scans) still go through the
+    VLM bbox route, since there is nothing else to read there. Every crop is
+    described by the VLM regardless — that part was never the weak link.
 
     Returns a list of figure dicts on success (possibly empty), or None to signal
-    "VLM detection unavailable" so the caller falls back to pdfimages.
+    "nothing usable here" so the caller falls back to pdfimages.
     """
+    import fitz
     import shutil
 
     try:
-        pages = _render_pdf_pages(str(pdf_path))
+        doc = fitz.open(str(pdf_path))
     except Exception as e:
-        print(f"[figures] page render failed: {e}", file=sys.stderr)
+        print(f"[figures] cannot open PDF: {e}", file=sys.stderr)
         return None
-    if not pages:
-        return []
 
-    page_root = pages[0].parent
+    _reset_if_detector_changed(note_path, fig_dir)
+
     fig_index = len(list(fig_dir.glob("fig-*.png")))
     results: list[dict] = []
-    detection_ok = False
-    detection_err = False
     # Sonnet 4.6: $3/$15 per M input/output; Haiku 4.5: $0.80/$4 per M
     _SONNET_IN, _SONNET_OUT = 3.0, 15.0
     _HAIKU_IN, _HAIKU_OUT = 0.80, 4.0
     detect_tok = {"input": 0, "output": 0}
     analyse_tok = {"input": 0, "output": 0}
+    scan_pages: list[int] = []
+
+    def _record(dest: Path, caption: str) -> None:
+        nonlocal fig_index
+        analysis = _analysis_or_warn(dest, caption)
+        a_usage = analysis.pop("_usage", {})
+        analyse_tok["input"] += a_usage.get("input", 0)
+        analyse_tok["output"] += a_usage.get("output", 0)
+        description = analysis["description"] or caption
+        vault_db.upsert_figure(
+            note_path=note_path,
+            fig_index=fig_index,
+            image_url=f"file://{dest.resolve()}",
+            local_path=str(dest),
+            ocr_text=analysis["ocr_text"],
+            description=description,
+            token_est=_estimate_image_tokens(dest),
+            caption=caption,
+        )
+        results.append({
+            "fig_index": fig_index,
+            "local_path": str(dest),
+            "ocr_text": analysis["ocr_text"],
+            "description": description,
+            "caption": caption,
+        })
+        fig_index += 1
+
     try:
-        for pnum, page_png in enumerate(pages):
-            page_hash = hashlib.md5(page_png.read_bytes(), usedforsecurity=False).hexdigest()[:16]
+        for pnum, page in enumerate(doc):
+            if pnum >= _MAX_PAGES:
+                break
+            try:
+                digest = _page_digest(page)
+                if vault_db.page_is_processed(note_path, digest):
+                    continue
+                dets = _detect_figures_geometric(page)
+            except Exception as e:
+                print(f"[figures] geometry failed on page {pnum}: {e}", file=sys.stderr)
+                continue
+            if _page_is_scan(page):
+                scan_pages.append(pnum)   # unmarked on purpose — the VLM pass owns it
+                continue
+            for det in dets:
+                dest = fig_dir / f"fig-{fig_index:02d}.png"
+                if not _crop_page_region(page, det["rect"], dest):
+                    continue
+                _record(dest, det.get("caption", ""))
+            vault_db.mark_page_processed(note_path, digest, len(dets))
+    finally:
+        doc.close()
+
+    # Scans: no geometry to read, so fall back to asking the VLM where things are.
+    scan_ok = scan_err = False
+    if scan_pages:
+        page_pngs = []
+        try:
+            page_pngs = _render_pdf_pages(str(pdf_path), max_pages=_MAX_PAGES)
+        except Exception as e:
+            print(f"[figures] page render failed: {e}", file=sys.stderr)
+            scan_err = True
+        for pnum in scan_pages:
+            if pnum >= len(page_pngs):
+                continue
+            page_png = page_pngs[pnum]
+            page_hash = hashlib.md5(
+                page_png.read_bytes(), usedforsecurity=False
+            ).hexdigest()[:16]
             if vault_db.page_is_processed(note_path, page_hash):
-                continue  # negative cache: page already seen (even if 0 figures)
+                continue
             try:
                 dets, det_usage = _detect_figures_on_page(page_png, pnum)
                 detect_tok["input"] += det_usage.get("input", 0)
                 detect_tok["output"] += det_usage.get("output", 0)
             except Exception as e:
                 print(f"[figures] VLM detect failed on page {pnum}: {e}", file=sys.stderr)
-                detection_err = True
-                continue  # transient — don't mark, so a later run retries
-            detection_ok = True
+                scan_err = True
+                continue        # transient — don't mark, so a later run retries
+            scan_ok = True
             for det in dets:
                 dest = fig_dir / f"fig-{fig_index:02d}.png"
                 if not _crop_figure(page_png, det["bbox"], dest):
                     continue
-                caption = det.get("caption", "")
-                analysis = _analysis_or_warn(dest, caption)
-                a_usage = analysis.pop("_usage", {})
-                analyse_tok["input"] += a_usage.get("input", 0)
-                analyse_tok["output"] += a_usage.get("output", 0)
-                description = analysis["description"] or caption
-                vault_db.upsert_figure(
-                    note_path=note_path,
-                    fig_index=fig_index,
-                    image_url=f"file://{dest.resolve()}",
-                    local_path=str(dest),
-                    ocr_text=analysis["ocr_text"],
-                    description=description,
-                    token_est=_estimate_image_tokens(dest),
-                    caption=caption,
-                )
-                results.append({
-                    "fig_index": fig_index,
-                    "local_path": str(dest),
-                    "ocr_text": analysis["ocr_text"],
-                    "description": description,
-                    "caption": caption,
-                })
-                fig_index += 1
+                _record(dest, det.get("caption", ""))
             vault_db.mark_page_processed(note_path, page_hash, len(dets))
-    finally:
-        shutil.rmtree(page_root, ignore_errors=True)
+        if page_pngs:
+            shutil.rmtree(page_pngs[0].parent, ignore_errors=True)
 
     if detect_tok["input"] or analyse_tok["input"]:
         detect_cost = (detect_tok["input"] * _SONNET_IN + detect_tok["output"] * _SONNET_OUT) / 1_000_000
@@ -579,8 +989,9 @@ def _extract_figures_render(pdf_path: str, note_path: str, fig_dir: Path) -> lis
             file=sys.stderr,
         )
 
-    # Every detection attempt failed and we produced nothing → let caller fall back.
-    if detection_err and not detection_ok and not results:
+    # Nothing found and the only route left (the VLM) never answered → let the
+    # caller try pdfimages.
+    if not results and scan_err and not scan_ok:
         return None
     return results
 
