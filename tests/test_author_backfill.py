@@ -12,6 +12,7 @@ from mcp_second_brain.author_backfill import (
     plan_backfill,
     write_manifest,
 )
+from mcp_second_brain.article_metadata import match_indexed_author
 from mcp_second_brain.note_row import FRONTMATTER_RE, parse_frontmatter
 
 
@@ -133,6 +134,41 @@ def test_plan_uses_only_frontmatter_identifier_and_emits_deterministic_manifest(
             },
         }
     ]
+
+
+def test_plan_preserves_duplicate_author_names_and_parallel_orcids(tmp_path):
+    _write_note(
+        tmp_path,
+        "20-areas/research/duplicate-names.md",
+        'title: "Duplicate Names"\ntype: research\ndoi: "10.1234/duplicate"\n',
+        "Body\n",
+    )
+    provider = FakeProvider(
+        {
+            "title": "Duplicate Names",
+            "authors": ["Huang WY", "Huang WY", "Lin SJ"],
+            "author_ids": [
+                "0000-0001-5556-1460",
+                "0000-0001-9625-0802",
+                "0000-0003-1325-3464",
+            ],
+            "doi": "10.1234/duplicate",
+        }
+    )
+
+    manifest = plan_backfill(tmp_path, provider=provider)
+    metadata = manifest["entries"][0]["metadata"]
+
+    assert metadata["authors"] == ["Huang WY", "Huang WY", "Lin SJ"]
+    assert metadata["author_ids"] == [
+        "0000-0001-5556-1460",
+        "0000-0001-9625-0802",
+        "0000-0003-1325-3464",
+    ]
+    assert len(metadata["authors"]) == len(metadata["author_ids"])
+    assert match_indexed_author(
+        "0000-0001-9625-0802", metadata["authors"], metadata["author_ids"]
+    ) == ("Huang WY", "orcid", False)
 
 
 def test_plan_never_uses_body_or_references_as_author_evidence(tmp_path):
@@ -261,6 +297,38 @@ def test_apply_refuses_changed_file_and_non_deterministic_entries(tmp_path):
     assert {error["reason"] for error in result["errors"]} == {
         "content_changed",
         "confidence_not_deterministic",
+    }
+
+
+def test_apply_refuses_misaligned_author_ids(tmp_path):
+    _write_note(
+        tmp_path,
+        "30-resources/paper.md",
+        'title: "Paper"\ntype: resource\ndoi: "10.1234/paper"\n',
+        "Body\n",
+    )
+    provider = FakeProvider(
+        {
+            "title": "Paper",
+            "authors": ["Author A", "Author B"],
+            "author_ids": ["0000-0001-2345-6789", ""],
+            "doi": "10.1234/paper",
+        }
+    )
+    manifest = plan_backfill(tmp_path, provider=provider)
+    manifest["entries"][0]["metadata"]["author_ids"].pop()
+
+    result = apply_backfill(tmp_path, manifest)
+
+    assert result == {
+        "applied": 0,
+        "skipped": 1,
+        "errors": [
+            {
+                "path": "30-resources/paper.md",
+                "reason": "author_ids_misaligned",
+            }
+        ],
     }
 
 

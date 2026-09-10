@@ -183,6 +183,11 @@ def plan_backfill(
         if not metadata.get("authors"):
             review.append({"path": relative, "reason": "authors_missing"})
             continue
+        if "author_ids" in metadata and len(metadata["authors"]) != len(
+            metadata["author_ids"]
+        ):
+            review.append({"path": relative, "reason": "author_ids_misaligned"})
+            continue
         encoded = text.encode()
         entries.append(
             {
@@ -260,6 +265,18 @@ def apply_backfill(
             skipped += 1
             errors.append({"path": relative, "reason": "confidence_not_deterministic"})
             continue
+        raw_metadata = entry.get("metadata")
+        if isinstance(raw_metadata, dict) and "author_ids" in raw_metadata:
+            raw_authors = string_list(
+                raw_metadata.get("authors"), preserve_empty=True
+            )
+            raw_author_ids = string_list(
+                raw_metadata.get("author_ids"), preserve_empty=True
+            )
+            if len(raw_authors) != len(raw_author_ids):
+                skipped += 1
+                errors.append({"path": relative, "reason": "author_ids_misaligned"})
+                continue
         try:
             path = (root / relative).resolve(strict=True)
         except (OSError, RuntimeError):

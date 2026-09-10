@@ -44,6 +44,23 @@ def string_list(value: object, *, preserve_empty: bool = False) -> list[str]:
     return result
 
 
+def _aligned_author_values(
+    authors_value: object,
+    author_ids_value: object,
+) -> tuple[list[str], list[str]]:
+    """Normalise author/ID pairs without collapsing duplicate display names."""
+    raw_authors = string_list(authors_value, preserve_empty=True)
+    raw_ids = string_list(author_ids_value, preserve_empty=True)
+    authors: list[str] = []
+    author_ids: list[str] = []
+    for index, author in enumerate(raw_authors):
+        if not author:
+            continue
+        authors.append(author)
+        author_ids.append(raw_ids[index] if index < len(raw_ids) else "")
+    return authors, author_ids
+
+
 def normalise_doi(value: object) -> str:
     doi = str(value or "").strip()
     doi = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", doi, flags=re.I)
@@ -112,12 +129,13 @@ def author_candidate_terms(query: str) -> tuple[str, ...]:
 
 def author_search_text(authors: object, author_ids: object) -> str:
     terms: list[str] = []
-    for author in string_list(authors):
+    aligned_authors, aligned_ids = _aligned_author_values(authors, author_ids)
+    for author in aligned_authors:
         try:
             terms.extend(AuthorName.parse(author).aliases)
         except ValueError:
             continue
-    for value in string_list(author_ids):
+    for value in aligned_ids:
         if not value:
             continue
         terms.extend((value.casefold(), normalise_author_name(value)))
@@ -131,8 +149,7 @@ def match_indexed_author(
 ) -> tuple[str, str, bool] | None:
     """Return matched author, match type and ambiguity from structured fields only."""
     identity = AuthorName.parse(query)
-    authors = string_list(authors_value)
-    author_ids = string_list(author_ids_value, preserve_empty=True)
+    authors, author_ids = _aligned_author_values(authors_value, author_ids_value)
     if identity.orcid:
         for index, author_id in enumerate(author_ids):
             if author_id.upper() == identity.orcid:
@@ -154,14 +171,17 @@ def match_indexed_author(
 
 
 def article_result(row: dict, *, author: str = "") -> dict | None:
+    authors, author_ids = _aligned_author_values(
+        row.get("authors_json"), row.get("author_ids_json")
+    )
     matched_author = ""
     match_type = "identifier"
     ambiguous = False
     if author:
         match = match_indexed_author(
             author,
-            row.get("authors_json"),
-            row.get("author_ids_json"),
+            authors,
+            author_ids,
         )
         if match is None:
             return None
@@ -169,8 +189,8 @@ def article_result(row: dict, *, author: str = "") -> dict | None:
     return {
         "path": row.get("path") or "",
         "title": row.get("title") or "",
-        "authors": string_list(row.get("authors_json")),
-        "author_ids": string_list(row.get("author_ids_json"), preserve_empty=True),
+        "authors": authors,
+        "author_ids": author_ids,
         "matched_author": matched_author,
         "match_type": match_type,
         "ambiguous": ambiguous,
@@ -187,10 +207,13 @@ def normalise_bibliographic_metadata(metadata: dict | None) -> dict:
     """Whitelist and normalise values that may be written to frontmatter."""
     raw = metadata or {}
     result: dict = {}
-    for key in ("authors", "author_ids"):
-        values = string_list(raw.get(key), preserve_empty=(key == "author_ids"))
-        if values:
-            result[key] = values
+    authors, author_ids = _aligned_author_values(
+        raw.get("authors"), raw.get("author_ids")
+    )
+    if authors:
+        result["authors"] = authors
+        if "author_ids" in raw or any(author_ids):
+            result["author_ids"] = author_ids
 
     if doi := normalise_doi(raw.get("doi")):
         result["doi"] = doi
