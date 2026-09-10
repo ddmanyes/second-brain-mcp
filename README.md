@@ -48,12 +48,13 @@ The vault directory and templates are created on first run. Then tell your agent
 | `get_context` | Session start — goals + top-ranked notes + auto-rules |
 | `save_article` | URL / PDF → Markdown + figures + embeddings |
 | `search_notes` / `search_figures` | Hybrid BM25 + semantic search (note text / figure content) |
+| `search_articles` | Structured author, ORCID, DOI/PMID/PMCID and year search for papers |
 | `audit_article_records` | Bounded, read-only article housekeeping and social-source freshness report |
 | `new_note` / `update_note` / `append_to_note` | Create & edit notes (auto-filed, auto-indexed, auto-linked) |
 | `vault_sleep` | Compress old, low-activity notes |
 | `get_agent_instructions` | Serve the full filing SOP (AGENTS.md) to remote agents |
 
-Full tool reference (44 tools) lives in **[AGENTS.md](AGENTS.md)**.
+Full tool reference (45 tools) lives in **[AGENTS.md](AGENTS.md)**.
 
 Use `search_notes` when you need content, `health_check` when the server or index may be
 unhealthy, and `audit_article_records` when you need a housekeeping report. Audit results

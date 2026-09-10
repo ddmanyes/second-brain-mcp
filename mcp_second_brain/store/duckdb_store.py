@@ -140,6 +140,27 @@ class DuckDBStore:
     def search_news(self, query: str, days: int = 7, limit: int = 20) -> list[dict]:
         return vault_db.search_news(query, days, limit)
 
+    def search_articles(
+        self,
+        *,
+        author: str = "",
+        title: str = "",
+        doi: str = "",
+        pmid: str = "",
+        pmcid: str = "",
+        year: int = 0,
+        limit: int = 20,
+    ) -> list[dict]:
+        return vault_db.search_articles(
+            author=author,
+            title=title,
+            doi=doi,
+            pmid=pmid,
+            pmcid=pmcid,
+            year=year,
+            limit=limit,
+        )
+
     def search_figures(self, query: str, limit: int = 10) -> list[dict]:
         return vault_db.search_figures(query, limit)
 

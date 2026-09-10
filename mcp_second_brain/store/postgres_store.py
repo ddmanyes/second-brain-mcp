@@ -27,6 +27,12 @@ from psycopg_pool import ConnectionPool
 from dataclasses import dataclass
 
 from ..note_row import project_note, FRONTMATTER_RE, NoteRow
+from ..article_metadata import (
+    article_result,
+    author_candidate_terms,
+    normalise_author_name,
+    normalise_doi,
+)
 
 # vault_db still owns the embedding client and the vault schema validator, plus the
 # pure vector helpers (_cosine, _path_penalty). Those don't touch DuckDB.
@@ -255,10 +261,14 @@ class PostgresStore:
             INSERT INTO notes (
                 path, title, note_type, status, tags, note_date,
                 content_hash, body_snippet, embedding, violations,
-                semantic_keywords, neighbor_keywords, cluster_topic
+                semantic_keywords, neighbor_keywords, cluster_topic,
+                authors, author_ids, author_search, doi, pmid, pmcid,
+                journal, publication_year, canonical_url
             ) VALUES (
                 %s, %s, %s, %s, %s, %s,
                 %s, %s, %s::vector, %s,
+                %s, %s, %s,
+                %s, %s, %s, %s, %s, %s,
                 %s, %s, %s
             )
             ON CONFLICT (path) DO UPDATE SET
@@ -273,7 +283,16 @@ class PostgresStore:
                 violations         = EXCLUDED.violations,
                 semantic_keywords  = COALESCE(EXCLUDED.semantic_keywords, notes.semantic_keywords),
                 neighbor_keywords  = COALESCE(EXCLUDED.neighbor_keywords, notes.neighbor_keywords),
-                cluster_topic      = COALESCE(EXCLUDED.cluster_topic, notes.cluster_topic)
+                cluster_topic      = COALESCE(EXCLUDED.cluster_topic, notes.cluster_topic),
+                authors            = EXCLUDED.authors,
+                author_ids         = EXCLUDED.author_ids,
+                author_search      = EXCLUDED.author_search,
+                doi                = EXCLUDED.doi,
+                pmid               = EXCLUDED.pmid,
+                pmcid              = EXCLUDED.pmcid,
+                journal            = EXCLUDED.journal,
+                publication_year   = EXCLUDED.publication_year,
+                canonical_url      = EXCLUDED.canonical_url
             """,
             [
                 note.path,
@@ -289,6 +308,15 @@ class PostgresStore:
                 note.semantic_keywords,
                 note.neighbor_keywords,
                 note.cluster_topic,
+                note.authors_json,
+                note.author_ids_json,
+                note.author_search,
+                note.doi,
+                note.pmid,
+                note.pmcid,
+                note.journal,
+                note.publication_year,
+                note.canonical_url,
             ],
         )
 
@@ -1016,6 +1044,89 @@ class PostgresStore:
                 {"path": r[0], "title": r[1], "score": float(r[2]), "date": str(r[3])}
                 for r in rows
             ]
+
+    def search_articles(
+        self,
+        *,
+        author: str = "",
+        title: str = "",
+        doi: str = "",
+        pmid: str = "",
+        pmcid: str = "",
+        year: int = 0,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Search structured article metadata without body/reference false positives."""
+        if not any((author, title, doi, pmid, pmcid, year)):
+            return []
+        clauses = [
+            "(note_type = 'research' OR authors IS NOT NULL OR doi IS NOT NULL "
+            "OR pmid IS NOT NULL OR pmcid IS NOT NULL)"
+        ]
+        params: list[object] = []
+        if author:
+            try:
+                terms = author_candidate_terms(author)
+            except ValueError:
+                return []
+            clauses.append(
+                "(" + " OR ".join(
+                    "COALESCE(author_search, '') ILIKE %s" for _ in terms
+                ) + ")"
+            )
+            params.extend(f"%{normalise_author_name(term)}%" for term in terms)
+        if title:
+            clauses.append("COALESCE(title, '') ILIKE %s")
+            params.append(f"%{title}%")
+        if doi:
+            clauses.append("lower(COALESCE(doi, '')) = %s")
+            params.append(normalise_doi(doi))
+        if pmid:
+            clauses.append("COALESCE(pmid, '') = %s")
+            params.append("".join(char for char in pmid if char.isdigit()))
+        if pmcid:
+            canonical_pmcid = pmcid.strip().upper()
+            if canonical_pmcid and not canonical_pmcid.startswith("PMC"):
+                canonical_pmcid = f"PMC{canonical_pmcid}"
+            clauses.append("upper(COALESCE(pmcid, '')) = %s")
+            params.append(canonical_pmcid)
+        if year:
+            clauses.append("publication_year = %s")
+            params.append(year)
+
+        params.append(max(limit * 10, 100))
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT path, title, authors, author_ids, doi, pmid, pmcid,
+                       journal, publication_year, canonical_url
+                FROM notes
+                WHERE {' AND '.join(clauses)}
+                ORDER BY publication_year DESC NULLS LAST, title
+                LIMIT %s
+                """,
+                params,
+            ).fetchall()
+
+        keys = (
+            "path", "title", "authors_json", "author_ids_json", "doi", "pmid",
+            "pmcid", "journal", "publication_year", "canonical_url",
+        )
+        results = [
+            result
+            for row in rows
+            if (result := article_result(dict(zip(keys, row, strict=True)), author=author))
+            is not None
+        ]
+        rank = {"orcid": 4, "full_name": 3, "alias": 2, "surname": 1, "identifier": 0}
+        results.sort(
+            key=lambda item: (
+                -rank.get(str(item["match_type"]), 0),
+                -(int(item["publication_year"] or 0)),
+                str(item["title"]),
+            )
+        )
+        return results[:limit]
 
     def search_figures(self, query: str, limit: int = 10) -> list[dict]:
         words = query.lower().split()

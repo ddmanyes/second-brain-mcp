@@ -658,6 +658,78 @@ def search_notes(query: str) -> str:
     return f"Found {len(hits)} note(s):\n\n" + "\n".join(lines)
 
 
+class SearchArticlesResult(TypedDict):
+    filters: dict[str, object]
+    count: int
+    results: list[dict[str, object]]
+    message: str
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+    structured_output=True,
+)
+def search_articles(
+    author: str = "",
+    title: str = "",
+    doi: str = "",
+    pmid: str = "",
+    pmcid: str = "",
+    year: Annotated[int, Field(ge=0, le=2200)] = 0,
+    limit: Annotated[int, Field(ge=1, le=100)] = 20,
+) -> SearchArticlesResult:
+    """Search article-only structured bibliography fields.
+
+    Use this instead of search_notes when asking for papers by an author. Author
+    matching is based only on article frontmatter, never body text or references.
+    Full names, surname-first initials and ORCID are supported. A surname-only
+    result is marked ambiguous and must not be treated as identity resolution.
+    """
+    filters: dict[str, object] = {
+        "author": author,
+        "title": title,
+        "doi": doi,
+        "pmid": pmid,
+        "pmcid": pmcid,
+        "year": year,
+    }
+    if not any(filters.values()):
+        return {
+            "filters": filters,
+            "count": 0,
+            "results": [],
+            "message": "Provide at least one author, title, DOI, PMID, PMCID or year filter.",
+        }
+    try:
+        results = _store.search_articles(
+            author=author,
+            title=title,
+            doi=doi,
+            pmid=pmid,
+            pmcid=pmcid,
+            year=year,
+            limit=limit,
+        )
+    except Exception as error:
+        return {
+            "filters": filters,
+            "count": 0,
+            "results": [],
+            "message": f"Article index unavailable: {error}",
+        }
+    return {
+        "filters": filters,
+        "count": len(results),
+        "results": results,
+        "message": "" if results else "No structured article metadata matched.",
+    }
+
+
 @mcp.tool()
 def search_snippets(query: str, top_k: int = 8) -> str:
     """Precise localization: return the VERBATIM source sentence from each of the most relevant

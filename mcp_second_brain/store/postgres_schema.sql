@@ -28,9 +28,28 @@ CREATE TABLE IF NOT EXISTS notes (
     cluster_topic       TEXT,
     violations          TEXT,
     rules_extracted_at  TIMESTAMP,
+    authors             TEXT,
+    author_ids          TEXT,
+    author_search       TEXT,
+    doi                 TEXT,
+    pmid                TEXT,
+    pmcid                TEXT,
+    journal             TEXT,
+    publication_year    INTEGER,
+    canonical_url       TEXT,
     embedding           vector(1024)     -- bge-m3-Q8_0 (1024d). Must equal vault_db.EMBED_DIM;
                                          -- tests/test_embedding_dim.py pins the two together.
 );
+
+ALTER TABLE notes ADD COLUMN IF NOT EXISTS authors TEXT;
+ALTER TABLE notes ADD COLUMN IF NOT EXISTS author_ids TEXT;
+ALTER TABLE notes ADD COLUMN IF NOT EXISTS author_search TEXT;
+ALTER TABLE notes ADD COLUMN IF NOT EXISTS doi TEXT;
+ALTER TABLE notes ADD COLUMN IF NOT EXISTS pmid TEXT;
+ALTER TABLE notes ADD COLUMN IF NOT EXISTS pmcid TEXT;
+ALTER TABLE notes ADD COLUMN IF NOT EXISTS journal TEXT;
+ALTER TABLE notes ADD COLUMN IF NOT EXISTS publication_year INTEGER;
+ALTER TABLE notes ADD COLUMN IF NOT EXISTS canonical_url TEXT;
 
 -- ---------------------------------------------------------------------------
 -- figures — extracted figures from PDFs / notes
@@ -97,6 +116,10 @@ CREATE INDEX IF NOT EXISTS idx_note_date     ON notes(note_date DESC NULLS LAST)
 CREATE INDEX IF NOT EXISTS idx_note_type     ON notes(note_type);
 CREATE INDEX IF NOT EXISTS idx_status        ON notes(status);
 CREATE INDEX IF NOT EXISTS idx_figures_note  ON figures(note_path);
+CREATE INDEX IF NOT EXISTS idx_notes_doi      ON notes(doi);
+CREATE INDEX IF NOT EXISTS idx_notes_pmid     ON notes(pmid);
+CREATE INDEX IF NOT EXISTS idx_notes_pmcid    ON notes(pmcid);
+CREATE INDEX IF NOT EXISTS idx_notes_pub_year ON notes(publication_year);
 
 -- ---------------------------------------------------------------------------
 -- Keyword / FTS indexes
@@ -113,6 +136,9 @@ CREATE INDEX IF NOT EXISTS idx_notes_trgm ON notes USING gin(
         COALESCE(neighbor_keywords, '') || ' ' ||
         COALESCE(cluster_topic, '')
     ) gin_trgm_ops
+);
+CREATE INDEX IF NOT EXISTS idx_notes_author_trgm ON notes USING gin(
+    (COALESCE(author_search, '')) gin_trgm_ops
 );
 
 -- tsvector GIN — English BM25-ish ranking via ts_rank.

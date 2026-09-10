@@ -139,6 +139,22 @@ class TestBasicOps:
         snaps = store.get_notes_with_snapshots()
         assert "note1.md" in snaps
 
+    def test_structured_article_author_search(self, store, vault):
+        paper = vault / "paper.md"
+        paper.write_text(
+            '---\ntitle: Hair Biology\ntype: research\nstatus: active\ntags: [research]\n'
+            'authors: ["Sung-Jan Lin"]\n'
+            'author_ids: ["0000-0002-1825-0097"]\n'
+            'doi: "10.1000/lin"\npublication_year: 2024\n---\n\nbody',
+            encoding="utf-8",
+        )
+        store.index_file(vault, paper)
+
+        hits = store.search_articles(author="Lin SJ")
+
+        assert hits[0]["path"] == "paper.md"
+        assert hits[0]["matched_author"] == "Sung-Jan Lin"
+
 
 # ---------------------------------------------------------------------------
 # sync_all

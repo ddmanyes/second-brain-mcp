@@ -160,6 +160,29 @@ class TestProjectNote:
         assert row.tags_json == "[a, b]"
         assert row.body_snippet == "hello"
 
+    def test_projects_structured_bibliographic_fields(self, vault):
+        text = (
+            '---\ntitle: Paper\ntype: research\nstatus: active\ntags: [research]\n'
+            'authors: ["Sung-Jan Lin", "Ada Lovelace"]\n'
+            'author_ids: ["0000-0002-1825-0097", ""]\n'
+            'doi: "10.1000/test"\npmid: "123456"\npmcid: "PMC12345"\n'
+            'journal: "Journal of Tests"\npublication_year: 2024\n'
+            'canonical_url: "https://example.test/paper"\n---\n\nbody'
+        )
+        row = project_note(vault, _write(vault, "paper.md", text))
+
+        assert json.loads(row.authors_json) == ["Sung-Jan Lin", "Ada Lovelace"]
+        assert json.loads(row.author_ids_json) == ["0000-0002-1825-0097", ""]
+        assert "lin sj" in row.author_search
+        assert "sj lin" in row.author_search
+        assert "0000-0002-1825-0097" in row.author_search
+        assert row.doi == "10.1000/test"
+        assert row.pmid == "123456"
+        assert row.pmcid == "PMC12345"
+        assert row.journal == "Journal of Tests"
+        assert row.publication_year == 2024
+        assert row.canonical_url == "https://example.test/paper"
+
     def test_title_falls_back_to_stem(self, vault):
         f = _write(vault, "bare.md", "no frontmatter here")
         assert project_note(vault, f).title == "bare"

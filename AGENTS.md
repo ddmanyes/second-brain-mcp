@@ -14,7 +14,7 @@
 
 Second Brain is a personal knowledge management server that exposes vault read/write, search, archiving, and maintenance via MCP.
 
-- **MCP server**: `server.py` (44 tools — see Tool Reference; keep this count in sync when adding/removing tools)
+- **MCP server**: `server.py` (45 tools — see Tool Reference; keep this count in sync when adding/removing tools)
 - **Index backend**: pluggable `VaultStore` (`store/`), selected by `SB_DB_BACKEND`:
   - `postgres` (central brain) — `store/postgres_store.py`, Postgres 16 + pgvector + pg_trgm, connection-pooled, multi-machine concurrent read/write via MVCC.
   - `duckdb` (default / offline fallback) — `store/duckdb_store.py` wrapping `vault_db.py`.
@@ -72,6 +72,7 @@ Postgres directly.
 | "Update this note / rewrite content" | `update_note(path, content)` | Overwrites entire note; read first to confirm structure |
 | "Add to / append progress" | `append_to_note(path, content)` | Safe append, preserves existing content |
 | "Search for X" | `search_notes(query)` | Semantic search; wrap in quotes for exact match |
+| "Find papers by author / DOI / PMID" | `search_articles(author, doi, pmid, pmcid, year)` | Structured article metadata only; surname-only matches are marked ambiguous |
 | "Show grouped search results" | `search_grouped(query)` | Results grouped by note type |
 | "Search news / recent articles" | `search_news_tool(query, days)` | Default: last 7 days |
 | "Audit article housekeeping" | `audit_article_records(scope, limit, stale_after_days)` | Read-only, bounded report for metadata, links, exact duplicate candidates, overdue inbox, and social-source state |

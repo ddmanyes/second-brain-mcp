@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
+from dataclasses import dataclass
 from datetime import date
 
 FIELDS = (
@@ -18,7 +20,10 @@ FIELDS = (
 )
 
 
-def _string_list(value: object) -> list[str]:
+_ORCID_RE = re.compile(r"^(?:https?://orcid\.org/)?(\d{4}-\d{4}-\d{4}-\d{3}[\dXx])$")
+
+
+def string_list(value: object, *, preserve_empty: bool = False) -> list[str]:
     if isinstance(value, str):
         try:
             decoded = json.loads(value)
@@ -32,9 +37,150 @@ def _string_list(value: object) -> list[str]:
     result: list[str] = []
     for item in values:
         text = " ".join(str(item or "").split())
-        if text and text not in result:
+        if preserve_empty:
+            result.append(text)
+        elif text and text not in result:
             result.append(text)
     return result
+
+
+def normalise_doi(value: object) -> str:
+    doi = str(value or "").strip()
+    doi = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", doi, flags=re.I)
+    return doi.rstrip(".").lower()
+
+
+def normalise_author_name(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", str(value or ""))
+    unmarked = "".join(char for char in decomposed if not unicodedata.combining(char))
+    folded = unmarked.casefold().replace("’", "'")
+    return " ".join("".join(char if char.isalnum() else " " for char in folded).split())
+
+
+def _is_initials_token(value: str) -> bool:
+    letters = "".join(char for char in value if char.isalpha())
+    return bool(letters) and len(letters) <= 4 and (letters.isupper() or "." in value)
+
+
+@dataclass(frozen=True)
+class AuthorName:
+    requested: str
+    surname: str
+    given_names: tuple[str, ...]
+    aliases: tuple[str, ...]
+    orcid: str = ""
+
+    @classmethod
+    def parse(cls, value: str) -> AuthorName:
+        requested = " ".join(str(value or "").split())
+        if not requested:
+            raise ValueError("author is required")
+        if match := _ORCID_RE.fullmatch(requested):
+            return cls(requested, "", (), (), match.group(1).upper())
+
+        if "," in requested:
+            surname_raw, given_raw = requested.split(",", 1)
+            surname_tokens = normalise_author_name(surname_raw).split()
+            given_tokens = normalise_author_name(given_raw).split()
+        else:
+            raw_tokens = requested.split()
+            tokens = normalise_author_name(requested).split()
+            if len(tokens) == 1:
+                surname_tokens, given_tokens = tokens, []
+            elif len(raw_tokens) == 2 and _is_initials_token(raw_tokens[-1]):
+                surname_tokens = normalise_author_name(raw_tokens[0]).split()
+                given_tokens = normalise_author_name(raw_tokens[1]).split()
+            else:
+                surname_tokens, given_tokens = tokens[-1:], tokens[:-1]
+
+        surname = " ".join(surname_tokens)
+        initials = "".join(token[0] for token in given_tokens if token)
+        values = (
+            " ".join((*given_tokens, *surname_tokens)),
+            " ".join((*surname_tokens, *given_tokens)),
+            f"{surname} {initials}",
+            f"{initials} {surname}",
+        )
+        aliases = tuple(dict.fromkeys(v.strip() for v in values if v.strip()))
+        return cls(requested, surname, tuple(given_tokens), aliases)
+
+
+def author_candidate_terms(query: str) -> tuple[str, ...]:
+    identity = AuthorName.parse(query)
+    return (identity.orcid,) if identity.orcid else identity.aliases
+
+
+def author_search_text(authors: object, author_ids: object) -> str:
+    terms: list[str] = []
+    for author in string_list(authors):
+        try:
+            terms.extend(AuthorName.parse(author).aliases)
+        except ValueError:
+            continue
+    for value in string_list(author_ids):
+        if not value:
+            continue
+        terms.extend((value.casefold(), normalise_author_name(value)))
+    return " | ".join(dict.fromkeys(terms))
+
+
+def match_indexed_author(
+    query: str,
+    authors_value: object,
+    author_ids_value: object,
+) -> tuple[str, str, bool] | None:
+    """Return matched author, match type and ambiguity from structured fields only."""
+    identity = AuthorName.parse(query)
+    authors = string_list(authors_value)
+    author_ids = string_list(author_ids_value, preserve_empty=True)
+    if identity.orcid:
+        for index, author_id in enumerate(author_ids):
+            if author_id.upper() == identity.orcid:
+                author = authors[index] if index < len(authors) else ""
+                return author, "orcid", False
+        return None
+
+    for author in authors:
+        candidate = AuthorName.parse(author)
+        if not identity.given_names:
+            if identity.surname == candidate.surname:
+                return author, "surname", True
+            continue
+        if normalise_author_name(identity.requested) == normalise_author_name(author):
+            return author, "full_name", False
+        if set(identity.aliases) & set(candidate.aliases):
+            return author, "alias", False
+    return None
+
+
+def article_result(row: dict, *, author: str = "") -> dict | None:
+    matched_author = ""
+    match_type = "identifier"
+    ambiguous = False
+    if author:
+        match = match_indexed_author(
+            author,
+            row.get("authors_json"),
+            row.get("author_ids_json"),
+        )
+        if match is None:
+            return None
+        matched_author, match_type, ambiguous = match
+    return {
+        "path": row.get("path") or "",
+        "title": row.get("title") or "",
+        "authors": string_list(row.get("authors_json")),
+        "author_ids": string_list(row.get("author_ids_json"), preserve_empty=True),
+        "matched_author": matched_author,
+        "match_type": match_type,
+        "ambiguous": ambiguous,
+        "doi": row.get("doi") or "",
+        "pmid": row.get("pmid") or "",
+        "pmcid": row.get("pmcid") or "",
+        "journal": row.get("journal") or "",
+        "publication_year": row.get("publication_year"),
+        "canonical_url": row.get("canonical_url") or "",
+    }
 
 
 def normalise_bibliographic_metadata(metadata: dict | None) -> dict:
@@ -42,13 +188,11 @@ def normalise_bibliographic_metadata(metadata: dict | None) -> dict:
     raw = metadata or {}
     result: dict = {}
     for key in ("authors", "author_ids"):
-        values = _string_list(raw.get(key))
+        values = string_list(raw.get(key), preserve_empty=(key == "author_ids"))
         if values:
             result[key] = values
 
-    doi = str(raw.get("doi") or "").strip()
-    doi = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", doi, flags=re.I)
-    if doi := doi.rstrip(".").lower():
+    if doi := normalise_doi(raw.get("doi")):
         result["doi"] = doi
 
     pmid = "".join(c for c in str(raw.get("pmid") or "") if c.isdigit())

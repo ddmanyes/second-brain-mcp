@@ -153,6 +153,20 @@ class VaultStore(Protocol):
         """Search cnyes_archive notes within the last N days."""
         ...
 
+    def search_articles(
+        self,
+        *,
+        author: str = "",
+        title: str = "",
+        doi: str = "",
+        pmid: str = "",
+        pmcid: str = "",
+        year: int = 0,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Search article-only structured bibliographic fields."""
+        ...
+
     def search_figures(self, query: str, limit: int = 10) -> list[dict]:
         """Search figures by OCR text or description."""
         ...

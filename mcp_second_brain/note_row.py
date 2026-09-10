@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from .article_metadata import author_search_text, normalise_bibliographic_metadata
 from .snippets import strip_references
 
 __all__ = [
@@ -176,6 +177,15 @@ class NoteRow:
     semantic_keywords: str | None
     neighbor_keywords: str | None
     cluster_topic: str | None
+    authors_json: str | None
+    author_ids_json: str | None
+    author_search: str | None
+    doi: str | None
+    pmid: str | None
+    pmcid: str | None
+    journal: str | None
+    publication_year: int | None
+    canonical_url: str | None
 
 
 def project_note(
@@ -238,6 +248,9 @@ def project_note(
             vec = None
 
     violations = validate(fm, rel) if validate is not None else []
+    bibliography = normalise_bibliographic_metadata(fm)
+    authors = bibliography.get("authors", [])
+    author_ids = bibliography.get("author_ids", [])
 
     return NoteRow(
         path=rel,
@@ -253,4 +266,15 @@ def project_note(
         semantic_keywords=normalise_keyword_list(fm.get("semantic_keywords", "")),
         neighbor_keywords=normalise_keyword_list(fm.get("neighbor_keywords", "")),
         cluster_topic=fm.get("cluster_topic", None) or None,
+        authors_json=(json.dumps(authors, ensure_ascii=False) if authors else None),
+        author_ids_json=(
+            json.dumps(author_ids, ensure_ascii=False) if author_ids else None
+        ),
+        author_search=author_search_text(authors, author_ids) or None,
+        doi=bibliography.get("doi"),
+        pmid=bibliography.get("pmid"),
+        pmcid=bibliography.get("pmcid"),
+        journal=bibliography.get("journal"),
+        publication_year=bibliography.get("publication_year"),
+        canonical_url=bibliography.get("canonical_url"),
     )

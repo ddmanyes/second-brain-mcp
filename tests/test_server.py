@@ -94,6 +94,55 @@ class TestSyncNotesMCPContract:
         store.index_file.assert_not_called()
 
 
+class TestSearchArticlesMCPContract:
+    TOOL_NAME = "search_articles"
+
+    def test_is_registered_as_bounded_read_only_structured_tool(self):
+        from mcp_second_brain import server
+
+        tool = _mcp_tool(server, self.TOOL_NAME)
+        assert tool.annotations is not None
+        assert tool.annotations.readOnlyHint is True
+        assert tool.inputSchema["properties"]["limit"]["maximum"] == 100
+        assert tool.outputSchema is not None
+
+    def test_routes_filters_to_the_store_and_returns_structured_results(
+        self, monkeypatch
+    ):
+        from mcp_second_brain import server
+
+        store = MagicMock()
+        store.search_articles.return_value = [
+            {
+                "path": "20-areas/research/paper.md",
+                "title": "Paper",
+                "matched_author": "Sung-Jan Lin",
+                "match_type": "alias",
+                "ambiguous": False,
+            }
+        ]
+        monkeypatch.setattr(server, "_store", store)
+
+        content, structured = _call_mcp(
+            server,
+            self.TOOL_NAME,
+            {"author": "Lin SJ", "year": 2024, "limit": 5},
+        )
+
+        store.search_articles.assert_called_once_with(
+            author="Lin SJ",
+            title="",
+            doi="",
+            pmid="",
+            pmcid="",
+            year=2024,
+            limit=5,
+        )
+        assert structured["count"] == 1
+        assert structured["results"][0]["matched_author"] == "Sung-Jan Lin"
+        assert json.loads(content[0].text) == structured
+
+
 # ---------------------------------------------------------------------------
 # Article housekeeping — audit_article_records MCP contract
 # ---------------------------------------------------------------------------
@@ -418,7 +467,7 @@ class TestSaveArticleBibliographicMetadata:
             filename="2024_Lin_Paper",
             metadata={
                 "authors": ["Sung-Jan Lin", "Ada Lovelace"],
-                "author_ids": ["0000-0002-1825-0097"],
+                "author_ids": ["0000-0002-1825-0097", ""],
                 "doi": "https://doi.org/10.1000/TEST.",
                 "pmid": "123456",
                 "pmcid": "12345",
@@ -433,7 +482,7 @@ class TestSaveArticleBibliographicMetadata:
         text = note.read_text(encoding="utf-8")
         assert result.startswith("Saved:")
         assert 'authors: ["Sung-Jan Lin", "Ada Lovelace"]' in text
-        assert 'author_ids: ["0000-0002-1825-0097"]' in text
+        assert 'author_ids: ["0000-0002-1825-0097", ""]' in text
         assert 'doi: "10.1000/test"' in text
         assert 'pmid: "123456"' in text
         assert 'pmcid: "PMC12345"' in text

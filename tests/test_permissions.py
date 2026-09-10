@@ -57,6 +57,7 @@ EXPECTED_WRITE_TOOLS = sorted([
 
 READ_TOOLS = [
     "search_notes",
+    "search_articles",
     "read_note",
     "get_context",
     "find_related_notes",

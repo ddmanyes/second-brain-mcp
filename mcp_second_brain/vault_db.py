@@ -19,6 +19,12 @@ from pathlib import Path
 import duckdb
 
 from . import note_row as _note_row
+from .article_metadata import (
+    article_result,
+    author_candidate_terms,
+    normalise_author_name,
+    normalise_doi,
+)
 
 # ---------------------------------------------------------------------------
 # Embedding config (Phase 6)
@@ -67,7 +73,16 @@ CREATE TABLE IF NOT EXISTS notes (
     snapshot_path     TEXT,
     snapshot_tier     TEXT,
     snapshot_token_est INTEGER,
-    semantic_keywords TEXT
+    semantic_keywords TEXT,
+    authors           TEXT,
+    author_ids        TEXT,
+    author_search     TEXT,
+    doi               TEXT,
+    pmid              TEXT,
+    pmcid              TEXT,
+    journal           TEXT,
+    publication_year  INTEGER,
+    canonical_url     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS figures (
@@ -111,6 +126,15 @@ _MIGRATIONS = [
     "ALTER TABLE notes ADD COLUMN IF NOT EXISTS semantic_keywords TEXT",       # Phase 12
     "ALTER TABLE notes ADD COLUMN IF NOT EXISTS neighbor_keywords TEXT",      # Phase 13
     "ALTER TABLE notes ADD COLUMN IF NOT EXISTS cluster_topic TEXT",          # Phase 13
+    "ALTER TABLE notes ADD COLUMN IF NOT EXISTS authors TEXT",
+    "ALTER TABLE notes ADD COLUMN IF NOT EXISTS author_ids TEXT",
+    "ALTER TABLE notes ADD COLUMN IF NOT EXISTS author_search TEXT",
+    "ALTER TABLE notes ADD COLUMN IF NOT EXISTS doi TEXT",
+    "ALTER TABLE notes ADD COLUMN IF NOT EXISTS pmid TEXT",
+    "ALTER TABLE notes ADD COLUMN IF NOT EXISTS pmcid TEXT",
+    "ALTER TABLE notes ADD COLUMN IF NOT EXISTS journal TEXT",
+    "ALTER TABLE notes ADD COLUMN IF NOT EXISTS publication_year INTEGER",
+    "ALTER TABLE notes ADD COLUMN IF NOT EXISTS canonical_url TEXT",
     "ALTER TABLE figures ADD COLUMN IF NOT EXISTS caption TEXT",              # PDF pipeline Phase 2.5c
 ]
 
@@ -371,8 +395,10 @@ def upsert_note(con: duckdb.DuckDBPyConnection, vault: Path, md_file: Path) -> N
         """
         INSERT INTO notes (path, title, note_type, status, tags, note_date,
                            content_hash, body_snippet, embedding, violations,
-                           semantic_keywords, neighbor_keywords, cluster_topic)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           semantic_keywords, neighbor_keywords, cluster_topic,
+                           authors, author_ids, author_search, doi, pmid, pmcid,
+                           journal, publication_year, canonical_url)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (path) DO UPDATE SET
             title              = excluded.title,
             note_type          = excluded.note_type,
@@ -385,7 +411,16 @@ def upsert_note(con: duckdb.DuckDBPyConnection, vault: Path, md_file: Path) -> N
             violations         = excluded.violations,
             semantic_keywords  = COALESCE(excluded.semantic_keywords, notes.semantic_keywords),
             neighbor_keywords  = COALESCE(excluded.neighbor_keywords, notes.neighbor_keywords),
-            cluster_topic      = COALESCE(excluded.cluster_topic, notes.cluster_topic)
+            cluster_topic      = COALESCE(excluded.cluster_topic, notes.cluster_topic),
+            authors            = excluded.authors,
+            author_ids         = excluded.author_ids,
+            author_search      = excluded.author_search,
+            doi                = excluded.doi,
+            pmid               = excluded.pmid,
+            pmcid              = excluded.pmcid,
+            journal            = excluded.journal,
+            publication_year   = excluded.publication_year,
+            canonical_url      = excluded.canonical_url
             -- snapshot fields managed by update_snapshot(), not here
         """,
         [
@@ -402,6 +437,15 @@ def upsert_note(con: duckdb.DuckDBPyConnection, vault: Path, md_file: Path) -> N
             note.semantic_keywords,
             note.neighbor_keywords,
             note.cluster_topic,
+            note.authors_json,
+            note.author_ids_json,
+            note.author_search,
+            note.doi,
+            note.pmid,
+            note.pmcid,
+            note.journal,
+            note.publication_year,
+            note.canonical_url,
         ],  # last_accessed intentionally omitted; set only by record_access()
     )
 
@@ -944,6 +988,88 @@ def hybrid_search(
 
     combined.sort(key=lambda x: x["score"], reverse=True)
     return combined[:limit]
+
+
+def search_articles(
+    *,
+    author: str = "",
+    title: str = "",
+    doi: str = "",
+    pmid: str = "",
+    pmcid: str = "",
+    year: int = 0,
+    limit: int = 20,
+) -> list[dict]:
+    """Search structured article metadata without matching body or references."""
+    if not any((author, title, doi, pmid, pmcid, year)):
+        return []
+    clauses = [
+        "(note_type = 'research' OR authors IS NOT NULL OR doi IS NOT NULL "
+        "OR pmid IS NOT NULL OR pmcid IS NOT NULL)"
+    ]
+    params: list[object] = []
+    if author:
+        try:
+            terms = author_candidate_terms(author)
+        except ValueError:
+            return []
+        clauses.append(
+            "(" + " OR ".join("lower(COALESCE(author_search, '')) LIKE ?" for _ in terms) + ")"
+        )
+        params.extend(f"%{normalise_author_name(term)}%" for term in terms)
+    if title:
+        clauses.append("lower(COALESCE(title, '')) LIKE ?")
+        params.append(f"%{title.casefold()}%")
+    if doi:
+        clauses.append("lower(COALESCE(doi, '')) = ?")
+        params.append(normalise_doi(doi))
+    if pmid:
+        clauses.append("COALESCE(pmid, '') = ?")
+        params.append("".join(char for char in pmid if char.isdigit()))
+    if pmcid:
+        canonical_pmcid = pmcid.strip().upper()
+        if canonical_pmcid and not canonical_pmcid.startswith("PMC"):
+            canonical_pmcid = f"PMC{canonical_pmcid}"
+        clauses.append("upper(COALESCE(pmcid, '')) = ?")
+        params.append(canonical_pmcid)
+    if year:
+        clauses.append("publication_year = ?")
+        params.append(year)
+
+    candidate_limit = max(limit * 10, 100)
+    params.append(candidate_limit)
+    with _connect() as con:
+        rows = con.execute(
+            f"""
+            SELECT path, title, authors, author_ids, doi, pmid, pmcid,
+                   journal, publication_year, canonical_url
+            FROM notes
+            WHERE {' AND '.join(clauses)}
+            ORDER BY publication_year DESC NULLS LAST, title
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+
+    keys = (
+        "path", "title", "authors_json", "author_ids_json", "doi", "pmid",
+        "pmcid", "journal", "publication_year", "canonical_url",
+    )
+    results = [
+        result
+        for row in rows
+        if (result := article_result(dict(zip(keys, row, strict=True)), author=author))
+        is not None
+    ]
+    rank = {"orcid": 4, "full_name": 3, "alias": 2, "surname": 1, "identifier": 0}
+    results.sort(
+        key=lambda item: (
+            -rank.get(str(item["match_type"]), 0),
+            -(int(item["publication_year"] or 0)),
+            str(item["title"]),
+        )
+    )
+    return results[:limit]
 
 
 def search_news(query: str, days: int = 7, limit: int = 20) -> list[dict]:
