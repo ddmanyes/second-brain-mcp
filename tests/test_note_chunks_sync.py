@@ -8,8 +8,10 @@ pipeline (chunking.py + late_chunking.py) has its own dedicated test suites
 (test_chunking.py, test_late_chunking.py) plus live-server verification
 documented in the plan's Phase B execution notes.
 """
+
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 
@@ -26,6 +28,12 @@ if TEST_DSN.rsplit("/", 1)[-1] in {"sb_personal", "sb_lab"}:
     )
 
 FM = "---\ntitle: T\ntype: note\nstatus: active\ntags: []\n---\n\n"
+
+
+def test_postgres_store_exposes_metadata_only_index_contract():
+    from mcp_second_brain.store.postgres_store import PostgresStore
+
+    assert callable(getattr(PostgresStore, "index_metadata_only"))
 
 
 @pytest.fixture(scope="module")
@@ -171,6 +179,108 @@ class TestSyncChunksForNote:
         store.sync_all(vault)  # reconciliation deletes the notes row -> ON DELETE CASCADE
 
         assert _chunk_texts(store, "note6.md") == []
+
+    def test_metadata_only_index_preserves_embeddings_and_advances_chunk_hash(
+        self, store, vault, monkeypatch
+    ):
+        """An author-only frontmatter update must not call either embedder."""
+        _patch_fake(monkeypatch)
+        monkeypatch.setattr(
+            "mcp_second_brain.store.postgres_store._vdb.embed_text",
+            lambda text: [0.25] + [0.0] * 1023,
+        )
+        f = vault / "metadata-only.md"
+        original = FM + "body whose vectors remain valid"
+        f.write_text(original, encoding="utf-8")
+        store.index_file(vault, f)
+
+        with store._pool.connection() as conn:
+            before_note = conn.execute(
+                "SELECT embedding::text FROM notes WHERE path = %s", [f.name]
+            ).fetchone()
+            before_chunks = conn.execute(
+                "SELECT chunk_idx, chunk_text, embedding::text "
+                "FROM note_chunks WHERE note_path = %s ORDER BY chunk_idx",
+                [f.name],
+            ).fetchall()
+
+        def unexpected_embed(*args, **kwargs):
+            raise AssertionError("metadata-only indexing called an embedder")
+
+        monkeypatch.setattr(
+            "mcp_second_brain.store.postgres_store._vdb.embed_text", unexpected_embed
+        )
+        monkeypatch.setattr(
+            "mcp_second_brain.store.postgres_store.chunk_and_embed", unexpected_embed
+        )
+        updated = original.replace(
+            "status: active\n", 'status: active\nauthors: ["Sung-Jan Lin"]\n'
+        )
+        f.write_text(updated, encoding="utf-8")
+
+        from mcp_second_brain.note_row import FRONTMATTER_RE, content_hash
+
+        expected_body_sha256 = hashlib.sha256(
+            FRONTMATTER_RE.sub("", updated, count=1).encode()
+        ).hexdigest()
+        store.index_metadata_only(
+            vault,
+            f,
+            previous_content_hash=content_hash(original),
+            expected_body_sha256=expected_body_sha256,
+        )
+
+        with store._pool.connection() as conn:
+            after_note = conn.execute(
+                "SELECT authors, content_hash, embedding::text FROM notes WHERE path = %s",
+                [f.name],
+            ).fetchone()
+            after_chunks = conn.execute(
+                "SELECT chunk_idx, chunk_text, content_hash, embedding::text "
+                "FROM note_chunks WHERE note_path = %s ORDER BY chunk_idx",
+                [f.name],
+            ).fetchall()
+        assert after_note[0] == '["Sung-Jan Lin"]'
+        assert after_note[1] == content_hash(updated)
+        assert after_note[2] == before_note[0]
+        assert [(row[0], row[1], row[3]) for row in after_chunks] == before_chunks
+        assert {row[2] for row in after_chunks} == {content_hash(updated)}
+
+    def test_metadata_only_index_rejects_title_or_body_drift(
+        self, store, vault, monkeypatch
+    ):
+        _patch_fake(monkeypatch)
+        monkeypatch.setattr(
+            "mcp_second_brain.store.postgres_store._vdb.embed_text",
+            lambda text: [0.5] + [0.0] * 1023,
+        )
+        f = vault / "metadata-only-drift.md"
+        original = FM + "stable body"
+        f.write_text(original, encoding="utf-8")
+        store.index_file(vault, f)
+
+        from mcp_second_brain.note_row import FRONTMATTER_RE, content_hash
+
+        body_sha256 = hashlib.sha256(
+            FRONTMATTER_RE.sub("", original, count=1).encode()
+        ).hexdigest()
+        f.write_text(original.replace("title: T", "title: Changed"), encoding="utf-8")
+        with pytest.raises(ValueError, match="embedding inputs changed"):
+            store.index_metadata_only(
+                vault,
+                f,
+                previous_content_hash=content_hash(original),
+                expected_body_sha256=body_sha256,
+            )
+
+        f.write_text(FM + "changed body", encoding="utf-8")
+        with pytest.raises(ValueError, match="body hash mismatch"):
+            store.index_metadata_only(
+                vault,
+                f,
+                previous_content_hash=content_hash(original),
+                expected_body_sha256=body_sha256,
+            )
 
 
 class TestChunkSyncDoesNotHoldTransactionAcrossEmbedding:

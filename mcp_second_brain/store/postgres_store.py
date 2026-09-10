@@ -10,6 +10,7 @@ Environment variables:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import time
@@ -334,6 +335,72 @@ class PostgresStore:
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
                 self._write_note_plan(cur, plan)
+            conn.commit()
+
+    def index_metadata_only(
+        self,
+        vault: Path,
+        md_file: Path,
+        *,
+        previous_content_hash: str,
+        expected_body_sha256: str,
+    ) -> None:
+        """Refresh a frontmatter-only projection without recomputing vectors.
+
+        This is intentionally narrower than :meth:`index_file`: callers must
+        prove the body is unchanged, and the stored row must still represent
+        the exact pre-edit file.  Title and tags are checked separately because
+        they are part of the note-level embedding input even though they live
+        in frontmatter.  Only then may the existing note/chunk embeddings be
+        retained while their content hashes advance to the post-edit file.
+
+        The method is used by deterministic bibliographic backfills.  Any
+        concurrent edit, stale chunk set, or embedding-input change fails
+        closed so the caller can roll the canonical file back.
+        """
+        raw = md_file.read_text(encoding="utf-8", errors="strict")
+        body = FRONTMATTER_RE.sub("", raw, count=1)
+        body_sha256 = hashlib.sha256(body.encode()).hexdigest()
+        if body_sha256 != expected_body_sha256:
+            raise ValueError("metadata-only index body hash mismatch")
+
+        note = project_note(
+            vault,
+            md_file,
+            embed=None,
+            validate=_vdb.validate_note,
+            log_prefix="pg_store_metadata_only",
+        )
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                stored = cur.execute(
+                    "SELECT content_hash, title, tags FROM notes WHERE path = %s FOR UPDATE",
+                    [note.path],
+                ).fetchone()
+                if stored is None:
+                    raise ValueError("metadata-only index requires an existing note")
+                if stored[0] != previous_content_hash:
+                    raise ValueError("metadata-only index stored content hash changed")
+                if stored[1] != note.title or stored[2] != note.tags_json:
+                    raise ValueError("metadata-only index embedding inputs changed")
+
+                chunk_hashes = {
+                    row[0]
+                    for row in cur.execute(
+                        "SELECT DISTINCT content_hash FROM note_chunks WHERE note_path = %s",
+                        [note.path],
+                    ).fetchall()
+                }
+                if chunk_hashes and chunk_hashes != {previous_content_hash}:
+                    raise ValueError("metadata-only index stored chunk hash changed")
+
+                self._write_note_plan(
+                    cur, PostgresStore._NotePlan(note=note, chunks=None)
+                )
+                cur.execute(
+                    "UPDATE note_chunks SET content_hash = %s WHERE note_path = %s",
+                    [note.content_hash, note.path],
+                )
             conn.commit()
 
     def sync_all(self, vault: Path) -> dict:
