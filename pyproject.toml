@@ -17,7 +17,8 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "mcp[cli]>=1.27.2",
+    "mcp[cli]>=1.27.2,<2",
+    "typing-extensions>=4.9.0",
     "markitdown[all]>=0.1.6",
     "duckdb>=1.5.3",
     "playwright>=1.60.0",
