@@ -348,7 +348,7 @@ _GEOM_MIN_AREA = 9000.0  # pt^2
 _CAPTION_GAP = 70.0     # pt — how far a caption may sit from its figure
 _CROP_DPI = 200         # crops are rendered from the page, not from a page PNG
 _MAX_PAGES = 20
-_DETECTOR_VERSION = "geom-8"
+_DETECTOR_VERSION = "geom-9"
 
 _CAPTION_RE = re.compile(
     r"^\s*(fig(?:ure)?\.?\s*\d|table\s*\d|extended\s+data|"
@@ -877,7 +877,14 @@ def _expand_to_whole_blocks(rect, blocks: list[tuple], prose: list, pr):
                 continue
             if inter < _STRADDLE_INSIDE * br.get_area():
                 continue
-            if any((br & p).get_area() > 0.5 * br.get_area() for p in prose):
+            # A figure legend routinely reads as prose too (several lines, long
+            # average length), and legends are exactly the case this function
+            # exists for — so a caption must survive the prose exclusion even
+            # though it looks like one. An in-text reference ("Table 1 shows...")
+            # matches the caption pattern but is body text, and still belongs to
+            # the trims, not to this expansion.
+            is_caption = _CAPTION_RE.match(_t) and not _INTEXT_REF_RE.match(_t)
+            if not is_caption and any((br & p).get_area() > 0.5 * br.get_area() for p in prose):
                 continue
             if (br.x0 < out.x0 - _STRADDLE_MAX or br.x1 > out.x1 + _STRADDLE_MAX
                     or br.y0 < out.y0 - _STRADDLE_MAX or br.y1 > out.y1 + _STRADDLE_MAX):
@@ -1036,7 +1043,13 @@ def _detect_figures_geometric(page, page_no: int = 0) -> list[dict]:
                 # that case left the region with no caption to anchor the trims on.
                 dv, wrong_side = 0.0, False
             else:
-                continue
+                # Whatever is left overlaps the region without sitting cleanly
+                # below, above, or fully inside it — a caption straddling the
+                # region's own edge, e.g. the figure's ink already reaching a
+                # few points into the legend. There is no other figure this
+                # caption could belong to, so it is treated like containment
+                # rather than dropped.
+                dv, wrong_side = 0.0, False
             score = dv + (_CAPTION_GAP if wrong_side else 0)
             if 0 <= score < best_score:
                 best, best_score = i, score

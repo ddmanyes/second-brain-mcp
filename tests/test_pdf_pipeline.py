@@ -600,6 +600,37 @@ class TestFigureExtractionRender:
         assert "Changes of hair phenotype" in dets[0]["caption"]
         assert dets[0]["rect"].y1 > 322, "the whole legend must be inside the crop"
 
+    def test_a_caption_straddling_the_region_edge_is_not_dropped(self, isolated_fig_env):
+        """A caption overlapping the region's own edge still belongs to it.
+
+        Regression: the caption-pairing loop only recognised a caption as
+        cleanly below the region, cleanly above it, or fully inside it. A
+        caption that straddles the region's own bottom edge -- the figure's
+        ink already reaching a few points into the legend -- matched none of
+        those and was silently dropped, leaving the crop captionless and cut
+        short of the legend (found on real pages where the figure's own ink
+        rect overhangs a few points into a one-line caption below it).
+        """
+        from mcp_second_brain import figures
+
+        vault = isolated_fig_env
+        pdf_path = vault / "straddlecap.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.draw_rect(fitz.Rect(60, 60, 520, 285), color=(0, 0, 1), fill=(0.8, 0.8, 1))
+        page.insert_text((60, 290), "Fig. 1 The figure whose caption straddles its own edge.",
+                         fontsize=9, fontname="helv")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        doc = fitz.open(str(pdf_path))
+        dets = figures._detect_figures_geometric(doc[0], 3)
+        doc.close()
+
+        assert len(dets) == 1
+        assert "straddles its own edge" in dets[0]["caption"], "the caption must not be dropped"
+        assert dets[0]["rect"].y1 > 292.7, "the whole caption must be inside the crop"
+
     def test_a_sentence_about_a_table_is_not_a_caption(self, isolated_fig_env):
         """"Table 1 presents the mechanisms..." is prose, not a table's caption.
 
