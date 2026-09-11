@@ -348,7 +348,7 @@ _GEOM_MIN_AREA = 9000.0  # pt^2
 _CAPTION_GAP = 70.0     # pt — how far a caption may sit from its figure
 _CROP_DPI = 200         # crops are rendered from the page, not from a page PNG
 _MAX_PAGES = 20
-_DETECTOR_VERSION = "geom-7"
+_DETECTOR_VERSION = "geom-8"
 
 _CAPTION_RE = re.compile(
     r"^\s*(fig(?:ure)?\.?\s*\d|table\s*\d|extended\s+data|"
@@ -532,6 +532,19 @@ def _cluster_rects(items: list[tuple], pr) -> list[tuple]:
         if is_ink:
             ink_boxes[cid] = (ink_boxes[cid] | r) if cid in ink_boxes else fitz.Rect(r)
     return [(b, ink_boxes.get(cid)) for cid, b in boxes.items()]
+
+
+# "Table 1 presents the mechanisms..." is a sentence about a table, not a
+# table's caption. Left unfiltered, such a paragraph seeds a region and the
+# whole column of body text is delivered as a figure. The giveaway is the
+# reporting verb straight after the label — a real caption names its subject.
+_INTEXT_REF_RE = re.compile(
+    r"^\s*(?i:(?:fig(?:ure)?\.?|table|scheme))\s*s?\d+\s*"
+    r"(?i:presents?|presented|shows?|shown|demonstrates?|demonstrated|illustrates?|"
+    r"illustrated|provides?|provided|summari[sz]es?|lists?|listed|describes?|described|"
+    r"indicates?|gives?|reports?|displays?|depicts?|contains?|compares?|highlights?|"
+    r"outlines?|details?|and|are|is|was|were|can|may|shall|also|further|above|below)\b"
+)
 
 
 _TABLE_RE = re.compile(r"^\s*(table|supplementary\s+table|extended\s+data\s+table)\s*\d", re.I)
@@ -721,7 +734,7 @@ _FURNITURE_RE = re.compile(
     re.I,
 )
 # Any figure/table label anywhere in a region's text — "Table S1" counts.
-_ANY_LABEL_RE = re.compile(r"(?:fig(?:ure)?\.?|table|scheme)\s*s?\d", re.I)
+_ANY_LABEL_RE = re.compile(r"(?:fig(?:ure)?\.?|table|scheme|box|panel)\s*s?\d", re.I)
 # Running heads and page furniture that ride along the top edge of a crop.
 _RUNNING_HEAD_RE = re.compile(
     r"^(?:\d{1,4}|.*\bet\s+al\.?|.*page\s+\d+\s+of\s+\d+.*|"
@@ -749,7 +762,8 @@ def _region_text(rect, blocks: list[tuple]) -> tuple[float, str, bool]:
     return cov, " ".join(words), has_biggest
 
 
-def _is_page_furniture(page, page_no: int, rect, caption: str, blocks: list[tuple]) -> bool:
+def _is_page_furniture(page, page_no: int, rect, caption: str, blocks: list[tuple],
+                       ink: list | None = None) -> bool:
     """Is this region publisher furniture rather than a figure?
 
     Mastheads, title blocks, front-matter sidebars, adverts and contents pages
@@ -759,6 +773,7 @@ def _is_page_furniture(page, page_no: int, rect, caption: str, blocks: list[tupl
     """
     if caption:
         return False
+    ink = ink or []
     cov, text, has_biggest = _region_text(rect, blocks)
     if _FURNITURE_RE.search(text):
         return True
@@ -768,6 +783,17 @@ def _is_page_furniture(page, page_no: int, rect, caption: str, blocks: list[tupl
         return True        # a whole cover page
     if cov >= _TEXT_DOMINATED and not _ANY_LABEL_RE.search(text):
         return True        # a slab of text with no figure or table label
+    # A single box enclosing most of the region, with the article's text inside
+    # it, is a page frame — journals draw them, and a figure never looks like
+    # one: real figures carry many marks, or a raster whose labels are baked in.
+    inside = [i for i in ink if (rect & i).get_area() > 0]
+    if (len(inside) == 1 and (rect & inside[0]).get_area() > 0.85 * rect.get_area()
+            and cov >= 0.35 and not _ANY_LABEL_RE.search(text)):
+        return True
+    # A text band across the top of the opening page is the title block, even
+    # when the title is not the largest type on the page.
+    if page_no <= 1 and rect.y0 <= page.rect.y0 + page.rect.height * 0.25 and cov >= 0.3:
+        return True
     return False
 
 
@@ -978,7 +1004,8 @@ def _detect_figures_geometric(page, page_no: int = 0) -> list[dict]:
             continue
         kept.append(r)
 
-    cap_idx = [i for i, (_r, _s, t) in enumerate(blocks) if _CAPTION_RE.match(t)]
+    cap_idx = [i for i, (_r, _s, t) in enumerate(blocks)
+               if _CAPTION_RE.match(t) and not _INTEXT_REF_RE.match(t)]
     kept = _merge_overlapping(kept)
     kept = _merge_stacked(kept, [blocks[i][0] for i in cap_idx])
     split: list = []
@@ -1026,7 +1053,7 @@ def _detect_figures_geometric(page, page_no: int = 0) -> list[dict]:
         if r.width < _GEOM_MIN_SIDE or r.height < _GEOM_MIN_SIDE:
             continue
         rect = (fitz.Rect(r) + (-_GEOM_PAD, -_GEOM_PAD, _GEOM_PAD, _GEOM_PAD)) & pr
-        if _is_page_furniture(page, page_no, rect, caption, blocks):
+        if _is_page_furniture(page, page_no, rect, caption, blocks, ink):
             continue
         out.append({"rect": rect, "caption": caption})
 
@@ -1042,7 +1069,7 @@ def _detect_figures_geometric(page, page_no: int = 0) -> list[dict]:
             continue
         rect = (fitz.Rect(r) + (-_GEOM_PAD, -_GEOM_PAD, _GEOM_PAD, _GEOM_PAD)) & pr
         cap_text = " ".join(blocks[i][2].split())[:500]
-        if _is_page_furniture(page, page_no, rect, cap_text, blocks):
+        if _is_page_furniture(page, page_no, rect, cap_text, blocks, ink):
             continue
         out.append({"rect": rect, "caption": cap_text})
 

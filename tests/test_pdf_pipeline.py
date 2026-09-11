@@ -600,6 +600,73 @@ class TestFigureExtractionRender:
         assert "Changes of hair phenotype" in dets[0]["caption"]
         assert dets[0]["rect"].y1 > 322, "the whole legend must be inside the crop"
 
+    def test_a_sentence_about_a_table_is_not_a_caption(self, isolated_fig_env):
+        """"Table 1 presents the mechanisms..." is prose, not a table's caption.
+
+        Treated as one, it seeds a region and the whole column of body text is
+        delivered as a figure. The reporting verb after the label gives it away.
+        """
+        from mcp_second_brain import figures
+
+        vault = isolated_fig_env
+        pdf_path = vault / "intext.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        body = ("Table 1 presents the mechanisms, effects and clinical considerations of "
+                "the treatment across every cohort that was followed in this study, and "
+                "the findings are consistent with earlier reports in the literature. ") * 3
+        page.insert_textbox(fitz.Rect(60, 80, 540, 400), body, fontsize=10, fontname="helv")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        doc = fitz.open(str(pdf_path))
+        dets = figures._detect_figures_geometric(doc[0], 4)
+        doc.close()
+        assert dets == []
+
+    def test_a_page_frame_around_body_text_is_not_a_figure(self, isolated_fig_env):
+        """One box enclosing the article's own text is a page frame.
+
+        A real figure carries many marks, or a raster whose labels are baked in
+        — never a single rule around a column of prose. A box that names itself
+        ("Box 1", "Table 2") is content and must survive.
+        """
+        from mcp_second_brain import figures
+
+        vault = isolated_fig_env
+        # enough text to fill the frame — a sparsely filled box stays a figure
+        prose = ("The loss of protection upon blockade underscores the essential role of "
+                 "intact flux in this setting, and the effect persisted across cohorts. ") * 14
+
+        framed = vault / "frame.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.draw_rect(fitz.Rect(50, 50, 550, 400), color=(0.6, 0.6, 0.6))
+        page.insert_textbox(fitz.Rect(55, 55, 545, 395), prose, fontsize=11, fontname="helv")
+        doc.save(str(framed))
+        doc.close()
+        doc = fitz.open(str(framed))
+        assert figures._detect_figures_geometric(doc[0], 3) == []
+        doc.close()
+
+        # A real box holds short entries rather than a paragraph, so it is not
+        # prose-dominated; what saves it here is naming itself.
+        labelled = vault / "box.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.draw_rect(fitz.Rect(50, 50, 550, 400), color=(0.6, 0.6, 0.6))
+        page.insert_text((60, 75), "Box 1 | Selected genes with risk loci",
+                         fontsize=11, fontname="helv")
+        for i, gene in enumerate(("AR", "EDA2R", "WNT10A", "TWIST2", "SRD5A2",
+                                  "HDAC9", "AUTS2", "SETBP1", "PAX1", "FOXA2")):
+            page.insert_text((60, 105 + i * 28), f"{gene}   locus {i + 1}   risk allele",
+                             fontsize=11, fontname="helv")
+        doc.save(str(labelled))
+        doc.close()
+        doc = fitz.open(str(labelled))
+        assert len(figures._detect_figures_geometric(doc[0], 3)) == 1, "a named box is content"
+        doc.close()
+
     def test_body_text_is_not_a_figure(self, isolated_fig_env):
         """Pages of prose must yield nothing — no crops of paragraphs."""
         from mcp_second_brain import figures
