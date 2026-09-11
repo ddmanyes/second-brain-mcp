@@ -569,6 +569,37 @@ class TestFigureExtractionRender:
         assert len(dets) == 2, "two differently numbered captions means two figures"
         assert all(d["rect"].width < 300 for d in dets)
 
+    def test_a_wide_legend_is_not_cut_short(self, isolated_fig_env):
+        """A legend set wider than its figure, with lines 7pt apart, stays whole.
+
+        Regression for two stops that were too strict at once: continuation
+        lines had to sit within 6pt (real ones reach 7), and had to fall inside
+        the figure's own column (legends are routinely wider than the figure).
+        """
+        from mcp_second_brain import figures
+
+        vault = isolated_fig_env
+        pdf_path = vault / "widelegend.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.draw_rect(fitz.Rect(150, 60, 400, 260), color=(0, 0, 1), fill=(0.8, 0.8, 1))
+        page.insert_text((60, 280), "Fig. 1 SBM promotes hair regeneration in cynomolgus",
+                         fontsize=9, fontname="helv")
+        page.insert_text((60, 301), "monkeys.", fontsize=9, fontname="helv")
+        page.insert_text((60, 322), "(A) Changes of hair phenotype over the study period.",
+                         fontsize=9, fontname="helv")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        doc = fitz.open(str(pdf_path))
+        dets = figures._detect_figures_geometric(doc[0], 9)
+        doc.close()
+
+        assert len(dets) == 1
+        assert "monkeys" in dets[0]["caption"]
+        assert "Changes of hair phenotype" in dets[0]["caption"]
+        assert dets[0]["rect"].y1 > 322, "the whole legend must be inside the crop"
+
     def test_body_text_is_not_a_figure(self, isolated_fig_env):
         """Pages of prose must yield nothing — no crops of paragraphs."""
         from mcp_second_brain import figures

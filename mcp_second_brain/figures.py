@@ -348,7 +348,7 @@ _GEOM_MIN_AREA = 9000.0  # pt^2
 _CAPTION_GAP = 70.0     # pt — how far a caption may sit from its figure
 _CROP_DPI = 200         # crops are rendered from the page, not from a page PNG
 _MAX_PAGES = 20
-_DETECTOR_VERSION = "geom-6"
+_DETECTOR_VERSION = "geom-7"
 
 _CAPTION_RE = re.compile(
     r"^\s*(fig(?:ure)?\.?\s*\d|table\s*\d|extended\s+data|"
@@ -394,8 +394,10 @@ def _sized_blocks(page) -> list[tuple]:
     return out
 
 
-_CAPTION_RUN_GAP = 6.0      # pt — measured continuations sit within ~2pt;
-                            # 14pt was wide enough to swallow the next paragraph
+_CAPTION_RUN_GAP = 14.0     # pt — continuation lines can sit 7pt apart, so the
+                            # stop has to come from font size, not distance
+_CAPTION_SIZE_TOL = 0.3     # a continuation matches its caption exactly; the
+                            # body paragraph that used to creep in was 0.5 off
 
 
 def _caption_run(blocks: list[tuple], start: int, figure_rect) -> tuple:
@@ -413,11 +415,14 @@ def _caption_run(blocks: list[tuple], start: int, figure_rect) -> tuple:
     parts = [cap_text]
     prev = cap_rect
     for r, size, text in blocks[start + 1:]:
-        if abs(size - cap_size) > 0.6:
+        if abs(size - cap_size) > _CAPTION_SIZE_TOL:
             break
         if r.y0 - prev.y1 > _CAPTION_RUN_GAP or r.y1 <= prev.y0:
             break
-        if r.x0 < figure_rect.x0 - 12 or r.x1 > figure_rect.x1 + 12:
+        # Continuation lines align with the legend, not with the figure — a
+        # legend is often set wider, or offset, from the figure it describes.
+        span = min(r.x1, cap_rect.x1) - max(r.x0, cap_rect.x0)
+        if span < 0.6 * min(r.width, cap_rect.width):
             break
         if _CAPTION_RE.match(text):
             break                       # the next figure's caption
