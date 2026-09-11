@@ -373,6 +373,101 @@ class TestFigureExtractionRender:
         r = dets[0]["rect"]
         assert r.x0 < 65 and r.x1 > 515 and r.y0 < 65 and r.y1 > 365
 
+    def test_masthead_is_not_a_figure(self, isolated_fig_env):
+        """Publisher furniture is a tidy rectangle, so only its wording gives it away."""
+        from mcp_second_brain import figures
+
+        vault = isolated_fig_env
+        pdf_path = vault / "masthead.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.draw_rect(fitz.Rect(50, 40, 550, 120), color=(0.9, 0.9, 0.9), fill=(0.9, 0.9, 0.9))
+        page.insert_text((60, 70), "Contents lists available at ScienceDirect",
+                         fontsize=9, fontname="helv")
+        page.insert_text((60, 95), "journal homepage: www.elsevier.com/locate/ybbrc",
+                         fontsize=9, fontname="helv")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        doc = fitz.open(str(pdf_path))
+        dets = figures._detect_figures_geometric(doc[0], 0)
+        doc.close()
+        assert dets == []
+
+    def test_prose_after_the_caption_is_trimmed_off(self, isolated_fig_env):
+        """A figure crop must not run on into the next paragraph of the article."""
+        from mcp_second_brain import figures
+
+        vault = isolated_fig_env
+        pdf_path = vault / "runon.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.draw_rect(fitz.Rect(60, 60, 520, 300), color=(0, 0, 1), fill=(0.8, 0.8, 1))
+        page.insert_textbox(fitz.Rect(60, 310, 520, 360),
+                            "Fig. 1 A chart of the measured response across every condition tested.",
+                            fontsize=8.5, fontname="helv")
+        body = ("The wound healing area decreased on days six, ten and fourteen, and either "
+                "overexpression could reverse the inhibitory effect observed here. ") * 3
+        page.insert_textbox(fitz.Rect(60, 372, 520, 460), body, fontsize=9, fontname="helv")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        doc = fitz.open(str(pdf_path))
+        dets = figures._detect_figures_geometric(doc[0], 0)
+        doc.close()
+
+        assert len(dets) == 1
+        assert "chart of the measured response" in dets[0]["caption"]
+        assert dets[0]["rect"].y1 < 372, "body prose must be left outside the crop"
+
+    def test_running_head_is_trimmed_off(self, isolated_fig_env):
+        """A masthead line above a figure is page furniture, not part of it."""
+        from mcp_second_brain import figures
+
+        vault = isolated_fig_env
+        pdf_path = vault / "head.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((60, 56), "www.advancedsciencenews.com", fontsize=9, fontname="helv")
+        page.draw_rect(fitz.Rect(60, 120, 520, 400), color=(0, 0, 1), fill=(0.8, 0.8, 1))
+        doc.save(str(pdf_path))
+        doc.close()
+
+        doc = fitz.open(str(pdf_path))
+        dets = figures._detect_figures_geometric(doc[0], 5)
+        doc.close()
+
+        assert len(dets) == 1
+        assert dets[0]["rect"].y0 > 60, "the running head must be left outside the crop"
+
+    def test_table_rows_separated_by_wide_gaps_stay_whole(self, isolated_fig_env):
+        """Real tables space rows up to ~22pt apart; the run must not stop early.
+
+        Regression: tightening the run gap to stop at a section heading cut a
+        systematic-review table off in the middle of its rows.
+        """
+        from mcp_second_brain import figures
+
+        vault = isolated_fig_env
+        pdf_path = vault / "gaps.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((60, 100), "Table 4  Outcomes and safety", fontsize=8, fontname="helv")
+        y = 120
+        for i in range(8):
+            page.insert_text((60, y), f"Author {i}   up   12 wk   None",
+                             fontsize=8, fontname="helv")
+            y += 22 if i % 3 else 12          # mixed row spacing, up to 22pt
+        doc.save(str(pdf_path))
+        doc.close()
+
+        doc = fitz.open(str(pdf_path))
+        dets = figures._detect_figures_geometric(doc[0], 4)
+        doc.close()
+
+        assert len(dets) == 1
+        assert dets[0]["rect"].y1 > y - 20, "every row must be inside the crop"
+
     def test_body_text_is_not_a_figure(self, isolated_fig_env):
         """Pages of prose must yield nothing — no crops of paragraphs."""
         from mcp_second_brain import figures

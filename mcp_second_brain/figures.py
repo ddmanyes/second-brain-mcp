@@ -348,7 +348,7 @@ _GEOM_MIN_AREA = 9000.0  # pt^2
 _CAPTION_GAP = 70.0     # pt — how far a caption may sit from its figure
 _CROP_DPI = 200         # crops are rendered from the page, not from a page PNG
 _MAX_PAGES = 20
-_DETECTOR_VERSION = "geom-4"
+_DETECTOR_VERSION = "geom-5"
 
 _CAPTION_RE = re.compile(
     r"^\s*(fig(?:ure)?\.?\s*\d|table\s*\d|extended\s+data|"
@@ -394,7 +394,8 @@ def _sized_blocks(page) -> list[tuple]:
     return out
 
 
-_CAPTION_RUN_GAP = 14.0     # pt between a caption block and its continuation
+_CAPTION_RUN_GAP = 6.0      # pt — measured continuations sit within ~2pt;
+                            # 14pt was wide enough to swallow the next paragraph
 
 
 def _caption_run(blocks: list[tuple], start: int, figure_rect) -> tuple:
@@ -443,8 +444,14 @@ def _ink_rects(page) -> list:
             # No size gate here: publishers routinely slice one figure into
             # dozens of thin strips (273x10pt seen in the wild). Clustering
             # fuses them; the component gate below is what drops real icons.
-            if r.width > 4 and r.height > 4:
-                out.append(r)
+            if r.width <= 4 or r.height <= 4:
+                continue
+            # A small image parked in the header or footer band is a masthead
+            # logo, and counting it as figure ink pins the running head into
+            # the crop above it.
+            if r.height < 60 and (r.y1 < head or r.y0 > foot):
+                continue
+            out.append(r)
     for d in page.get_drawings():
         r = fitz.Rect(d["rect"]) & pr
         if r.is_empty or r.is_infinite or r.width <= 0 or r.height <= 0:
@@ -523,7 +530,8 @@ def _cluster_rects(items: list[tuple], pr) -> list[tuple]:
 
 
 _TABLE_RE = re.compile(r"^\s*(table|supplementary\s+table|extended\s+data\s+table)\s*\d", re.I)
-_TABLE_RUN_GAP = 24.0    # pt between a table's caption and its rows
+_TABLE_RUN_GAP = 24.0    # pt — measured intra-table row gaps reach 22pt,
+                         # so the stop has to come from font size, not distance
 
 
 def _text_table_region(blocks: list[tuple], start: int, prose: list) -> object:
@@ -570,11 +578,18 @@ def _label_rects(page, prose: list, blocks: list[tuple]) -> list:
     """
     pr = page.rect
     head, foot = pr.y0 + pr.height * 0.055, pr.y1 - pr.height * 0.055
+    sizes = sorted(s for _r, s, _t in blocks if s > 0)
+    median = sizes[len(sizes) // 2] if sizes else 0.0
     out = []
-    for r, _size, text in blocks:
+    for r, size, text in blocks:
         if not text or _CAPTION_RE.match(text):
             continue
         if r.y1 < head or r.y0 > foot:
+            continue
+        # Section headings are set well above body size and belong to the
+        # article, not to any figure — letting one in drags the next section
+        # into the crop.
+        if median and size >= median * 1.4:
             continue
         if any((r & p).get_area() > r.get_area() * 0.5 for p in prose):
             continue
@@ -685,14 +700,123 @@ def _merge_overlapping_dicts(dets: list[dict]) -> list[dict]:
     return out
 
 
-def _detect_figures_geometric(page) -> list[dict]:
+# Publisher furniture: text that appears in front/back matter and essentially
+# never inside a scientific figure.
+_FURNITURE_RE = re.compile(
+    r"open\s+access|edited\s+by|reviewed\s+by|correspondence|check\s+for\s+updates|"
+    r"contents\s+lists\s+available|journal\s+homepage|sciencedirect|submit\s+your\s+manuscript|"
+    r"publish\s+your\s+work|table\s+of\s+contents|all\s+rights\s+reserved|creative\s+commons|"
+    r"this\s+is\s+an\s+open|copyright|citation|received|accepted|published|"
+    r"declaration\s+of\s+competing|conflict\s+of\s+interest|issn|editorial\s+board",
+    re.I,
+)
+# Any figure/table label anywhere in a region's text — "Table S1" counts.
+_ANY_LABEL_RE = re.compile(r"(?:fig(?:ure)?\.?|table|scheme)\s*s?\d", re.I)
+# Running heads and page furniture that ride along the top edge of a crop.
+_RUNNING_HEAD_RE = re.compile(
+    r"^(?:\d{1,4}|.*\bet\s+al\.?|.*page\s+\d+\s+of\s+\d+.*|"
+    r"(?:https?://|www\.).*|.*\bdoi:.*)$",
+    re.I,
+)
+_TEXT_DOMINATED = 0.6   # fraction of a region's area covered by text
+
+
+def _region_text(rect, blocks: list[tuple]) -> tuple[float, str, bool]:
+    """Text coverage, concatenated text, and whether the page's largest type is inside."""
+    biggest = max((s for _r, s, _t in blocks), default=0.0)
+    area = 0.0
+    words: list[str] = []
+    has_biggest = False
+    for br, size, text in blocks:
+        inter = (rect & br).get_area()
+        if inter <= 0:
+            continue
+        area += inter
+        words.append(text)
+        if size >= biggest - 0.1:
+            has_biggest = True
+    cov = min(area / rect.get_area(), 1.0) if rect.get_area() else 0.0
+    return cov, " ".join(words), has_biggest
+
+
+def _is_page_furniture(page, page_no: int, rect, caption: str, blocks: list[tuple]) -> bool:
+    """Is this region publisher furniture rather than a figure?
+
+    Mastheads, title blocks, front-matter sidebars, adverts and contents pages
+    are big tidy rectangles, so every geometric test waves them through. What
+    separates them is what they say and where they sit. A region that carries a
+    real caption is never furniture.
+    """
+    if caption:
+        return False
+    cov, text, has_biggest = _region_text(rect, blocks)
+    if _FURNITURE_RE.search(text):
+        return True
+    if page_no <= 1 and has_biggest and cov > 0.05:
+        return True        # contains the page's largest type = the title block
+    if page_no <= 1 and rect.get_area() >= 0.9 * page.rect.get_area():
+        return True        # a whole cover page
+    if cov >= _TEXT_DOMINATED and not _ANY_LABEL_RE.search(text):
+        return True        # a slab of text with no figure or table label
+    return False
+
+
+def _trim_foreign_text(rect, caption_rect, prose: list, ink: list, is_table: bool):
+    """Pull the bottom edge back above body prose that follows the caption.
+
+    A figure crop must not end in a paragraph of the article's text. The rule is
+    deliberately narrow, because two things look exactly like body prose and
+    must survive: the caption itself, and the rows of a table. So it only fires
+    below an attached caption, and never on a table.
+    """
+    import fitz
+
+    out = fitz.Rect(rect)
+    if caption_rect is None or is_table:
+        return out
+    for p in sorted(prose, key=lambda r: -r.y0):
+        if p.y0 < caption_rect.y1 - 2:
+            continue                            # at or above the caption
+        if p.y0 <= out.y0 or p.y0 >= out.y1:
+            continue
+        if (p & caption_rect).get_area() > 0.3 * p.get_area():
+            continue                            # that is the caption itself
+        if any(i.y0 >= p.y1 - 2 and (out & i).get_area() > 0 for i in ink):
+            continue                            # real figure content below it
+        out.y1 = min(out.y1, p.y0 - 2)
+    return out
+
+
+def _trim_running_head(rect, blocks: list[tuple], ink: list):
+    """Drop a running head or page number riding on the top edge."""
+    import fitz
+
+    out = fitz.Rect(rect)
+    inside = sorted((b for b in blocks if (out & b[0]).get_area() > 0.5 * b[0].get_area()),
+                    key=lambda b: b[0].y0)
+    for br, _size, text in inside:
+        line = " ".join(text.split())
+        if not line or not _RUNNING_HEAD_RE.match(line):
+            break
+        # Only ink that carries on BELOW the line counts as the figure reaching
+        # up here. A masthead logo or a header rule sits level with the running
+        # head and stops there, and must not pin it into the crop.
+        if any((out & i).get_area() > 0 and i.y1 > br.y1 + 4 and i.y0 < br.y1
+               for i in ink):
+            break                               # figure content up there too
+        out.y0 = max(out.y0, br.y1 + 2)
+    return out
+
+
+def _detect_figures_geometric(page, page_no: int = 0) -> list[dict]:
     """Figures on one page as {"rect": fitz.Rect (PDF points), "caption": str}."""
     import fitz
 
     pr = page.rect
     prose = _prose_rects(page)
     blocks = _sized_blocks(page)
-    items = [(r, True) for r in _ink_rects(page)]
+    ink = _ink_rects(page)
+    items = [(r, True) for r in ink]
     items += [(r, False) for r in _label_rects(page, prose, blocks)]
 
     kept = []
@@ -740,11 +864,18 @@ def _detect_figures_geometric(page) -> list[dict]:
             if 0 <= score < best_score:
                 best, best_score = i, score
         caption = ""
+        cap_rect = None
         if best is not None:
             used.add(best)
-            cr, caption = _caption_run(blocks, best, r)
-            r = r | cr
+            cap_rect, caption = _caption_run(blocks, best, r)
+            r = r | cap_rect
+        r = _trim_foreign_text(r, cap_rect, prose, ink, bool(_TABLE_RE.match(caption)))
+        r = _trim_running_head(r, blocks, ink)
+        if r.width < _GEOM_MIN_SIDE or r.height < _GEOM_MIN_SIDE:
+            continue
         rect = (fitz.Rect(r) + (-_GEOM_PAD, -_GEOM_PAD, _GEOM_PAD, _GEOM_PAD)) & pr
+        if _is_page_furniture(page, page_no, rect, caption, blocks):
+            continue
         out.append({"rect": rect, "caption": caption})
 
     for i in cap_idx:
@@ -756,10 +887,10 @@ def _detect_figures_geometric(page) -> list[dict]:
         if r.get_area() < _GEOM_MIN_AREA:
             continue
         rect = (fitz.Rect(r) + (-_GEOM_PAD, -_GEOM_PAD, _GEOM_PAD, _GEOM_PAD)) & pr
-        out.append({
-            "rect": rect,
-            "caption": " ".join(blocks[i][2].split())[:500],
-        })
+        cap_text = " ".join(blocks[i][2].split())[:500]
+        if _is_page_furniture(page, page_no, rect, cap_text, blocks):
+            continue
+        out.append({"rect": rect, "caption": cap_text})
 
     out = _merge_overlapping_dicts(out)
     out.sort(key=lambda d: (round(d["rect"].y0, 1), round(d["rect"].x0, 1)))
@@ -1082,7 +1213,7 @@ def _extract_figures_render(pdf_path: str, note_path: str, fig_dir: Path) -> lis
                 digest = _page_digest(page)
                 if vault_db.page_is_processed(note_path, digest):
                     continue
-                dets = _detect_figures_geometric(page)
+                dets = _detect_figures_geometric(page, pnum)
             except Exception as e:
                 print(f"[figures] geometry failed on page {pnum}: {e}", file=sys.stderr)
                 continue
