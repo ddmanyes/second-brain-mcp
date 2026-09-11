@@ -468,6 +468,107 @@ class TestFigureExtractionRender:
         assert len(dets) == 1
         assert dets[0]["rect"].y1 > y - 20, "every row must be inside the crop"
 
+    def test_a_row_crossing_the_edge_is_taken_whole(self, isolated_fig_env):
+        """Half a table row is worse than none — the crop must contain it whole."""
+        from mcp_second_brain import figures
+
+        vault = isolated_fig_env
+        pdf_path = vault / "straddle.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.draw_rect(fitz.Rect(80, 60, 300, 200), color=(0, 0, 1), fill=(0.8, 0.8, 1))
+        # a label that starts left of the drawn block and reaches past its right edge
+        page.insert_text((40, 215), "RANTES (CCL5) recruits immune cells to the wound",
+                         fontsize=8, fontname="helv")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        doc = fitz.open(str(pdf_path))
+        dets = figures._detect_figures_geometric(doc[0], 6)
+        doc.close()
+
+        assert len(dets) == 1
+        r = dets[0]["rect"]
+        assert r.x0 < 42, "the row must not be sliced on the left"
+        assert r.x1 > 300, "nor on the right"
+
+    def test_a_long_table_cell_is_not_body_prose(self, isolated_fig_env):
+        """Wide cells read as prose by length; left alignment says they are rows."""
+        from mcp_second_brain import figures
+
+        vault = isolated_fig_env
+        pdf_path = vault / "longcell.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((60, 100), "TABLE 2  Experimental groups", fontsize=8, fontname="helv")
+        y = 118
+        for tag in ("AGA", "MN", "PEG"):
+            page.insert_textbox(fitz.Rect(60, y, 500, y + 34),
+                                f"{tag}  5  After depilating the skin on the backs of the mice a "
+                                f"solution was applied topically every other day for the study",
+                                fontsize=9, fontname="helv")
+            y += 40
+        doc.save(str(pdf_path))
+        doc.close()
+
+        doc = fitz.open(str(pdf_path))
+        dets = figures._detect_figures_geometric(doc[0], 2)
+        doc.close()
+
+        assert len(dets) == 1
+        assert dets[0]["rect"].y1 > y - 20, "every row must be inside the crop"
+
+    def test_a_table_title_inside_its_own_block_is_attached(self, isolated_fig_env):
+        """A caption level with the region, not above or below it, still belongs to it.
+
+        Skipping that case left such regions with no caption, which in turn left
+        the edge trims with nothing to anchor on.
+        """
+        from mcp_second_brain import figures
+
+        vault = isolated_fig_env
+        pdf_path = vault / "inside.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.draw_rect(fitz.Rect(60, 60, 300, 300), color=(0.2, 0.4, 0.7), fill=(0.85, 0.9, 1))
+        page.insert_text((70, 80), "TABLE 1. Baseline characteristics", fontsize=8, fontname="helv")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        doc = fitz.open(str(pdf_path))
+        dets = figures._detect_figures_geometric(doc[0], 3)
+        doc.close()
+
+        assert len(dets) == 1
+        assert "Baseline characteristics" in dets[0]["caption"]
+
+    def test_two_numbered_figures_are_split_apart(self, isolated_fig_env):
+        """Side-by-side figures must not be delivered as one crop.
+
+        One crop of both means the reader gets the wrong legend for one of them.
+        """
+        from mcp_second_brain import figures
+
+        vault = isolated_fig_env
+        pdf_path = vault / "twofigs.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.draw_rect(fitz.Rect(50, 60, 270, 300), color=(0, 0, 1), fill=(0.8, 0.8, 1))
+        page.insert_text((50, 318), "Fig. 1. The first finding.", fontsize=8, fontname="helv")
+        page.draw_rect(fitz.Rect(310, 60, 530, 300), color=(1, 0, 0), fill=(1, 0.8, 0.8))
+        # a real page separates the two legends; on one baseline PyMuPDF would
+        # return them as a single text block
+        page.insert_text((310, 340), "Fig. 2. The second finding.", fontsize=8, fontname="helv")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        doc = fitz.open(str(pdf_path))
+        dets = figures._detect_figures_geometric(doc[0], 4)
+        doc.close()
+
+        assert len(dets) == 2, "two differently numbered captions means two figures"
+        assert all(d["rect"].width < 300 for d in dets)
+
     def test_body_text_is_not_a_figure(self, isolated_fig_env):
         """Pages of prose must yield nothing — no crops of paragraphs."""
         from mcp_second_brain import figures

@@ -348,7 +348,7 @@ _GEOM_MIN_AREA = 9000.0  # pt^2
 _CAPTION_GAP = 70.0     # pt — how far a caption may sit from its figure
 _CROP_DPI = 200         # crops are rendered from the page, not from a page PNG
 _MAX_PAGES = 20
-_DETECTOR_VERSION = "geom-5"
+_DETECTOR_VERSION = "geom-6"
 
 _CAPTION_RE = re.compile(
     r"^\s*(fig(?:ure)?\.?\s*\d|table\s*\d|extended\s+data|"
@@ -547,6 +547,7 @@ def _text_table_region(blocks: list[tuple], start: int, prose: list) -> object:
     cap_rect, cap_size, _cap_text = blocks[start]
     rect = fitz.Rect(cap_rect)
     prev = cap_rect
+    row_left: set[float] = {round(cap_rect.x0, 1)}   # rows line up under the title
     for r, size, text in blocks[start + 1:]:
         if r.y0 < prev.y1 - 2:
             continue                    # sits alongside, not below — other column
@@ -561,9 +562,13 @@ def _text_table_region(blocks: list[tuple], start: int, prose: list) -> object:
             break                       # body text is set larger than the table
         if _CAPTION_RE.match(text):
             break                       # the next figure or table
-        if any((r & pr).get_area() > r.get_area() * 0.8 for pr in prose):
+        # A wide cell can read as prose by length alone. Rows line up on the
+        # left edge, so an aligned block is a row however long its text is.
+        aligned = any(abs(r.x0 - x) <= 6 for x in row_left)
+        if not aligned and any((r & pr).get_area() > r.get_area() * 0.8 for pr in prose):
             break                       # body text resumed
         rect |= r
+        row_left.add(round(r.x0, 1))
         prev = r
     return rect
 
@@ -772,7 +777,18 @@ def _trim_foreign_text(rect, caption_rect, prose: list, ink: list, is_table: boo
     import fitz
 
     out = fitz.Rect(rect)
-    if caption_rect is None or is_table:
+    if is_table:
+        return out
+    if caption_rect is None:
+        # No caption to anchor on, so the figure's own ink is the floor:
+        # prose entirely below the last mark cannot belong to the figure.
+        inside = [i for i in ink if (out & i).get_area() > 0]
+        if not inside:
+            return out
+        floor = max(i.y1 for i in inside)
+        for p in sorted(prose, key=lambda r: -r.y0):
+            if p.y0 > floor + 2 and out.y0 < p.y0 < out.y1:
+                out.y1 = min(out.y1, p.y0 - 2)
         return out
     for p in sorted(prose, key=lambda r: -r.y0):
         if p.y0 < caption_rect.y1 - 2:
@@ -808,6 +824,127 @@ def _trim_running_head(rect, blocks: list[tuple], ink: list):
     return out
 
 
+_STRADDLE_INSIDE = 0.5    # a block at least this far inside must not be cut
+_STRADDLE_MAX = 120.0     # pt of growth allowed in any one direction
+
+
+def _expand_to_whole_blocks(rect, blocks: list[tuple], prose: list, pr):
+    """Never leave a line of text sliced by the crop boundary.
+
+    A block mostly inside the crop but crossing its edge is a table row or a
+    caption line the boundary cut through, and half a row is worse than none.
+    Body prose is excluded: keeping that out is what the trims are for.
+    """
+    import fitz
+
+    out = fitz.Rect(rect)
+    for _ in range(2):          # growing can bring another clipped block inside
+        grew = False
+        for br, _s, _t in blocks:
+            inter = (out & br).get_area()
+            if inter <= 0 or inter >= br.get_area() - 1:
+                continue
+            if inter < _STRADDLE_INSIDE * br.get_area():
+                continue
+            if any((br & p).get_area() > 0.5 * br.get_area() for p in prose):
+                continue
+            if (br.x0 < out.x0 - _STRADDLE_MAX or br.x1 > out.x1 + _STRADDLE_MAX
+                    or br.y0 < out.y0 - _STRADDLE_MAX or br.y1 > out.y1 + _STRADDLE_MAX):
+                continue
+            out |= br
+            grew = True
+        if not grew:
+            break
+    return out & pr
+
+
+_LABEL_NUM_RE = re.compile(r"(?i:(?:fig(?:ure)?\.?|table|scheme))\s*(s?\d+)")
+
+
+def _trim_side_prose(rect, caption_rect, prose: list, ink: list):
+    """Pull a side edge in off a neighbouring column of body text.
+
+    A figure or table set into one column of a two-column page can have the
+    facing column of prose swept in beside it. The vertical trims never see
+    this, because the prose sits level with the figure rather than below it.
+    """
+    import fitz
+
+    out = fitz.Rect(rect)
+    if caption_rect is None:
+        return out
+    for p in sorted(prose, key=lambda r: -r.get_area()):
+        # A neighbouring column is clipped by the crop edge, so only part of it
+        # is inside — requiring most of it would never match.
+        if (out & p).get_area() < 0.2 * p.get_area():
+            continue
+        if min(p.x1, caption_rect.x1) - max(p.x0, caption_rect.x0) > 0:
+            continue                    # shares the caption's column
+        if p.x0 >= caption_rect.x1:     # prose to the right
+            cut = p.x0 - 2
+            if any((out & i).get_area() > 0 and i.x1 > cut for i in ink):
+                continue
+            out.x1 = min(out.x1, cut)
+        elif p.x1 <= caption_rect.x0:   # prose to the left
+            cut = p.x1 + 2
+            if any((out & i).get_area() > 0 and i.x0 < cut for i in ink):
+                continue
+            out.x0 = max(out.x0, cut)
+    return out
+
+
+def _split_on_distinct_captions(rect, blocks: list[tuple], ink: list) -> list:
+    """Cut a region carrying two differently-numbered captions into two.
+
+    Two figures printed side by side can land in one component, which delivers
+    both as a single crop and gives one of them the other's legend. Two
+    captions with different numbers inside one region is the giveaway; a
+    "Continued" carries the same number and must not trigger a split.
+    """
+    import fitz
+
+    # Legends sit below their figure and are attached later, so the component
+    # itself does not contain them yet — look into the band underneath it too.
+    reach = fitz.Rect(rect.x0 - 8, rect.y0 - 8, rect.x1 + 8, rect.y1 + _CAPTION_GAP)
+    caps = []
+    for br, _s, text in blocks:
+        if not _CAPTION_RE.match(text):
+            continue
+        if (reach & br).get_area() < 0.5 * br.get_area():
+            continue
+        m = _LABEL_NUM_RE.search(text)
+        if m:
+            caps.append((br, m.group(1).lower()))
+    if len({n for _b, n in caps}) < 2:
+        return [rect]
+
+    xs = [(b.x0 + b.x1) / 2 for b, _n in caps]
+    ys = [(b.y0 + b.y1) / 2 for b, _n in caps]
+    horizontal = (max(xs) - min(xs)) >= (max(ys) - min(ys))
+    caps.sort(key=lambda c: (c[0].x0 if horizontal else c[0].y0))
+
+    cuts = []
+    for (a, _na), (b, _nb) in zip(caps, caps[1:]):
+        cuts.append(((a.x1 + b.x0) / 2) if horizontal else ((a.y1 + b.y0) / 2))
+
+    bounds = [rect.x0 if horizontal else rect.y0] + cuts + [rect.x1 if horizontal else rect.y1]
+    out = []
+    for lo, hi in zip(bounds, bounds[1:]):
+        slab = (fitz.Rect(lo, rect.y0, hi, rect.y1) if horizontal
+                else fitz.Rect(rect.x0, lo, rect.x1, hi))
+        held = [i for i in ink if (slab & i).get_area() > 0.5 * i.get_area()]
+        held += [b for b, _n in caps if (slab & b).get_area() > 0.5 * b.get_area()]
+        if not held:
+            continue
+        piece = fitz.Rect(held[0])
+        for h in held[1:]:
+            piece |= h
+        piece = (piece + (-_GEOM_PAD, -_GEOM_PAD, _GEOM_PAD, _GEOM_PAD)) & rect
+        if piece.width >= _GEOM_MIN_SIDE and piece.height >= _GEOM_MIN_SIDE:
+            out.append(piece)
+    return out if len(out) > 1 else [rect]
+
+
 def _detect_figures_geometric(page, page_no: int = 0) -> list[dict]:
     """Figures on one page as {"rect": fitz.Rect (PDF points), "caption": str}."""
     import fitz
@@ -839,6 +976,10 @@ def _detect_figures_geometric(page, page_no: int = 0) -> list[dict]:
     cap_idx = [i for i, (_r, _s, t) in enumerate(blocks) if _CAPTION_RE.match(t)]
     kept = _merge_overlapping(kept)
     kept = _merge_stacked(kept, [blocks[i][0] for i in cap_idx])
+    split: list = []
+    for r in kept:
+        split.extend(_split_on_distinct_captions(r, blocks, ink))
+    kept = split
 
     used: set[int] = set()
     out: list[dict] = []
@@ -858,6 +999,10 @@ def _detect_figures_geometric(page, page_no: int = 0) -> list[dict]:
                 dv, wrong_side = cr.y0 - r.y1, wants_above
             elif cr.y1 <= r.y0:                     # caption above the region
                 dv, wrong_side = r.y0 - cr.y1, not wants_above
+            elif r.y0 <= cr.y0 and cr.y1 <= r.y1:
+                # A table's title often sits inside its own ruled block. Skipping
+                # that case left the region with no caption to anchor the trims on.
+                dv, wrong_side = 0.0, False
             else:
                 continue
             score = dv + (_CAPTION_GAP if wrong_side else 0)
@@ -869,7 +1014,9 @@ def _detect_figures_geometric(page, page_no: int = 0) -> list[dict]:
             used.add(best)
             cap_rect, caption = _caption_run(blocks, best, r)
             r = r | cap_rect
+        r = _expand_to_whole_blocks(r, blocks, prose, pr)
         r = _trim_foreign_text(r, cap_rect, prose, ink, bool(_TABLE_RE.match(caption)))
+        r = _trim_side_prose(r, cap_rect, prose, ink)
         r = _trim_running_head(r, blocks, ink)
         if r.width < _GEOM_MIN_SIDE or r.height < _GEOM_MIN_SIDE:
             continue
@@ -882,6 +1029,8 @@ def _detect_figures_geometric(page, page_no: int = 0) -> list[dict]:
         if i in used or not _TABLE_RE.match(blocks[i][2]):
             continue
         r = _text_table_region(blocks, i, prose)
+        r = _expand_to_whole_blocks(r, blocks, prose, pr)
+        r = _trim_side_prose(r, blocks[i][0], prose, ink)
         if r.width < _GEOM_MIN_SIDE or r.height < _GEOM_MIN_SIDE:
             continue
         if r.get_area() < _GEOM_MIN_AREA:
