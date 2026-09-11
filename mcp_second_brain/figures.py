@@ -348,7 +348,7 @@ _GEOM_MIN_AREA = 9000.0  # pt^2
 _CAPTION_GAP = 70.0     # pt — how far a caption may sit from its figure
 _CROP_DPI = 200         # crops are rendered from the page, not from a page PNG
 _MAX_PAGES = 20
-_DETECTOR_VERSION = "geom-3"
+_DETECTOR_VERSION = "geom-4"
 
 _CAPTION_RE = re.compile(
     r"^\s*(fig(?:ure)?\.?\s*\d|table\s*\d|extended\s+data|"
@@ -616,6 +616,75 @@ def _merge_overlapping(rects: list) -> list:
     return out
 
 
+_STACK_GAP = 40.0       # pt between two halves of one figure
+_STACK_OVERLAP = 0.6    # fraction of the narrower one that must line up
+
+
+def _merge_stacked(rects: list, caption_rects: list) -> list:
+    """Rejoin panels of one figure that the grid left unconnected.
+
+    Dense multi-panel figures leave gutters wider than the dilation, and the
+    nearest ink across a gutter is rarely in the same column, so two halves of
+    one figure can stay apart. They are rejoined when one sits directly above
+    the other with no caption in the gutter — two stacked *figures* always have
+    the upper one's caption between them, and that is the guard.
+    """
+    import fitz
+
+    out = [fitz.Rect(r) for r in rects]
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(out)):
+            for j in range(i + 1, len(out)):
+                a, b = out[i], out[j]
+                top, bot = (a, b) if a.y1 <= b.y1 else (b, a)
+                gap = bot.y0 - top.y1
+                if gap > _STACK_GAP:
+                    continue
+                if min(a.x1, b.x1) - max(a.x0, b.x0) < _STACK_OVERLAP * min(a.width, b.width):
+                    continue
+                # Overlapping vertically leaves no gutter, so there is nothing a
+                # caption could sit in — they are one figure by construction.
+                if gap > 0 and any(top.y1 - 2 <= c.y0 and c.y1 <= bot.y0 + 2
+                                   and min(c.x1, top.x1) > max(c.x0, top.x0)
+                                   for c in caption_rects):
+                    continue        # a caption in the gutter = two figures
+                out[i] = a | b
+                del out[j]
+                changed = True
+                break
+            if changed:
+                break
+    return out
+
+
+def _merge_overlapping_dicts(dets: list[dict]) -> list[dict]:
+    """Same rule as _merge_overlapping, applied once captions have grown the rects."""
+    import fitz
+
+    out = [dict(d) for d in dets]
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(out)):
+            for j in range(i + 1, len(out)):
+                a, b = out[i]["rect"], out[j]["rect"]
+                inter = (a & b).get_area()
+                if inter <= 0 or inter < _OVERLAP_MERGE * min(a.get_area(), b.get_area()):
+                    continue
+                out[i] = {
+                    "rect": fitz.Rect(a) | b,
+                    "caption": out[i]["caption"] or out[j]["caption"],
+                }
+                del out[j]
+                changed = True
+                break
+            if changed:
+                break
+    return out
+
+
 def _detect_figures_geometric(page) -> list[dict]:
     """Figures on one page as {"rect": fitz.Rect (PDF points), "caption": str}."""
     import fitz
@@ -643,22 +712,33 @@ def _detect_figures_geometric(page) -> list[dict]:
             continue
         kept.append(r)
 
-    kept = _merge_overlapping(kept)
-
     cap_idx = [i for i, (_r, _s, t) in enumerate(blocks) if _CAPTION_RE.match(t)]
+    kept = _merge_overlapping(kept)
+    kept = _merge_stacked(kept, [blocks[i][0] for i in cap_idx])
+
     used: set[int] = set()
     out: list[dict] = []
     for r in kept:
-        best, best_d = None, _CAPTION_GAP
+        # A figure legend sits BELOW its figure and a table caption ABOVE its
+        # table. Taking whichever is nearest in either direction hands a
+        # figure's legend to the next figure that starts right under it.
+        best, best_score = None, _CAPTION_GAP
         for i in cap_idx:
             if i in used:
                 continue
-            cr = blocks[i][0]
+            cr, _sz, ctext = blocks[i]
             if cr.x1 < r.x0 - 12 or cr.x0 > r.x1 + 12:
                 continue        # different column
-            dv = cr.y0 - r.y1 if cr.y0 >= r.y1 else r.y0 - cr.y1
-            if 0 <= dv < best_d:
-                best, best_d = i, dv
+            wants_above = bool(_TABLE_RE.match(ctext))
+            if cr.y0 >= r.y1:                       # caption below the region
+                dv, wrong_side = cr.y0 - r.y1, wants_above
+            elif cr.y1 <= r.y0:                     # caption above the region
+                dv, wrong_side = r.y0 - cr.y1, not wants_above
+            else:
+                continue
+            score = dv + (_CAPTION_GAP if wrong_side else 0)
+            if 0 <= score < best_score:
+                best, best_score = i, score
         caption = ""
         if best is not None:
             used.add(best)
@@ -681,6 +761,7 @@ def _detect_figures_geometric(page) -> list[dict]:
             "caption": " ".join(blocks[i][2].split())[:500],
         })
 
+    out = _merge_overlapping_dicts(out)
     out.sort(key=lambda d: (round(d["rect"].y0, 1), round(d["rect"].x0, 1)))
     return out
 

@@ -323,6 +323,56 @@ class TestFigureExtractionRender:
         doc.close()
         assert dets == []
 
+    def test_legend_goes_to_the_figure_above_it(self, isolated_fig_env):
+        """A figure legend belongs to the figure above, not the one below.
+
+        Nearest-in-either-direction handed "Fig. 1 ..." to whatever started
+        right underneath it, leaving the real figure captionless.
+        """
+        from mcp_second_brain import figures
+
+        vault = isolated_fig_env
+        pdf_path = vault / "legend.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.draw_rect(fitz.Rect(60, 60, 520, 300), color=(0, 0, 1), fill=(0.8, 0.8, 1))
+        page.insert_text((60, 320), "Fig. 1 The first figure of the paper.",
+                         fontsize=8, fontname="helv")
+        page.draw_rect(fitz.Rect(60, 420, 520, 660), color=(1, 0, 0), fill=(1, 0.8, 0.8))
+        doc.save(str(pdf_path))
+        doc.close()
+
+        doc = fitz.open(str(pdf_path))
+        dets = figures._detect_figures_geometric(doc[0])
+        doc.close()
+
+        assert len(dets) == 2, "a caption in the gutter keeps the figures apart"
+        upper, lower = dets[0], dets[1]
+        assert "first figure" in upper["caption"]
+        assert lower["caption"] == ""
+
+    def test_split_panels_rejoin_when_no_caption_divides_them(self, isolated_fig_env):
+        """Halves of one figure separated by a gutter must come back together."""
+        from mcp_second_brain import figures
+
+        vault = isolated_fig_env
+        pdf_path = vault / "split.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        # a gutter wider than the clustering dilation splits one figure in two
+        page.draw_rect(fitz.Rect(60, 60, 520, 200), color=(0, 0, 1), fill=(0.8, 0.8, 1))
+        page.draw_rect(fitz.Rect(60, 230, 520, 370), color=(0, 0, 1), fill=(0.8, 0.8, 1))
+        doc.save(str(pdf_path))
+        doc.close()
+
+        doc = fitz.open(str(pdf_path))
+        dets = figures._detect_figures_geometric(doc[0])
+        doc.close()
+
+        assert len(dets) == 1, "no caption divides them, so they are one figure"
+        r = dets[0]["rect"]
+        assert r.x0 < 65 and r.x1 > 515 and r.y0 < 65 and r.y1 > 365
+
     def test_body_text_is_not_a_figure(self, isolated_fig_env):
         """Pages of prose must yield nothing — no crops of paragraphs."""
         from mcp_second_brain import figures
