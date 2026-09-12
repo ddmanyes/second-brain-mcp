@@ -66,6 +66,10 @@ _SCORE_SQL = """
 
 _SYNC_BATCH_SIZE = 50
 _MULTIUSER_RERANK_ENV = "SB_MULTIUSER_RERANK"
+# Common terms can match most chunks in the deployed corpus. Keep the SQL
+# stage bounded without cancelling valid ~3s aggregation; the outer request
+# deadline still caps the whole search, including every subsequent stage.
+_MULTIUSER_STATEMENT_TIMEOUT_SECONDS = 5.0
 
 
 def _vec_to_pg(vec: list[float]) -> list[float]:
@@ -228,7 +232,7 @@ class PostgresStore:
                 identity = get_current_identity()
                 actor_id = (identity.user_uuid or "") if identity is not None else ""
                 is_admin = identity is not None and identity.is_admin()
-                milliseconds = str(max(1, int(remaining_timeout(2.0) * 1000)))
+                milliseconds = str(max(1, int(remaining_timeout(_MULTIUSER_STATEMENT_TIMEOUT_SECONDS) * 1000)))
                 conn.execute(
                     "SELECT set_config('sb.actor_id', %s, true), "
                     "set_config('sb.actor_is_admin', %s, true), "
