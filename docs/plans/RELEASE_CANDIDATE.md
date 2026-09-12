@@ -1,7 +1,7 @@
 # 多人 managed intake 本機驗證與發布候選 Runbook
 
 狀態：**0.3.0 包裝與獨立依賴 gate 已通過；正式候選仍待 clean-commit 重建與環境驗收**
-日期：2026-09-12  
+日期：2026-09-12
 本文件只描述候選建立、隔離驗證、部署驗收與 rollback。它不授權 commit、merge、push、安裝正式套件、修改正式 DB／service／key、啟動排程或呼叫付費模型。
 
 ## 1. 候選來源與邊界
