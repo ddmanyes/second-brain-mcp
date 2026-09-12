@@ -1,7 +1,10 @@
 # ruff: noqa: F811
 
+import concurrent.futures
 import io
 import json
+import threading
+import time
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -9,11 +12,14 @@ from uuid import UUID, uuid4
 
 import psycopg
 import pytest
+from psycopg import sql
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 from psycopg_pool import ConnectionPool
 
 from mcp_second_brain.identity import hash_key
 from mcp_second_brain.query_event_maintenance import main, run_maintenance
 from mcp_second_brain.query_events import Actor, ActorRole
+from mcp_second_brain.store.query_event_repository import retention
 from tests.test_query_event_postgres import event, repository  # noqa: F401
 
 ADMIN_UUID = UUID("11111111-1111-1111-1111-111111111111")
@@ -515,3 +521,138 @@ def test_real_cli_preview_apply_idempotency_and_privileged_dsn(repository):
     assert raw_key not in combined
     assert maintenance_dsn not in combined
     assert application_dsn not in combined
+
+
+def test_real_apply_uses_exact_dedicated_maintenance_table_grants(repository):
+    repo, _, pg = repository
+    raw_key = "synthetic-least-privilege-maintenance-key"
+    admin_id = uuid4()
+    role = "sb_test_telemetry_maintenance"
+    password = f"synthetic-{uuid4().hex}"
+    schema = Path(__file__).parents[1] / "mcp_second_brain/store/postgres_schema.sql"
+
+    with psycopg.connect(pg.dsn()) as admin:
+        admin.execute(schema.read_text(encoding="utf-8"))
+        admin.execute("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS user_uuid uuid")
+        admin.execute(
+            "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS expires_at timestamptz"
+        )
+        admin.execute(
+            "INSERT INTO public.api_keys "
+            "(key_hash, user_id, role, user_uuid) VALUES (%s, %s, 'admin', %s)",
+            (hash_key(raw_key), "least-privilege-maintenance", admin_id),
+        )
+        admin.execute(
+            sql.SQL("CREATE ROLE {} LOGIN NOSUPERUSER BYPASSRLS PASSWORD {}").format(
+                sql.Identifier(role), sql.Literal(password)
+            )
+        )
+        admin.execute(
+            sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(sql.Identifier(role))
+        )
+        admin.execute(
+            sql.SQL("GRANT SELECT ON public.api_keys TO {}").format(
+                sql.Identifier(role)
+            )
+        )
+        admin.execute(
+            sql.SQL("GRANT SELECT, DELETE ON public.query_events TO {}").format(
+                sql.Identifier(role)
+            )
+        )
+        admin.execute(
+            sql.SQL(
+                "GRANT SELECT, INSERT, UPDATE, DELETE ON public.query_event_daily TO {}"
+            ).format(sql.Identifier(role))
+        )
+
+    actor = Actor(uuid4(), ActorRole.MEMBER)
+    repo.write(event(actor, when=datetime.now(UTC) - timedelta(days=31)))
+    settings = conninfo_to_dict(pg.dsn())
+    settings.update(user=role, password=password)
+    maintenance_dsn = make_conninfo(**settings)
+
+    output = io.StringIO()
+    error = io.StringIO()
+    result = main(
+        ["--key-stdin", "--apply"],
+        stdin=io.StringIO(raw_key),
+        stdout=output,
+        stderr=error,
+        environ={"SB_PG_MAINTENANCE_DSN": maintenance_dsn},
+    )
+
+    assert result == 0
+    assert error.getvalue() == ""
+    assert json.loads(output.getvalue()) == {
+        "applied": True,
+        "batch_size": 1000,
+        "daily_deleted": 0,
+        "daily_eligible": 0,
+        "raw_deleted": 1,
+        "raw_eligible": 1,
+    }
+    with psycopg.connect(maintenance_dsn) as maintenance:
+        assert maintenance.execute(
+            "SELECT has_table_privilege(current_user, "
+            "'public.query_events', 'SELECT,DELETE')"
+        ).fetchone()[0]
+        assert not maintenance.execute(
+            "SELECT has_table_privilege(current_user, 'public.query_events', 'UPDATE')"
+        ).fetchone()[0]
+        assert maintenance.execute(
+            "SELECT has_table_privilege(current_user, "
+            "'public.query_event_daily', 'SELECT,INSERT,UPDATE,DELETE')"
+        ).fetchone()[0]
+        assert not maintenance.execute(
+            "SELECT has_table_privilege(current_user, 'public.notes', 'SELECT')"
+        ).fetchone()[0]
+
+    repo.write(event(actor, when=datetime.now(UTC) - timedelta(days=31)))
+    with psycopg.connect(pg.dsn()) as admin:
+        admin.execute(
+            "CREATE FUNCTION public.test_slow_query_event_delete() "
+            "RETURNS trigger LANGUAGE plpgsql AS $$ "
+            "BEGIN PERFORM pg_sleep(0.5); RETURN OLD; END $$"
+        )
+        admin.execute(
+            "CREATE TRIGGER test_slow_query_event_delete "
+            "BEFORE DELETE ON public.query_events FOR EACH ROW "
+            "EXECUTE FUNCTION public.test_slow_query_event_delete()"
+        )
+
+    barrier = threading.Barrier(2)
+
+    def concurrent_apply():
+        with psycopg.connect(maintenance_dsn) as maintenance:
+            barrier.wait(timeout=2)
+            try:
+                return retention(
+                    maintenance,
+                    now=datetime.now(UTC),
+                    apply_changes=True,
+                )
+            except psycopg.errors.LockNotAvailable:
+                return "lock_timeout"
+
+    started = time.monotonic()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(lambda _: concurrent_apply(), range(2)))
+    assert time.monotonic() - started < 3
+    successful = [outcome for outcome in outcomes if isinstance(outcome, dict)]
+    assert sum(outcome["raw_deleted"] for outcome in successful) == 1
+    assert all(
+        outcome == "lock_timeout"
+        or (isinstance(outcome, dict) and outcome["raw_deleted"] in {0, 1})
+        for outcome in outcomes
+    )
+    with psycopg.connect(pg.dsn()) as admin:
+        assert admin.execute("SELECT count(*) FROM query_events").fetchone()[0] == 0
+        assert (
+            admin.execute("SELECT sum(event_count) FROM query_event_daily").fetchone()[
+                0
+            ]
+            == 2
+        )
+    assert raw_key not in output.getvalue() + error.getvalue()
+    assert maintenance_dsn not in output.getvalue() + error.getvalue()

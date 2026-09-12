@@ -310,8 +310,10 @@ def retention(
     """Privileged preview/apply: roll up raw >30d, purge anonymous daily >180d.
 
     One bounded batch per call; schedule repeated calls while preview reports
-    backlog. DELETE+rollup is one transaction, so retries never double count.
-    The caller explicitly injects a maintenance connection; sb_app cannot run it.
+    backlog. DELETE RETURNING feeds the rollup in the same transaction, so only
+    rows actually deleted are counted and retries or concurrent calls never
+    double count. The caller explicitly injects a maintenance connection;
+    sb_app cannot run it.
     """
     if type(batch_size) is not int or not 1 <= batch_size <= 10000:
         raise ValueError("batch_size must be between 1 and 10000")
@@ -352,7 +354,7 @@ def retention(
             return result
         row = connection.execute(
             "WITH selected AS (SELECT event_id FROM public.query_events "
-            "WHERE started_at < %s ORDER BY started_at LIMIT %s FOR UPDATE SKIP LOCKED), "
+            "WHERE started_at < %s ORDER BY started_at LIMIT %s), "
             "removed AS (DELETE FROM public.query_events e USING selected s "
             "WHERE e.event_id = s.event_id RETURNING e.*), "
             "rolled AS (INSERT INTO public.query_event_daily "

@@ -52,7 +52,7 @@ def test_transaction_gucs_require_explicit_admin(identity, expected):
             pass
     finally:
         _current.reset(token)
-    assert store._pool.calls[0][1] == [*expected, "2000"]
+    assert store._pool.calls[0][1] == [*expected, "5000"]
     assert store._pool.checkout_timeout == 0.5
     assert "true" in store._pool.calls[0][0]  # transaction-local GUCs
 
@@ -71,7 +71,10 @@ def test_anonymous_checkout_clears_prior_admin_state():
             pass
     finally:
         _current.reset(token)
-    assert [params for _, params in store._pool.calls] == [["", "on", "2000"], ["", "off", "2000"]]
+    assert [params for _, params in store._pool.calls] == [
+        ["", "on", "5000"],
+        ["", "off", "5000"],
+    ]
 
 
 def test_singleuser_checkout_remains_unmodified():
