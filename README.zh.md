@@ -5,7 +5,7 @@
 **給 AI agent 用的自維護個人知識庫——純 Markdown vault，以 MCP 驅動。**
 
 [![CI](https://github.com/ddmanyes/second-brain-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ddmanyes/second-brain-mcp/actions/workflows/ci.yml)
-[![Python ≥ 3.11](https://img.shields.io/badge/Python-%E2%89%A53.11-blue)](https://www.python.org/)
+[![Python 3.11–3.13](https://img.shields.io/badge/Python-3.11%E2%80%933.13-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-lightgrey)](LICENSE)
 
 [English](README.md) · 📖 繁體中文
@@ -45,6 +45,7 @@ vault 目錄與模板會在首次啟動時自動建立。之後叫 agent 執行 
 
 | 工具 | 用途 |
 | :--- | :--- |
+| `auth_context` | 讀取已驗證呼叫者的正規 UUID、角色與 RBAC 狀態 |
 | `get_context` | Session 開頭——goals + 排序後的熱門筆記 + 自動 rules |
 | `save_article` | URL / PDF → Markdown + 圖片 + 向量 |
 | `search_notes` / `search_figures` | 混合 BM25 + 語義搜尋（筆記內文 / 圖片內容） |
@@ -54,7 +55,7 @@ vault 目錄與模板會在首次啟動時自動建立。之後叫 agent 執行 
 | `vault_sleep` | 壓縮老舊、低活躍度的筆記 |
 | `get_agent_instructions` | 把完整歸檔 SOP（AGENTS.md）提供給遠端 agent |
 
-完整工具清單（45 個）見 **[AGENTS.md](AGENTS.md)**。
+完整工具清單（46 個）見 **[AGENTS.md](AGENTS.md)**。
 
 需要內容時使用 `search_notes`；server 或索引可能異常時使用 `health_check`；
 需要文章整理報告時使用 `audit_article_records`。稽核結果不會自動合併、歸檔或刪除筆記。

@@ -1,60 +1,35 @@
-"""Tests for PostgresStore backend.
+"""PostgresStore integration tests against an owned disposable container.
 
-Requires a running Postgres instance. Set SB_PG_TEST_DSN to override.
-Default: postgresql://postgres:postgres@localhost:5432/sb_test
-
-⚠️ The fixture DELETEs all rows for a clean slate, so the default DSN MUST point
-at a throwaway database (sb_test), NEVER the live sb_personal / sb_lab index.
-
-Run:
-    SB_PG_TEST_DSN=... pytest tests/test_postgres_store.py -v
+Run with ``pytest --run-postgres tests/test_postgres_store.py``. Without that
+flag tests are skipped. External SB_PG_TEST_DSN / PG* overrides are rejected;
+no localhost/default or externally managed database is ever used.
 """
 
 from __future__ import annotations
 
-import json
-import os
-import tempfile
 import threading
 from pathlib import Path
 
 import pytest
 
-TEST_DSN = os.environ.get(
-    "SB_PG_TEST_DSN",
-    "postgresql://postgres:postgres@localhost:5432/sb_test",
-)
-
-# Hard guard: never let the destructive fixture run against the live indexes.
-if TEST_DSN.rsplit("/", 1)[-1] in {"sb_personal", "sb_lab"}:
-    raise RuntimeError(
-        f"Refusing to run destructive Postgres tests against live DB in DSN: {TEST_DSN}. "
-        "Point SB_PG_TEST_DSN at a throwaway database (e.g. sb_test)."
-    )
-
 
 @pytest.fixture(scope="module")
-def store():
+def store(multiuser_postgres):
     """Module-scoped PostgresStore connected to a test schema."""
     try:
         from mcp_second_brain.store.postgres_store import PostgresStore
     except ImportError:
         pytest.skip("psycopg not installed")
 
+    # No external DSN, fallback connection or skip-on-failure: this endpoint
+    # belongs to the explicitly opted-in, freshly verified tmpfs container.
+    multiuser_postgres.reset()
+    s = PostgresStore(multiuser_postgres.dsn())
+
     try:
-        s = PostgresStore(TEST_DSN)
-    except Exception as e:
-        pytest.skip(f"Postgres unavailable: {e}")
-
-    # Clean slate for tests
-    with s._pool.connection() as conn:
-        conn.execute("DELETE FROM figures")
-        conn.execute("DELETE FROM note_chunks")  # notes(path) ON DELETE CASCADE covers
-        conn.execute("DELETE FROM notes")        # this too, but be explicit anyway
-        conn.commit()
-
-    yield s
-    s.close()
+        yield s
+    finally:
+        s.close()
 
 
 @pytest.fixture()

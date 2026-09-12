@@ -9,12 +9,15 @@ run against the real lcdda Postgres at 127.0.0.1:5434.
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import string
 import subprocess
 import time
 import uuid
 from dataclasses import dataclass
+
+from tests.support.pg_test_safety import reject_external_postgres_settings, validate_owned_dsn
 
 
 IMAGE = "pgvector/pgvector:0.8.6-pg16-bookworm"
@@ -50,6 +53,7 @@ class DisposablePostgres:
         self.port: int | None = None
 
     def start(self) -> None:
+        reject_external_postgres_settings(os.environ)
         _docker(
             "run", "--detach", "--rm", "--pull", "never",
             "--name", self.name,
@@ -122,16 +126,23 @@ class DisposablePostgres:
         or by the RLS migration's own ALTER ROLE step."""
         if self.port is None:
             raise RuntimeError("disposable PostgreSQL is not started")
+        reject_external_postgres_settings(os.environ)
+        self._verify_container()
         if role == "postgres":
             user, password = "postgres", self.postgres_password
         elif role == "sb_app":
             user, password = self.sb_app.user, self.sb_app.password
         else:
             raise ValueError("role must be 'postgres' or 'sb_app'")
-        return (
+        dsn = (
             f"postgresql://{user}:{password}@{self.host}:{self.port}/{self.database}"
             "?connect_timeout=5"
         )
+
+        validate_owned_dsn(
+            dsn, database=self.database, port=self.port, user=user, password=password
+        )
+        return dsn
 
     def set_sb_app_password(self) -> None:
         """sb_app is created (no password) by postgres_rls_schema.sql; tests

@@ -5,26 +5,15 @@ directly into RRF (see its docstring — a pre-RRF score-merge step used to sit
 here, removed 2026-09-04 after it was found to silently bury genuine
 chunk-only matches under thematically-similar notes-level noise; see
 TestBackHalfRetrievalGap below for the regression test). The integration
-tests need a real Postgres (sb_test convention, see test_postgres_store.py)
+tests need --run-postgres (owned disposable container; see test_postgres_store.py)
 and monkeypatch chunk_and_embed with a deterministic fake — same reasoning
 as test_note_chunks_sync.py.
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
-
-TEST_DSN = os.environ.get(
-    "SB_PG_TEST_DSN",
-    "postgresql://postgres:postgres@localhost:5432/sb_test",
-)
-if TEST_DSN.rsplit("/", 1)[-1] in {"sb_personal", "sb_lab"}:
-    raise RuntimeError(
-        f"Refusing to run destructive Postgres tests against live DB in DSN: {TEST_DSN}. "
-        "Point SB_PG_TEST_DSN at a throwaway database (e.g. sb_test)."
-    )
 
 FM = "---\ntitle: T\ntype: note\nstatus: active\ntags: []\n---\n\n"
 
@@ -52,24 +41,20 @@ def _fake_chunk_and_embed(text, **kwargs):
 
 
 @pytest.fixture(scope="module")
-def store():
+def store(multiuser_postgres):
     try:
         from mcp_second_brain.store.postgres_store import PostgresStore
     except ImportError:
         pytest.skip("psycopg not installed")
+    # No external DSN, fallback connection or skip-on-failure: this endpoint
+    # belongs to the explicitly opted-in, freshly verified tmpfs container.
+    multiuser_postgres.reset()
+    s = PostgresStore(multiuser_postgres.dsn())
+
     try:
-        s = PostgresStore(TEST_DSN)
-    except Exception as e:
-        pytest.skip(f"Postgres unavailable: {e}")
-
-    with s._pool.connection() as conn:
-        conn.execute("DELETE FROM figures")
-        conn.execute("DELETE FROM note_chunks")
-        conn.execute("DELETE FROM notes")
-        conn.commit()
-
-    yield s
-    s.close()
+        yield s
+    finally:
+        s.close()
 
 
 @pytest.fixture()

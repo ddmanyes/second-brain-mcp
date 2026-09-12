@@ -1,0 +1,758 @@
+{
+  "execution": "sequential phases with independent temporary roots",
+  "generated_at_epoch_seconds": 1789186003.9490712,
+  "mode": "matrix",
+  "not_measured": [
+    "PostgreSQL latency, locks, RLS, connections, or storage metrics",
+    "production ASGI/auth middleware and HTTP transport",
+    "network retrieval, redirects, document conversion, or model calls",
+    "production filesystem, vault, scheduler, worker subprocess, or NAS behavior"
+  ],
+  "phases": [
+    {
+      "actor_isolation_failures": 0,
+      "busy": 0,
+      "clients": 1,
+      "count": 6000,
+      "duplicate_count": 0,
+      "elapsed_seconds": 299.953223,
+      "errors": 0,
+      "event_loss": 0,
+      "ingest_count": 0,
+      "ingest_every_queries": 20,
+      "ingest_stage_ms": {
+        "job_run": {
+          "count": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "total": 0
+        },
+        "queue_wait": {
+          "count": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "total": 0
+        },
+        "submit": {
+          "count": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "total": 0
+        }
+      },
+      "latency_ms": {
+        "p50": 0.654,
+        "p95": 1.195,
+        "p99": 1.564
+      },
+      "lifecycle": {
+        "event_actor_count": 1,
+        "event_sink": {
+          "accepted": 6200,
+          "dropped": 0,
+          "failed": 0,
+          "overflow": 0,
+          "pending": 0,
+          "rejected": 0,
+          "written": 6200
+        },
+        "event_sink_closed": true,
+        "events_written_by_fake_sink": 6200,
+        "queries_drained": true,
+        "recorder_callback_failures": 0
+      },
+      "mixture": "query_only",
+      "pacing": "fixed_rate_monotonic_deadline",
+      "queue_limits": {
+        "capacity": 50,
+        "per_owner": 5
+      },
+      "resources": {
+        "after": {
+          "cpu_system_seconds": 0.900129,
+          "cpu_user_seconds": 4.564329,
+          "rss_max_bytes": 62652416
+        },
+        "before": {
+          "cpu_system_seconds": 0.062637,
+          "cpu_user_seconds": 0.28640699999999997,
+          "rss_max_bytes": 62357504
+        },
+        "cpu_system_seconds_delta": 0.837492,
+        "cpu_user_seconds_delta": 4.277922,
+        "rss_max_bytes_delta": 294912
+      },
+      "target_rate_per_second": 20.0,
+      "telemetry_enabled": true,
+      "throughput_per_second": 20.003,
+      "timeouts": 0,
+      "warmup_requests": 200
+    },
+    {
+      "actor_isolation_failures": 0,
+      "busy": 0,
+      "clients": 1,
+      "count": 6000,
+      "duplicate_count": 299,
+      "elapsed_seconds": 299.951943,
+      "errors": 0,
+      "event_loss": 0,
+      "ingest_count": 300,
+      "ingest_every_queries": 20,
+      "ingest_stage_ms": {
+        "job_run": {
+          "count": 300,
+          "p50": 2.995,
+          "p95": 5.46,
+          "p99": 6.624,
+          "total": 917.94
+        },
+        "queue_wait": {
+          "count": 300,
+          "p50": 0.002,
+          "p95": 0.002,
+          "p99": 0.003,
+          "total": 0.479
+        },
+        "submit": {
+          "count": 300,
+          "p50": 13.957,
+          "p95": 23.266,
+          "p99": 25.978,
+          "total": 4019.575
+        }
+      },
+      "latency_ms": {
+        "p50": 0.978,
+        "p95": 1.553,
+        "p99": 1.756
+      },
+      "lifecycle": {
+        "event_actor_count": 1,
+        "event_sink": {
+          "accepted": 6200,
+          "dropped": 0,
+          "failed": 0,
+          "overflow": 0,
+          "pending": 0,
+          "rejected": 0,
+          "written": 6200
+        },
+        "event_sink_closed": true,
+        "events_written_by_fake_sink": 6200,
+        "queries_drained": true,
+        "recorder_callback_failures": 0
+      },
+      "mixture": "query+ingest",
+      "pacing": "fixed_rate_monotonic_deadline",
+      "queue_limits": {
+        "capacity": 50,
+        "per_owner": 5
+      },
+      "resources": {
+        "after": {
+          "cpu_system_seconds": 5.015549,
+          "cpu_user_seconds": 12.581337,
+          "rss_max_bytes": 65994752
+        },
+        "before": {
+          "cpu_system_seconds": 0.908732,
+          "cpu_user_seconds": 4.596893,
+          "rss_max_bytes": 62734336
+        },
+        "cpu_system_seconds_delta": 4.106817,
+        "cpu_user_seconds_delta": 7.984444,
+        "rss_max_bytes_delta": 3260416
+      },
+      "target_rate_per_second": 20.0,
+      "telemetry_enabled": true,
+      "throughput_per_second": 20.003,
+      "timeouts": 0,
+      "warmup_requests": 200
+    },
+    {
+      "actor_isolation_failures": 0,
+      "busy": 0,
+      "clients": 5,
+      "count": 6000,
+      "duplicate_count": 0,
+      "elapsed_seconds": 299.95238,
+      "errors": 0,
+      "event_loss": 0,
+      "ingest_count": 0,
+      "ingest_every_queries": 20,
+      "ingest_stage_ms": {
+        "job_run": {
+          "count": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "total": 0
+        },
+        "queue_wait": {
+          "count": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "total": 0
+        },
+        "submit": {
+          "count": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "total": 0
+        }
+      },
+      "latency_ms": {
+        "p50": 0.954,
+        "p95": 1.57,
+        "p99": 1.822
+      },
+      "lifecycle": {
+        "event_actor_count": 5,
+        "event_sink": {
+          "accepted": 6200,
+          "dropped": 0,
+          "failed": 0,
+          "overflow": 0,
+          "pending": 0,
+          "rejected": 0,
+          "written": 6200
+        },
+        "event_sink_closed": true,
+        "events_written_by_fake_sink": 6200,
+        "queries_drained": true,
+        "recorder_callback_failures": 0
+      },
+      "mixture": "query_only",
+      "pacing": "fixed_rate_monotonic_deadline",
+      "queue_limits": {
+        "capacity": 50,
+        "per_owner": 5
+      },
+      "resources": {
+        "after": {
+          "cpu_system_seconds": 6.21986,
+          "cpu_user_seconds": 18.796097,
+          "rss_max_bytes": 66093056
+        },
+        "before": {
+          "cpu_system_seconds": 5.022245,
+          "cpu_user_seconds": 12.607792,
+          "rss_max_bytes": 66093056
+        },
+        "cpu_system_seconds_delta": 1.197615,
+        "cpu_user_seconds_delta": 6.188305,
+        "rss_max_bytes_delta": 0
+      },
+      "target_rate_per_second": 20.0,
+      "telemetry_enabled": true,
+      "throughput_per_second": 20.003,
+      "timeouts": 0,
+      "warmup_requests": 200
+    },
+    {
+      "actor_isolation_failures": 0,
+      "busy": 0,
+      "clients": 5,
+      "count": 6000,
+      "duplicate_count": 299,
+      "elapsed_seconds": 299.95191,
+      "errors": 0,
+      "event_loss": 0,
+      "ingest_count": 300,
+      "ingest_every_queries": 20,
+      "ingest_stage_ms": {
+        "job_run": {
+          "count": 300,
+          "p50": 3.038,
+          "p95": 5.632,
+          "p99": 6.964,
+          "total": 940.647
+        },
+        "queue_wait": {
+          "count": 300,
+          "p50": 0.002,
+          "p95": 0.002,
+          "p99": 0.003,
+          "total": 0.469
+        },
+        "submit": {
+          "count": 300,
+          "p50": 13.485,
+          "p95": 24.039,
+          "p99": 26.182,
+          "total": 4132.482
+        }
+      },
+      "latency_ms": {
+        "p50": 0.963,
+        "p95": 1.615,
+        "p99": 1.847
+      },
+      "lifecycle": {
+        "event_actor_count": 5,
+        "event_sink": {
+          "accepted": 6200,
+          "dropped": 0,
+          "failed": 0,
+          "overflow": 0,
+          "pending": 0,
+          "rejected": 0,
+          "written": 6200
+        },
+        "event_sink_closed": true,
+        "events_written_by_fake_sink": 6200,
+        "queries_drained": true,
+        "recorder_callback_failures": 0
+      },
+      "mixture": "query+ingest",
+      "pacing": "fixed_rate_monotonic_deadline",
+      "queue_limits": {
+        "capacity": 50,
+        "per_owner": 5
+      },
+      "resources": {
+        "after": {
+          "cpu_system_seconds": 10.318769,
+          "cpu_user_seconds": 27.094075,
+          "rss_max_bytes": 67993600
+        },
+        "before": {
+          "cpu_system_seconds": 6.226237,
+          "cpu_user_seconds": 18.819171,
+          "rss_max_bytes": 66093056
+        },
+        "cpu_system_seconds_delta": 4.092532,
+        "cpu_user_seconds_delta": 8.274904,
+        "rss_max_bytes_delta": 1900544
+      },
+      "target_rate_per_second": 20.0,
+      "telemetry_enabled": true,
+      "throughput_per_second": 20.003,
+      "timeouts": 0,
+      "warmup_requests": 200
+    },
+    {
+      "actor_isolation_failures": 0,
+      "busy": 0,
+      "clients": 10,
+      "count": 6000,
+      "duplicate_count": 0,
+      "elapsed_seconds": 299.954197,
+      "errors": 0,
+      "event_loss": 0,
+      "ingest_count": 0,
+      "ingest_every_queries": 20,
+      "ingest_stage_ms": {
+        "job_run": {
+          "count": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "total": 0
+        },
+        "queue_wait": {
+          "count": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "total": 0
+        },
+        "submit": {
+          "count": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "total": 0
+        }
+      },
+      "latency_ms": {
+        "p50": 0.969,
+        "p95": 1.665,
+        "p99": 1.919
+      },
+      "lifecycle": {
+        "event_actor_count": 10,
+        "event_sink": {
+          "accepted": 6200,
+          "dropped": 0,
+          "failed": 0,
+          "overflow": 0,
+          "pending": 0,
+          "rejected": 0,
+          "written": 6200
+        },
+        "event_sink_closed": true,
+        "events_written_by_fake_sink": 6200,
+        "queries_drained": true,
+        "recorder_callback_failures": 0
+      },
+      "mixture": "query_only",
+      "pacing": "fixed_rate_monotonic_deadline",
+      "queue_limits": {
+        "capacity": 50,
+        "per_owner": 5
+      },
+      "resources": {
+        "after": {
+          "cpu_system_seconds": 11.578795,
+          "cpu_user_seconds": 33.432005,
+          "rss_max_bytes": 68009984
+        },
+        "before": {
+          "cpu_system_seconds": 10.327579,
+          "cpu_user_seconds": 27.12804,
+          "rss_max_bytes": 68009984
+        },
+        "cpu_system_seconds_delta": 1.251216,
+        "cpu_user_seconds_delta": 6.303965,
+        "rss_max_bytes_delta": 0
+      },
+      "target_rate_per_second": 20.0,
+      "telemetry_enabled": true,
+      "throughput_per_second": 20.003,
+      "timeouts": 0,
+      "warmup_requests": 200
+    },
+    {
+      "actor_isolation_failures": 0,
+      "busy": 0,
+      "clients": 10,
+      "count": 6000,
+      "duplicate_count": 299,
+      "elapsed_seconds": 299.950967,
+      "errors": 0,
+      "event_loss": 0,
+      "ingest_count": 300,
+      "ingest_every_queries": 20,
+      "ingest_stage_ms": {
+        "job_run": {
+          "count": 300,
+          "p50": 3.008,
+          "p95": 6.361,
+          "p99": 8.611,
+          "total": 955.482
+        },
+        "queue_wait": {
+          "count": 300,
+          "p50": 0.002,
+          "p95": 0.003,
+          "p99": 0.003,
+          "total": 0.482
+        },
+        "submit": {
+          "count": 300,
+          "p50": 12.232,
+          "p95": 23.041,
+          "p99": 24.736,
+          "total": 3828.285
+        }
+      },
+      "latency_ms": {
+        "p50": 0.93,
+        "p95": 1.62,
+        "p99": 1.865
+      },
+      "lifecycle": {
+        "event_actor_count": 10,
+        "event_sink": {
+          "accepted": 6200,
+          "dropped": 0,
+          "failed": 0,
+          "overflow": 0,
+          "pending": 0,
+          "rejected": 0,
+          "written": 6200
+        },
+        "event_sink_closed": true,
+        "events_written_by_fake_sink": 6200,
+        "queries_drained": true,
+        "recorder_callback_failures": 0
+      },
+      "mixture": "query+ingest",
+      "pacing": "fixed_rate_monotonic_deadline",
+      "queue_limits": {
+        "capacity": 50,
+        "per_owner": 5
+      },
+      "resources": {
+        "after": {
+          "cpu_system_seconds": 15.441235,
+          "cpu_user_seconds": 41.315667,
+          "rss_max_bytes": 70057984
+        },
+        "before": {
+          "cpu_system_seconds": 11.586846,
+          "cpu_user_seconds": 33.465873,
+          "rss_max_bytes": 68059136
+        },
+        "cpu_system_seconds_delta": 3.854389,
+        "cpu_user_seconds_delta": 7.849794,
+        "rss_max_bytes_delta": 1998848
+      },
+      "target_rate_per_second": 20.0,
+      "telemetry_enabled": true,
+      "throughput_per_second": 20.003,
+      "timeouts": 0,
+      "warmup_requests": 200
+    },
+    {
+      "actor_isolation_failures": 0,
+      "busy": 0,
+      "clients": 20,
+      "count": 6000,
+      "duplicate_count": 0,
+      "elapsed_seconds": 299.953279,
+      "errors": 0,
+      "event_loss": 0,
+      "ingest_count": 0,
+      "ingest_every_queries": 20,
+      "ingest_stage_ms": {
+        "job_run": {
+          "count": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "total": 0
+        },
+        "queue_wait": {
+          "count": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "total": 0
+        },
+        "submit": {
+          "count": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "total": 0
+        }
+      },
+      "latency_ms": {
+        "p50": 0.959,
+        "p95": 1.611,
+        "p99": 1.85
+      },
+      "lifecycle": {
+        "event_actor_count": 20,
+        "event_sink": {
+          "accepted": 6200,
+          "dropped": 0,
+          "failed": 0,
+          "overflow": 0,
+          "pending": 0,
+          "rejected": 0,
+          "written": 6200
+        },
+        "event_sink_closed": true,
+        "events_written_by_fake_sink": 6200,
+        "queries_drained": true,
+        "recorder_callback_failures": 0
+      },
+      "mixture": "query_only",
+      "pacing": "fixed_rate_monotonic_deadline",
+      "queue_limits": {
+        "capacity": 50,
+        "per_owner": 5
+      },
+      "resources": {
+        "after": {
+          "cpu_system_seconds": 16.621834,
+          "cpu_user_seconds": 47.17562,
+          "rss_max_bytes": 70057984
+        },
+        "before": {
+          "cpu_system_seconds": 15.449004,
+          "cpu_user_seconds": 41.335414,
+          "rss_max_bytes": 70057984
+        },
+        "cpu_system_seconds_delta": 1.17283,
+        "cpu_user_seconds_delta": 5.840206,
+        "rss_max_bytes_delta": 0
+      },
+      "target_rate_per_second": 20.0,
+      "telemetry_enabled": true,
+      "throughput_per_second": 20.003,
+      "timeouts": 0,
+      "warmup_requests": 200
+    },
+    {
+      "actor_isolation_failures": 0,
+      "busy": 0,
+      "clients": 20,
+      "count": 6000,
+      "duplicate_count": 299,
+      "elapsed_seconds": 299.950699,
+      "errors": 0,
+      "event_loss": 0,
+      "ingest_count": 300,
+      "ingest_every_queries": 20,
+      "ingest_stage_ms": {
+        "job_run": {
+          "count": 300,
+          "p50": 2.808,
+          "p95": 5.954,
+          "p99": 7.597,
+          "total": 901.96
+        },
+        "queue_wait": {
+          "count": 300,
+          "p50": 0.001,
+          "p95": 0.002,
+          "p99": 0.002,
+          "total": 0.372
+        },
+        "submit": {
+          "count": 300,
+          "p50": 12.591,
+          "p95": 22.438,
+          "p99": 25.014,
+          "total": 3809.559
+        }
+      },
+      "latency_ms": {
+        "p50": 0.861,
+        "p95": 1.585,
+        "p99": 1.846
+      },
+      "lifecycle": {
+        "event_actor_count": 20,
+        "event_sink": {
+          "accepted": 6200,
+          "dropped": 0,
+          "failed": 0,
+          "overflow": 0,
+          "pending": 0,
+          "rejected": 0,
+          "written": 6200
+        },
+        "event_sink_closed": true,
+        "events_written_by_fake_sink": 6200,
+        "queries_drained": true,
+        "recorder_callback_failures": 0
+      },
+      "mixture": "query+ingest",
+      "pacing": "fixed_rate_monotonic_deadline",
+      "queue_limits": {
+        "capacity": 50,
+        "per_owner": 5
+      },
+      "resources": {
+        "after": {
+          "cpu_system_seconds": 20.363886,
+          "cpu_user_seconds": 54.631399,
+          "rss_max_bytes": 72040448
+        },
+        "before": {
+          "cpu_system_seconds": 16.63086,
+          "cpu_user_seconds": 47.209986,
+          "rss_max_bytes": 70057984
+        },
+        "cpu_system_seconds_delta": 3.733026,
+        "cpu_user_seconds_delta": 7.421413,
+        "rss_max_bytes_delta": 1982464
+      },
+      "target_rate_per_second": 20.0,
+      "telemetry_enabled": true,
+      "throughput_per_second": 20.003,
+      "timeouts": 0,
+      "warmup_requests": 200
+    }
+  ],
+  "schema": "second-brain.synthetic-multiuser-load.v1",
+  "synthetic_dependencies": {
+    "article_index": "local callback returning true",
+    "real_components": [
+      "ObservedFastMCP registered call_tool wrapper",
+      "QueryDispatcher",
+      "BoundedEventSink",
+      "lcdda DurableQueue and HarvestWorkspace",
+      "commit_shared_article"
+    ],
+    "resolver": "fixed metadata stub only; no source resolution",
+    "retrieval": "deterministic local identity echo"
+  },
+  "telemetry_comparison": {
+    "off": {
+      "event_loss": 0,
+      "latency_ms": {
+        "p50": 0.08,
+        "p95": 0.102,
+        "p99": 0.158
+      },
+      "lifecycle": {
+        "event_actor_count": 0,
+        "event_sink": {
+          "accepted": 0,
+          "dropped": 0,
+          "failed": 0,
+          "overflow": 0,
+          "pending": 0,
+          "rejected": 0,
+          "written": 0
+        },
+        "event_sink_closed": true,
+        "events_written_by_fake_sink": 0,
+        "queries_drained": true,
+        "recorder_callback_failures": 0
+      },
+      "samples": 200,
+      "throughput_per_second": 11916.406,
+      "warmup_requests": 200
+    },
+    "on": {
+      "event_loss": 0,
+      "latency_ms": {
+        "p50": 0.111,
+        "p95": 0.132,
+        "p99": 0.169
+      },
+      "lifecycle": {
+        "event_actor_count": 1,
+        "event_sink": {
+          "accepted": 400,
+          "dropped": 0,
+          "failed": 0,
+          "overflow": 0,
+          "pending": 0,
+          "rejected": 0,
+          "written": 400
+        },
+        "event_sink_closed": true,
+        "events_written_by_fake_sink": 400,
+        "queries_drained": true,
+        "recorder_callback_failures": 0
+      },
+      "samples": 200,
+      "throughput_per_second": 8836.069,
+      "warmup_requests": 200
+    },
+    "order": [
+      "off",
+      "on"
+    ],
+    "p50_overhead_ms": 0.031,
+    "p95_overhead_ms": 0.03,
+    "p95_overhead_target_met": true,
+    "p95_overhead_target_ms": 20
+  },
+  "tested_source_sha256": {
+    "article_attribution.py": "eeac5b6f92b2ad18f6c6622a17676cf7e0d6db59d9e37ea32ba9cdf1b354c237",
+    "identity.py": "2a4888e8308d35e6a732226333d2487bd6f092215bc82bee77edc24115c3de62",
+    "multiuser_load.py": "9452305402d869d42fb00bbb057e64cabce554471407ef7e83edc48b4104fe39",
+    "query_dispatch.py": "4645f3e4a0b307628b090ab7d89f16e3eb900c48cc8a4c2baf80920149a40fb3",
+    "query_event_mcp.py": "c572919bf7b90fc33785c6cf553498983e07a9fa3399857e25a607a6b9b7e0b0",
+    "query_event_store.py": "0d6d8a1b4166f562064c54fc0814242128acb137ee56a98ad2a70befffe8898d",
+    "query_events.py": "9a55b1c475412251be00e6a2ebaf8c59e331ad760bcefc95c5b48f65f852be7f",
+    "queue.py": "18719319ed8fdd74b6e276923768db5f884819cfee8c8197621a8a2a6830baea",
+    "request_budget.py": "a989ae9ad150489e66c57afcbbaa580f38e02e8675dcdd41d87249a8719bac27",
+    "workspace.py": "821fe8d1c59853fb66c177c0c48c4217b3bc8d441a266abb6b59445895196ee0"
+  }
+}

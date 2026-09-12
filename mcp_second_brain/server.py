@@ -20,7 +20,7 @@ from typing_extensions import TypedDict
 from urllib.parse import urlparse
 
 from markitdown import MarkItDown
-from mcp.server.fastmcp import FastMCP, Image
+from mcp.server.fastmcp import Image
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
@@ -34,10 +34,14 @@ from . import visibility as _visibility
 from . import vault_sleep as _vs
 from .article_audit import audit_article_records as _audit_article_records
 from .article_metadata import bibliographic_frontmatter
+from .query_events import Actor, ActorRole, ErrorCode, EventStatus, Outcome, QueryEventRecorder, mark_outcome
+from .query_event_mcp import ObservedFastMCP
 from .identity import (
+    canonical_user_id,
     check_admin_permission,
     check_write_permission,
     get_current_identity,
+    rbac_enforced,
 )
 from .store import get_store
 from .vault_db import KNOWLEDGE_EXCLUDE
@@ -49,6 +53,20 @@ VAULT = Path(os.environ.get(
 )).expanduser().resolve()
 
 _store = get_store()  # DuckDBStore or PostgresStore, selected by SB_DB_BACKEND env var
+
+
+def _legacy_query_log(payload: dict) -> None:
+    """Optional single-user eval data; never enabled for a shared service."""
+    if _visibility.multiuser_enabled() or os.environ.get("SB_LEGACY_QUERY_LOG") != "1":
+        return
+    from datetime import datetime, timezone
+
+    try:
+        with (VAULT / ".query-log.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"ts": datetime.now(timezone.utc).isoformat(), **payload},
+                                    ensure_ascii=False) + "\n")
+    except OSError:
+        print("[second-brain] legacy query log write failed", file=sys.stderr)
 
 
 def _log_write(tool: str, target: str = "") -> None:
@@ -152,6 +170,7 @@ def write_tool(*, target: str | None = None, target_const: str = "", target_is_v
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             if err := check_write_permission(name):
+                mark_outcome(Outcome(EventStatus.DENIED, ErrorCode.DENIED))
                 return err
             _log_write(name, target_const or _audit_target(sig, target, args, kwargs))
             if target_is_vault_path:
@@ -162,10 +181,12 @@ def write_tool(*, target: str | None = None, target_const: str = "", target_is_v
                     try:
                         _visibility.assert_visible(str(candidate), identity, for_write=True)
                     except VaultPathError as exc:
+                        mark_outcome(Outcome(EventStatus.DENIED, ErrorCode.DENIED))
                         return str(exc)
             try:
                 return fn(*args, **kwargs)
             except VaultPathError as exc:
+                mark_outcome(Outcome(EventStatus.DENIED, ErrorCode.DENIED))
                 return str(exc)
 
         return mcp.tool()(wrapper)
@@ -191,12 +212,14 @@ def admin_tool(*, target: str | None = None, audit: bool = True):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             if err := check_admin_permission(name):
+                mark_outcome(Outcome(EventStatus.DENIED, ErrorCode.DENIED))
                 return err
             if audit:
                 _log_write(name, _audit_target(sig, target, args, kwargs))
             try:
                 return fn(*args, **kwargs)
             except VaultPathError as exc:
+                mark_outcome(Outcome(EventStatus.DENIED, ErrorCode.DENIED))
                 return str(exc)
 
         return mcp.tool()(wrapper)
@@ -263,7 +286,80 @@ def _kill_old_server() -> None:
 # （刻意不在此處呼叫 _kill_old_server()；見上方說明，改在 HTTP 分支才呼叫）
 # ─────────────────────────────────────────────────────────────────────────────
 
-mcp = FastMCP("second-brain", stateless_http=True)
+def _event_actor():
+    from uuid import UUID
+    identity = get_current_identity()
+    if identity is None:
+        return Actor()
+    return Actor(UUID(identity.user_uuid) if identity.user_uuid else None, ActorRole(identity.role))
+
+
+_query_recorder = QueryEventRecorder(
+    service="lcdda", actor_getter=_event_actor,
+    revision=os.environ.get("SB_APP_REVISION") or None,
+    retrieval_revision=os.environ.get("SB_RETRIEVAL_REVISION") or None,
+)
+mcp = ObservedFastMCP("second-brain", stateless_http=True, recorder=_query_recorder)
+_active_event_sink = None
+_query_window = None
+
+
+class AuthContextResult(TypedDict):
+    user_id: str
+    role: Literal["reader", "member", "writer", "admin"]
+    rbac_enforced: bool
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+    structured_output=True,
+)
+def auth_context() -> AuthContextResult:
+    """Return the authenticated caller's canonical EP UUID and current role."""
+    identity = get_current_identity()
+    user_id = canonical_user_id(identity)
+    assert identity is not None
+    mark_outcome(Outcome())
+    return {
+        "user_id": user_id,
+        "role": identity.role,
+        "rbac_enforced": rbac_enforced(),
+    }
+
+
+def _start_query_events():
+    """Opt-in runtime only; never apply schema or create background work by import."""
+    if os.environ.get("SB_QUERY_EVENTS_ENABLED") != "1":
+        return None
+    from .query_event_store import BoundedEventSink
+    from .operational_alerts import QueryWindow
+    from .store.postgres_store import PostgresStore
+    from .store.query_event_repository import QueryEventRepository
+
+    if not _visibility.multiuser_enabled() or not isinstance(_store, PostgresStore):
+        raise RuntimeError("query events require the isolated multiuser PostgreSQL service")
+    repository = QueryEventRepository(_store._pool, actor_getter=_event_actor)
+    repository.verify_schema()
+    global _active_event_sink, _query_window
+    _query_window = QueryWindow()
+    sink = BoundedEventSink(repository.write, capacity=256)
+    sink.start()
+
+    def deliver(event):
+        try:
+            _query_window.observe(event)
+        except Exception:
+            pass
+        return sink(event)
+
+    _query_recorder.configure_sink(deliver)
+    _active_event_sink = sink
+    return sink
 
 # Single source of truth: note type → (folder, template)
 NOTE_CONFIG: dict[str, tuple[str, str]] = {
@@ -353,6 +449,9 @@ _index_lock = threading.Lock()
 
 
 def _append_to_index(rel: str, label: str, today: str) -> None:
+    # This Markdown index is shared. Private titles/paths must never enter it.
+    if _visibility.multiuser_enabled() and _visibility.owner_of_path(rel) is not None:
+        return
     index_path = VAULT / "memory" / "index.md"
     index_path.parent.mkdir(parents=True, exist_ok=True)
     with _index_lock:
@@ -488,6 +587,12 @@ def _inject_related_links(note_path: Path, rel: str) -> int:
     Returns count of links added (0 = no embedding server or no matches).
     """
     related = _store.find_related(rel, limit=5, threshold=0.7)
+    if _visibility.multiuser_enabled():
+        source_owner = _visibility.owner_of_path(rel)
+        related = [
+            path for path in related
+            if _visibility.owner_of_path(path) in (None, source_owner)
+        ]
     if not related:
         return 0
 
@@ -569,11 +674,12 @@ def get_context() -> str:
     rules_section = ""
     if rules_path.exists():
         rules_text = rules_path.read_text(encoding="utf-8")
-        rule_lines = [l for l in rules_text.splitlines() if l.strip().startswith("- [")]
+        rule_lines = [line for line in rules_text.splitlines() if line.strip().startswith("- [")]
         if rule_lines:
             rules_section = "## Active Rules (auto-extracted)\n\n" + "\n".join(rule_lines) + "\n\n---\n\n"
 
     top: list[dict] = []
+    degraded = False
     try:
         top = (_store.top_by_score(limit=20, exclude_types=KNOWLEDGE_EXCLUDE)
                or _store.top_by_recency(limit=20, exclude_types=KNOWLEDGE_EXCLUDE))
@@ -586,7 +692,12 @@ def get_context() -> str:
         if not index_section:
             raise ValueError("empty")
     except Exception:
-        index_section = "## Vault Index\n\n" + _read(VAULT / "memory" / "index.md")
+        degraded = True
+        index_section = (
+            "## Vault Index\n\nIndex unavailable."
+            if _visibility.multiuser_enabled()
+            else "## Vault Index\n\n" + _read(VAULT / "memory" / "index.md")
+        )
 
     # Layer 2: load embedding cache once, reuse across all find_related calls
     related_section = ""
@@ -599,14 +710,20 @@ def get_context() -> str:
                 related_map[r["path"]] = links
         if related_map:
             rel_lines = [
-                "- {}: {}".format(Path(p).stem, " · ".join("[[{}]]".format(l.removesuffix(".md")) for l in links))
+                "- {}: {}".format(Path(p).stem, " · ".join("[[{}]]".format(link.removesuffix(".md")) for link in links))
                 for p, links in related_map.items()
             ]
             related_section = "\n\n---\n\n## Related Links (semantic)\n\n" + "\n".join(rel_lines)
     except Exception as e:
+        degraded = True
         print(f"[second-brain] warning: related links failed: {e}", file=sys.stderr)
         related_section = "\n\n---\n\n## Related Links (semantic)\n\n⚠️ *embedding server offline — related links unavailable*"
 
+    # The single-user Markdown index fallback has no structured row count.
+    if degraded:
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.UNAVAILABLE))
+    else:
+        mark_outcome(Outcome(result_count=len(top)))
     return f"{rules_section}## Current Goals\n\n{goals}\n\n---\n\n{index_section}{related_section}"
 
 
@@ -658,6 +775,7 @@ def new_note(note_type: str, title: str, content: str = "", tags: str = "") -> s
     tmpl_path = VAULT / tmpl_rel
 
     if not tmpl_path.exists():
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.UNAVAILABLE))
         return f"Error: template not found: {tmpl_rel}"
 
     today = date.today().isoformat()
@@ -672,6 +790,7 @@ def new_note(note_type: str, title: str, content: str = "", tags: str = "") -> s
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     if dest.exists():
+        mark_outcome(Outcome(result_count=0))
         return f"Note already exists: {dest.relative_to(VAULT)}"
 
     dest.write_text(filled, encoding="utf-8")
@@ -680,6 +799,7 @@ def new_note(note_type: str, title: str, content: str = "", tags: str = "") -> s
 
     route_msg = f" [project:{matched_slug}→{folder}]" if matched_slug and nt in _PROJECT_SUBTYPE_MAP else ""
     link_msg = f" ({n_links} related links added)" if n_links else ""
+    mark_outcome(Outcome(result_count=1))
     return f"Created: {rel}{route_msg}{link_msg}"
 
 
@@ -697,9 +817,17 @@ def search_notes(query: str) -> str:
     try:
         hits = _store.hybrid_search(query, limit=20, exclude_types=KNOWLEDGE_EXCLUDE)
     except Exception:
+        if _visibility.multiuser_enabled():
+            mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.UNAVAILABLE))
+            return "Search index unavailable. Please retry later."
         hits = []
 
     if not hits:
+        # A filesystem scan bypasses the database's RLS. In multiuser mode
+        # an empty index result must remain empty, including during outages.
+        if _visibility.multiuser_enabled():
+            mark_outcome(Outcome(result_count=0))
+            return f"No notes found matching: {query}"
         # Fallback: file scan (pre-DB or query returned nothing)
         results = []
         q = query.lower()
@@ -714,9 +842,12 @@ def search_notes(query: str) -> str:
                         results.append(f"- [{rel}]({rel})\n  > {line.strip()}")
                         break
         if not results:
+            mark_outcome(Outcome(result_count=0))
             return f"No notes found matching: {query}"
+        mark_outcome(Outcome(result_count=len(results)))
         return f"Found {len(results)} note(s) [file scan]:\n\n" + "\n".join(results)
 
+    mark_outcome(Outcome(result_count=len(hits)))
     lines = [f"- [{h['title']}]({h['path']}) (score: {h['score']:.2f})" for h in hits]
     return f"Found {len(hits)} note(s):\n\n" + "\n".join(lines)
 
@@ -762,6 +893,7 @@ def search_articles(
         "year": year,
     }
     if not any(filters.values()):
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.INVALID_REQUEST))
         return {
             "filters": filters,
             "count": 0,
@@ -779,12 +911,14 @@ def search_articles(
             limit=limit,
         )
     except Exception as error:
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.UNAVAILABLE))
         return {
             "filters": filters,
             "count": 0,
             "results": [],
-            "message": f"Article index unavailable: {error}",
+            "message": "Article index unavailable." if _visibility.multiuser_enabled() else f"Article index unavailable: {error}",
         }
+    mark_outcome(Outcome(result_count=len(results)))
     return {
         "filters": filters,
         "count": len(results),
@@ -804,11 +938,13 @@ def search_snippets(query: str, top_k: int = 8) -> str:
         top_k: how many notes to pull snippets from (default 8).
     """
     from . import snippets
-    _log_write("search_snippets", query)
+    if not _visibility.multiuser_enabled():
+        _log_write("search_snippets", "")
     try:
         hits = _store.hybrid_search(query, limit=top_k, exclude_types=KNOWLEDGE_EXCLUDE)
     except Exception:
-        hits = []
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.UNAVAILABLE))
+        return "Snippet index unavailable. Please retry later."
     out, logged = [], []
     for h in hits:
         try:
@@ -825,13 +961,8 @@ def search_snippets(query: str, top_k: int = 8) -> str:
         out.append(f"- **{h.get('title','')}** (score {h['score']:.2f}){src}\n"
                    f"  > {snip}\n  [{h['path']}]({h['path']})")
         logged.append(h["path"])
-    try:  # eval hook: query log (jsonl) for the future relevance loop
-        from datetime import datetime as _dt
-        (VAULT / ".query-log.jsonl").open("a", encoding="utf-8").write(
-            json.dumps({"ts": _dt.now().isoformat(timespec="seconds"),
-                        "query": query, "results": logged}, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
+    _legacy_query_log({"query": query, "results": logged})
+    mark_outcome(Outcome(result_count=len(out)))
     if not out:
         return f"No verbatim snippet found for: {query}"
     return f"{len(out)} snippet(s) for '{query}':\n\n" + "\n\n".join(out)
@@ -1036,8 +1167,14 @@ def query_graph(entity: str, mode: str = "both", top_k: int = 12) -> str:
         mode:  'edges' | 'snippets' | 'both' (default 'both').
         top_k: snippet notes to pull for the recall net (default 12).
     """
+    if mode not in {"edges", "snippets", "both"}:
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.INVALID_REQUEST))
+        return f"No graph data or snippets for: {entity}"
+
     q = _graph_norm(entity)
     parts: list[str] = []
+    result_count = 0
+    snippet_unavailable = False
 
     # ---- Path 1: structured edges ----
     if mode in ("edges", "both"):
@@ -1055,6 +1192,7 @@ def query_graph(entity: str, mode: str = "both", top_k: int = 12) -> str:
                                      "object": e.get("object", ""), "notes": {}})
             g["notes"].setdefault(e.get("note", ""), e.get("evidence", ""))
         rows = sorted(agg.values(), key=lambda g: (-len(g["notes"]), g["relation"]))
+        result_count += len(rows)
         if rows:
             lines = [f"### Structured edges for '{entity}' "
                      f"({len(rows)} relations from {len(matched)} raw statements)"]
@@ -1075,6 +1213,7 @@ def query_graph(entity: str, mode: str = "both", top_k: int = 12) -> str:
             hits = _store.hybrid_search(entity, limit=top_k, exclude_types=KNOWLEDGE_EXCLUDE)
         except Exception:
             hits = []
+            snippet_unavailable = True
         snips = []
         for h in hits:
             try:
@@ -1085,6 +1224,7 @@ def query_graph(entity: str, mode: str = "both", top_k: int = 12) -> str:
                                          h.get("title", ""), entity)
             if snip:
                 snips.append(f"- **{h.get('title', '')}**\n  > {snip}\n  [{h['path']}]({h['path']})")
+        result_count += len(snips)
         if snips:
             parts.append(f"### Full-text recall net ({len(snips)} notes)\n" + "\n".join(snips))
 
@@ -1095,15 +1235,18 @@ def query_graph(entity: str, mode: str = "both", top_k: int = 12) -> str:
         parts.append(f"🌐 互動圖（瀏覽器開，tailnet 內免 key）："
                      f"http://{mcp.settings.host}:{mcp.settings.port}/graph?entity={quote(entity)}")
 
-    try:  # eval hook: query log for the future relevance loop
-        from datetime import datetime as _dt
-        (VAULT / ".query-log.jsonl").open("a", encoding="utf-8").write(
-            json.dumps({"ts": _dt.now().isoformat(timespec="seconds"),
-                        "tool": "query_graph", "query": entity, "mode": mode},
-                       ensure_ascii=False) + "\n")
-    except Exception:
-        pass
+    _legacy_query_log({"tool": "query_graph", "query": entity, "mode": mode})
 
+    if snippet_unavailable:
+        mark_outcome(
+            Outcome(
+                EventStatus.ERROR,
+                ErrorCode.UNAVAILABLE,
+                result_count=result_count,
+            )
+        )
+    else:
+        mark_outcome(Outcome(result_count=result_count))
     return "\n\n".join(parts) if parts else f"No graph data or snippets for: {entity}"
 
 
@@ -1150,6 +1293,8 @@ _LA_PROMPT = """你是生醫文獻綜合者。以下是從 LitNet 知識圖譜�
 
 def _la_synth(prompt: str, model: str) -> str:
     """Claude synthesis; key from env else Keychain (-s ANTHROPIC_API_KEY), same as figures.py."""
+    if not _paid_synthesis_allowed():
+        raise PermissionError("Paid synthesis is disabled for this service identity")
     import anthropic
     if not os.environ.get("ANTHROPIC_API_KEY"):
         key = subprocess.run(["security", "find-generic-password", "-s", "ANTHROPIC_API_KEY", "-w"],
@@ -1170,6 +1315,17 @@ def _la_synth(prompt: str, model: str) -> str:
     except Exception:
         pass
     return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text").strip()
+
+
+def _paid_synthesis_allowed() -> bool:
+    if not _visibility.multiuser_enabled():
+        return True
+    identity = get_current_identity()
+    return bool(
+        os.environ.get("SB_ALLOW_PAID_SYNTHESIS") == "1"
+        and identity is not None
+        and identity.is_admin()
+    )
 
 
 @mcp.tool()
@@ -1194,6 +1350,8 @@ def litnet_answer(question: str, entity: str = "", fmt: str = "auto",
     always tracks query_graph's own default (currently 12) instead of a second hardcoded
     number that can silently drift from it.
     """
+    if not _paid_synthesis_allowed():
+        return "Paid synthesis is disabled. Retrieve literature with search_notes or query_graph and synthesize in your own client."
     ents = [e.strip() for e in entity.split(",") if e.strip()]
     if not ents:
         raw = llm_cli.llm_text(_LA_ENT_PROMPT + question, timeout=60) or ""
@@ -1207,6 +1365,7 @@ def litnet_answer(question: str, entity: str = "", fmt: str = "auto",
             blocks.append(f"# 查詢實體：{e}\n{out}")
     grounding = "\n\n".join(blocks)
     if not grounding.strip():
+        mark_outcome(Outcome(result_count=0))
         return f"no LitNet material for: {ents}"
 
     prompt = _LA_PROMPT.format(middle_hint=_LA_MIDDLE.get(fmt, _LA_MIDDLE["auto"]),
@@ -1231,6 +1390,7 @@ def litnet_answer(question: str, entity: str = "", fmt: str = "auto",
         d.mkdir(parents=True, exist_ok=True)
         slug = _slugify(question)[:60].strip("-") or "litnet-answer"  # unify with vault-wide naming
         (d / f"{today}-{slug}.md").write_text(note, encoding="utf-8")
+    mark_outcome(Outcome(result_count=1 if save else None))
     return note
 
 
@@ -1248,8 +1408,10 @@ def search_news_tool(query: str, days: int = 7) -> str:
     try:
         hits = _store.search_news(query, days=days, limit=20)
     except Exception:
-        hits = []
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.UNAVAILABLE))
+        return "News index unavailable. Please retry later."
 
+    mark_outcome(Outcome(result_count=len(hits)))
     if not hits:
         return f"No news found matching '{query}' in the last {days} days."
 
@@ -1268,10 +1430,12 @@ def get_decisions(project: str = "") -> str:
     """
     decisions_dir = VAULT / "decisions"
     if not decisions_dir.exists():
+        mark_outcome(Outcome(result_count=0))
         return "No decisions directory found."
 
     files = sorted(decisions_dir.glob("*.md"))
     if not files:
+        mark_outcome(Outcome(result_count=0))
         return "No decision records found."
 
     results = []
@@ -1285,7 +1449,9 @@ def get_decisions(project: str = "") -> str:
 
     if not results:
         msg = f"No decisions found for project: {project}" if project else "No decisions match."
+        mark_outcome(Outcome(result_count=0))
         return msg
+    mark_outcome(Outcome(result_count=len(results)))
     return "\n".join(results)
 
 
@@ -1299,6 +1465,7 @@ def update_goals(new_content: str) -> str:
     goals_path = VAULT / "memory" / "goals.md"
     goals_path.parent.mkdir(parents=True, exist_ok=True)
     goals_path.write_text(new_content, encoding="utf-8")
+    mark_outcome(Outcome(result_count=1))
     return "goals.md updated."
 
 
@@ -1312,12 +1479,15 @@ def read_note(path: str) -> str:
     try:
         full_path = _vault_path(path)
     except VaultPathError as exc:
+        mark_outcome(Outcome(EventStatus.DENIED, ErrorCode.DENIED))
         return str(exc)
     try:
         _store.record_access(path)
     except Exception:
         pass  # access tracking is best-effort
-    return full_path.read_text(encoding="utf-8")
+    content = full_path.read_text(encoding="utf-8")
+    mark_outcome(Outcome())
+    return content
 
 
 @write_tool(target="path")
@@ -1337,6 +1507,7 @@ def update_note(path: str, content: str) -> str:
     # (often a hand-curated list). Auto-relinking here would silently discard it —
     # use update_links_tool to force a semantic-similarity refresh instead.
     after_write(full_path, path, relink=False)
+    mark_outcome(Outcome(result_count=1))
     return f"Updated: {path}"
 
 
@@ -1356,6 +1527,7 @@ def append_to_note(path: str, content: str) -> str:
     separator = "\n" if existing.endswith("\n") else "\n\n"
     full_path.write_text(existing + separator + content, encoding="utf-8")
     after_write(full_path, path)
+    mark_outcome(Outcome(result_count=1))
     return f"Appended to: {path}"
 
 
@@ -1374,6 +1546,7 @@ def mark_note_status(path: str, status: str) -> str:
             consolidate_tool / vault_sleep, accepted here for repairs).
     """
     if status not in NOTE_STATUS_ALLOWED:
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.INVALID_REQUEST))
         return (
             f"Invalid status {status!r}. Lifecycle: "
             f"{', '.join(sorted(NOTE_STATUS_LIFECYCLE))}. "
@@ -1383,11 +1556,19 @@ def mark_note_status(path: str, status: str) -> str:
     full_path = _vault_path(path)
     _fm.set_fields_in_file(full_path, {"status": status})
 
+    db_failed = False
     try:
         _store.set_note_status(path, status)
     except Exception as e:
+        db_failed = True
         print(f"[second-brain] warning: DB status update failed for {path}: {e}", file=sys.stderr)
 
+    if db_failed:
+        mark_outcome(
+            Outcome(EventStatus.ERROR, ErrorCode.UNAVAILABLE, result_count=1)
+        )
+    else:
+        mark_outcome(Outcome(result_count=1))
     return f"Status updated to '{status}': {path}"
 
 
@@ -1447,7 +1628,7 @@ def audit_article_records(
     backend = str(
         stats.get("backend") or os.environ.get("SB_DB_BACKEND", "duckdb")
     ).lower()
-    return _audit_article_records(
+    result = _audit_article_records(
         VAULT,
         scope=scope,
         limit=limit,
@@ -1456,6 +1637,9 @@ def audit_article_records(
         vault_backend=backend,
         vault_id=VAULT.name,
     )
+    issue_count = sum(len(records) for records in result["issues"].values())
+    mark_outcome(Outcome(result_count=issue_count))
+    return result
 
 
 #: sync_index()'s own chunk-backfill pass is capped at this many notes per call
@@ -1471,11 +1655,13 @@ _SYNC_INDEX_CHUNK_LIMIT = 20
 def sync_notes(note_paths: list[str]) -> str:
     """Reindex only the explicitly requested vault notes."""
     if len(note_paths) > 20:
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.INVALID_REQUEST))
         return "Error: sync_notes accepts at most 20 note paths per call."
     resolved = [_vault_path(note_path) for note_path in note_paths]
     for md_file in resolved:
         _store.index_file(VAULT, md_file)
     noun = "note" if len(resolved) == 1 else "notes"
+    mark_outcome(Outcome(result_count=len(resolved)))
     return f"Synced {len(resolved)} requested {noun}."
 
 
@@ -1497,6 +1683,16 @@ def sync_index() -> str:
     chunk_line = f"\nChunks: +{chunks['updated']} notes backfilled" if chunks["updated"] else ""
     if chunks.get("remaining"):
         chunk_line += f" ({chunks['remaining']} more outstanding — run sync_chunks_tool() to continue)"
+    if result["embed_failed"] or emb["failed"] or chunks["failed"]:
+        mark_outcome(
+            Outcome(
+                EventStatus.ERROR,
+                ErrorCode.UNAVAILABLE,
+                result_count=result["synced"],
+            )
+        )
+    else:
+        mark_outcome(Outcome(result_count=result["synced"]))
     return (
         f"Synced {result['synced']} files → {stats['total_notes']} notes in index.{embed_warn}\n"
         f"Embeddings: +{emb['updated']} new (llama-server {'✓' if emb['updated'] or emb['failed'] == 0 else '✗ unavailable'})"
@@ -1523,6 +1719,16 @@ def sync_chunks_tool(limit: int = 200) -> str:
     remaining = result.get("remaining", 0)
     tail = f" — {remaining} more outstanding, call again to continue" if remaining else " — backlog drained"
     failed_part = f", {result['failed']} failed" if result["failed"] else ""
+    if result["failed"]:
+        mark_outcome(
+            Outcome(
+                EventStatus.ERROR,
+                ErrorCode.UNAVAILABLE,
+                result_count=result["updated"],
+            )
+        )
+    else:
+        mark_outcome(Outcome(result_count=result["updated"]))
     return (
         f"Chunks: +{result['updated']} notes backfilled{failed_part}"
         f" (of {result['candidates']} candidates this call){tail}"
@@ -1541,8 +1747,10 @@ def index_stats() -> str:
         if fig_count is not None:
             lines.append(f"\nFigures in DB: {fig_count}")
 
+        mark_outcome(Outcome(result_count=stats["total_notes"]))
         return "\n".join(lines)
     except Exception as e:
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.UNAVAILABLE))
         return f"Index not initialised yet. Run sync_index() first. ({e})"
 
 
@@ -1589,6 +1797,17 @@ def vault_sleep(dry_run: bool = False) -> str:
         except Exception as e:
             print(f"[second-brain] warning: rules extraction failed: {e}", file=sys.stderr)
 
+    if result["errors"]:
+        mark_outcome(
+            Outcome(
+                EventStatus.ERROR,
+                ErrorCode.UNAVAILABLE,
+                result_count=result["processed"],
+            )
+        )
+    else:
+        count = result["candidates"] if dry_run else result["processed"]
+        mark_outcome(Outcome(result_count=count))
     return "\n".join(lines)
 
 
@@ -1612,6 +1831,7 @@ def sleep_status() -> str:
     else:
         lines.append("None (all notes are recent or active).")
 
+    mark_outcome(Outcome(result_count=len(candidates)))
     return "\n".join(lines)
 
 
@@ -1631,16 +1851,24 @@ def extract_rules_tool(note_path: str = "") -> str:
         _vault_path(note_path)
         rules = _vs.extract_rules_for(note_path, VAULT)
         if not rules:
+            # The helper intentionally conflates "no rules" with an unavailable
+            # model, so this branch cannot truthfully be success or failure.
+            mark_outcome(Outcome(EventStatus.UNKNOWN, ErrorCode.UNCLASSIFIED))
             return f"No rules extracted from {note_path} (Gemini unavailable or no rules found)"
         _vs._append_rules_to_file(VAULT, note_path, rules)
+        mark_outcome(Outcome(result_count=len(rules)))
         return f"Extracted {len(rules)} rules from {note_path}:\n" + "\n".join(f"  {r}" for r in rules)
 
     result = _vs.run_rules_extraction(VAULT)
     if result["processed"] == 0:
+        # The batch helper omits its eligible-row count, so zero processed can
+        # mean either no candidates or model unavailability.
+        mark_outcome(Outcome(EventStatus.UNKNOWN, ErrorCode.UNCLASSIFIED))
         return "No eligible notes (need access_count >= 5). Try accessing notes first, or pass a specific note_path."
     lines = [f"Extracted {result['total_rules']} rules from {result['processed']} notes → memory/rules.md"]
     for entry in result["log"]:
         lines.append(f"  {entry['path']}: {entry['rules']} rules")
+    mark_outcome(Outcome(result_count=result["total_rules"]))
     return "\n".join(lines)
 
 
@@ -1675,7 +1903,7 @@ def expand_semantic_keywords_tool(note_path: str = "", force: bool = False) -> s
     else:
         paths = _store.get_paths_for_semantic_keywords(force)
 
-    processed, skipped, failed = 0, 0, 0
+    processed, skipped, failed, model_empty = 0, 0, 0, 0
     for rel in paths:
         try:
             full = _vault_path(rel)
@@ -1697,10 +1925,31 @@ def expand_semantic_keywords_tool(note_path: str = "", force: bool = False) -> s
                 processed += 1
             else:
                 skipped += 1
+                model_empty += 1
         except Exception as e:
             print(f"[second-brain] expand_semantic_keywords failed for {rel}: {e}", file=sys.stderr)
             failed += 1
 
+    if failed:
+        mark_outcome(
+            Outcome(
+                EventStatus.ERROR,
+                ErrorCode.UNAVAILABLE,
+                result_count=processed,
+            )
+        )
+    elif model_empty:
+        # Empty model output can mean either no suitable keywords or every
+        # configured backend being unavailable.
+        mark_outcome(
+            Outcome(
+                EventStatus.UNKNOWN,
+                ErrorCode.UNCLASSIFIED,
+                result_count=processed,
+            )
+        )
+    else:
+        mark_outcome(Outcome(result_count=processed))
     return str({"processed": processed, "skipped": skipped, "failed": failed})
 
 
@@ -1723,6 +1972,7 @@ def enrich_neighbor_keywords_tool(note_path: str = "", force: bool = False) -> s
     try:
         all_data = _store.compute_neighbor_keywords()
     except Exception as e:
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.UNAVAILABLE))
         return str({"error": f"compute_neighbor_keywords failed: {e}"})
 
     targets: list[str]
@@ -1732,6 +1982,7 @@ def enrich_neighbor_keywords_tool(note_path: str = "", force: bool = False) -> s
         # Batch: only notes that have no neighbor_keywords yet (unless force)
         targets = _store.get_paths_for_neighbor_keywords(force)
 
+    failed = 0
     for path in targets:
         try:
             full = _vault_path(path)
@@ -1759,7 +2010,18 @@ def enrich_neighbor_keywords_tool(note_path: str = "", force: bool = False) -> s
         except Exception as e:
             print(f"[second-brain] enrich_neighbor_keywords failed for {path}: {e}", file=sys.stderr)
             skipped += 1
+            failed += 1
 
+    if failed:
+        mark_outcome(
+            Outcome(
+                EventStatus.ERROR,
+                ErrorCode.UNAVAILABLE,
+                result_count=enriched,
+            )
+        )
+    else:
+        mark_outcome(Outcome(result_count=enriched))
     return str({"enriched": enriched, "skipped": skipped, "no_neighbors": no_neighbors})
 
 
@@ -1879,9 +2141,32 @@ def save_article(
         metadata: Optional structured bibliographic fields. Only authors, author_ids,
                   DOI/PMID/PMCID, journal, publication_year and canonical_url are written.
     """
+    identity = get_current_identity()
+    if identity is not None and identity.role == "member":
+        from .article_attribution import validate_shared_destination
+
+        try:
+            _visibility.slugify_user(identity)
+            validate_shared_destination(dest_folder)
+        except ValueError as exc:
+            mark_outcome(Outcome(EventStatus.DENIED, ErrorCode.DENIED))
+            return f"Article intake denied: {exc}"
+        if urlparse(source).scheme.lower() not in {"http", "https"}:
+            mark_outcome(Outcome(EventStatus.DENIED, ErrorCode.DENIED))
+            return "Article intake denied: members cannot read server-local files."
+        # MarkItDown's current URL fetch does not provide a validated redirect /
+        # DNS pinning boundary. Do not expose it to member-submitted URLs.
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.UNAVAILABLE))
+        return (
+            "Member article intake is temporarily unavailable pending the safe "
+            "remote-fetch worker. Articles will be shared with uploader attribution; "
+            "personal notes remain private."
+        )
+
     source = _normalise_source_url(source)
     safe = _validate_source(source)
     if safe is None:
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.INVALID_REQUEST))
         return (
             "Unsupported source. Provide an http/https URL or a path to a "
             f".pdf/.docx/.pptx/.txt/.md file. Got: {source!r}"
@@ -1891,6 +2176,7 @@ def save_article(
     try:
         body = _extract_pdf_body(source) if is_pdf else _md_converter.convert(source).text_content.strip()
     except Exception as e:
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.UNAVAILABLE))
         return f"Conversion failed: {e}"
 
     if not title:
@@ -1907,17 +2193,7 @@ def save_article(
 
     today = date.today().isoformat()
 
-    # Lab-open plan (2026-09-12): same redirect as new_note — a 'member'
-    # caller's articles land under their own private area, dest_folder kept
-    # as a subfolder inside it so the caller's requested classification
-    # (e.g. '20-areas/research') still means the same thing. The ORIGINAL
-    # dest_folder (pre-redirect) is what note_type classification below must
-    # use — the redirected folder starts with 90-personal/<uuid>/, which
-    # would otherwise misclassify every member research article as generic.
     requested_dest_folder = dest_folder
-    identity = get_current_identity()
-    if identity is not None and identity.role == "member":
-        dest_folder = f"{_visibility.private_root(identity)}/{dest_folder}"
 
     # Both the folder and the final file must resolve inside the vault; the folder
     # does not exist yet on a first save, hence must_exist=False.
@@ -1927,9 +2203,11 @@ def save_article(
     filename = filename.strip()
     if filename:
         if "/" in filename or "\\" in filename or filename.startswith("."):
+            mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.INVALID_REQUEST))
             return f"filename contains invalid characters: {filename!r}"
     stem = filename if filename else _slugify(title)
     if not stem:
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.INVALID_REQUEST))
         return "Cannot determine a valid filename. Provide a title or filename."
 
     folder.mkdir(parents=True, exist_ok=True)
@@ -1937,6 +2215,7 @@ def save_article(
     dest = _vault_path(rel, must_exist=False)
 
     if dest.exists():
+        mark_outcome(Outcome(result_count=0))
         return f"Already saved: {rel}"
 
     # note_type follows folder path components (exact match, not startswith prefix)
@@ -1959,6 +2238,7 @@ def save_article(
     )
 
     link_msg = f", {n_links} related links added" if n_links else ""
+    mark_outcome(Outcome(result_count=1))
     return f"Saved: {rel} (figure extraction started in background{link_msg})"
 
 
@@ -1976,6 +2256,7 @@ def update_links_tool(note_path: str = "") -> str:
     if note_path:
         full = _vault_path(note_path)
         n = _inject_related_links(full, note_path)
+        mark_outcome(Outcome(result_count=1))
         return f"Updated: {note_path} — {n} related links written"
 
     # Batch: update all indexed notes
@@ -1993,6 +2274,7 @@ def update_links_tool(note_path: str = "") -> str:
         else:
             skipped += 1
 
+    mark_outcome(Outcome(result_count=updated))
     return f"Updated {updated} notes with related links ({skipped} skipped — no matches above threshold)"
 
 
@@ -2010,6 +2292,9 @@ def extract_figures_for(note_path: str) -> str:
             _store.upsert_figure(**fig)
         except Exception as fe:
             print(f"[second-brain] figure sync to store failed: {fe}", file=sys.stderr)
+    # figures.process_article returns a prose summary that also represents
+    # failures. There is no structured status/count contract to inspect safely.
+    mark_outcome(Outcome(EventStatus.UNKNOWN, ErrorCode.UNCLASSIFIED))
     return result
 
 
@@ -2032,8 +2317,10 @@ def reconcile_figures(
         limit: Maximum notes to inspect from the supplied list; 1 through 20.
     """
     if not note_paths:
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.INVALID_REQUEST))
         return "Error: reconcile_figures requires at least one note path."
     if len(note_paths) > 20:
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.INVALID_REQUEST))
         return "Error: reconcile_figures accepts at most 20 note paths per call."
     for note_path in note_paths:
         _vault_path(note_path)
@@ -2044,6 +2331,18 @@ def reconcile_figures(
         dry_run=dry_run,
         limit=limit,
     )
+    summary = result["summary"]
+    if summary["failed"]:
+        mark_outcome(
+            Outcome(
+                EventStatus.ERROR,
+                ErrorCode.UNAVAILABLE,
+                result_count=summary["applied"],
+            )
+        )
+    else:
+        count = summary["planned"] if dry_run else summary["applied"]
+        mark_outcome(Outcome(result_count=count))
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
@@ -2067,6 +2366,7 @@ def backfill_figure_text(
         image_limit: Maximum images to analyse in this call; 1 through 20.
     """
     if len(note_paths) > 20:
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.INVALID_REQUEST))
         return "Error: backfill_figure_text accepts at most 20 note paths per call."
     for note_path in note_paths:
         _vault_path(note_path)
@@ -2078,6 +2378,18 @@ def backfill_figure_text(
         note_limit=note_limit,
         image_limit=image_limit,
     )
+    summary = result["summary"]
+    if summary["failed"]:
+        mark_outcome(
+            Outcome(
+                EventStatus.ERROR,
+                ErrorCode.UNAVAILABLE,
+                result_count=summary["applied"],
+            )
+        )
+    else:
+        count = summary["planned"] if dry_run else summary["applied"]
+        mark_outcome(Outcome(result_count=count))
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
@@ -2104,6 +2416,7 @@ def restore_missing_pdf_images(
             explicitly verified copy when the recorded File Provider path is unavailable.
     """
     if len(note_paths) > 20:
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.INVALID_REQUEST))
         return "Error: restore_missing_pdf_images accepts at most 20 note paths per call."
     for note_path in note_paths:
         _vault_path(note_path)
@@ -2116,6 +2429,18 @@ def restore_missing_pdf_images(
         image_limit=image_limit,
         source_pdfs=source_pdfs,
     )
+    summary = result["summary"]
+    if summary["failed"]:
+        mark_outcome(
+            Outcome(
+                EventStatus.ERROR,
+                ErrorCode.UNAVAILABLE,
+                result_count=summary["applied"],
+            )
+        )
+    else:
+        count = summary["planned"] if dry_run else summary["applied"]
+        mark_outcome(Outcome(result_count=count))
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
@@ -2127,6 +2452,7 @@ def search_figures(query: str) -> str:
         query: Search term, e.g. 'UMAP', 'TYRP1', 'cluster', 'p < 0.001'
     """
     hits = _store.search_figures(query, limit=10)
+    mark_outcome(Outcome(result_count=len(hits)))
     if not hits:
         return f"No figures found matching: {query}"
     lines = [
@@ -2169,11 +2495,13 @@ def snapshot_note_tool(note_path: str, tier: str = "base") -> str:
     full = _vault_path(note_path)
     result = _snapshot_note_in_worker(note_path, tier)
     if not result["success"]:
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.UNAVAILABLE))
         return result.get("error") or f"Rendering failed for: {note_path}"
 
     text_tokens = full.stat().st_size // 4
     saved = text_tokens - result["token_est"]
     pct = int(100 * (1 - result["token_est"] / max(text_tokens, 1)))
+    mark_outcome(Outcome(result_count=1))
     return (
         f"Snapshot saved: {result['path']}\n"
         f"Tier: {tier} (~{result['token_est']} tokens)\n"
@@ -2212,6 +2540,21 @@ def consolidate_tool(threshold: float = 0.85, dry_run: bool = True) -> str:
             lines.append(f"  ✓ → {entry['output']}")
         else:
             lines.append(f"  ✗ cluster: {entry.get('reason', status)}")
+    failures = sum(
+        entry.get("status") not in {"dry_run", "consolidated"}
+        for entry in result.get("log", [])
+    )
+    if failures:
+        mark_outcome(
+            Outcome(
+                EventStatus.ERROR,
+                ErrorCode.UNAVAILABLE,
+                result_count=result["consolidated"],
+            )
+        )
+    else:
+        count = result["clusters"] if dry_run else result["consolidated"]
+        mark_outcome(Outcome(result_count=count))
     return "\n".join(lines)
 
 
@@ -2232,6 +2575,19 @@ def prune_archive_tool(min_age_days: int = 365, dry_run: bool = True) -> str:
     for entry in result["log"]:
         icon = {"deleted": "🗑", "dry_run": "📋", "no_snapshot": "🔒", "too_young": "⏳"}.get(entry["status"], "?")
         lines.append(f"  {icon} {entry['path']} ({entry['age']}d) — {entry['status']}")
+    unexpected = any(
+        entry["status"] not in {"deleted", "dry_run", "no_snapshot", "too_young"}
+        for entry in result["log"]
+    )
+    if unexpected:
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.INTERNAL))
+    else:
+        count = (
+            sum(entry["status"] == "dry_run" for entry in result["log"])
+            if dry_run
+            else result["deleted"]
+        )
+        mark_outcome(Outcome(result_count=count))
     return "\n".join(lines)
 
 
@@ -2247,6 +2603,7 @@ def read_note_as_image(path: str):
     try:
         full_path = _vault_path(path)
     except VaultPathError as exc:
+        mark_outcome(Outcome(EventStatus.DENIED, ErrorCode.DENIED))
         return str(exc)
 
     _snap = _store.get_snapshot_path(path)
@@ -2255,6 +2612,7 @@ def read_note_as_image(path: str):
         snap_root = (VAULT / ".snapshots").resolve()
         if snap_path.exists() and snap_path.is_relative_to(snap_root):
             _store.record_access(path)
+            mark_outcome(Outcome(result_count=1))
             return Image(path=snap_path, format="png")
 
     # No snapshot — return text (capped at 32KB)
@@ -2263,6 +2621,7 @@ def read_note_as_image(path: str):
     _MAX_CHARS = 32_000
     excerpt = text[:_MAX_CHARS] + ("\n\n[…truncated]" if len(text) > _MAX_CHARS else "")
     hint = f"run snapshot_note_tool('{path}') to create one"
+    mark_outcome(Outcome(result_count=1))
     return f"[TEXT MODE] ~{len(text)//4} tokens (no snapshot — {hint})\n\n{excerpt}"
 
 
@@ -2281,11 +2640,13 @@ def read_figure(note_path: str, fig_index: int):
     """
     row = _store.get_figure(note_path, fig_index)
     if not row:
+        mark_outcome(Outcome(result_count=0))
         return f"No figure #{fig_index} for {note_path} (try search_figures first)"
 
     src = Path(row["local_path"]).resolve()
     fig_root = (VAULT / "figures").resolve()
     if not (src.exists() and src.is_relative_to(fig_root)):
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.UNAVAILABLE))
         return (
             f"Figure file missing or outside vault for {note_path} #{fig_index}. "
             f"caption: {row.get('caption') or '—'}; description: {row.get('description') or '—'}"
@@ -2299,8 +2660,10 @@ def read_figure(note_path: str, fig_index: int):
     try:
         insight_file = _vault_path(insight_rel)
     except VaultPathError:
+        mark_outcome(Outcome(result_count=1))
         return img
     body = insight_file.read_text(encoding="utf-8")
+    mark_outcome(Outcome(result_count=1))
     return [img, f"📝 Prior insights ([[{insight_rel.removesuffix('.md')}]]):\n\n{body}"]
 
 
@@ -2350,6 +2713,7 @@ def annotate_figure(note_path: str, fig_index: int, insight: str) -> str:
     """
     insight = insight.strip()
     if not insight:
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.INVALID_REQUEST))
         return "Empty insight — nothing saved."
 
     rel = _figure_insight_rel(note_path, fig_index)
@@ -2383,6 +2747,7 @@ def annotate_figure(note_path: str, fig_index: int, insight: str) -> str:
     after_write(dest, rel, register_label=register_label, relink=False)
 
     _add_figure_insight_backlink(note_path, fig_index, rel)
+    mark_outcome(Outcome(result_count=1))
     return f"{action}: {rel}"
 
 
@@ -2412,12 +2777,14 @@ def find_related_notes(path: str, limit: int = 5, threshold: float = 0.7) -> str
     # tool does, instead of bypassing it entirely.
     related = _store.find_related(path, limit=limit, threshold=threshold)
     if not related:
+        mark_outcome(Outcome(result_count=0))
         return (
             f"No related notes found for `{path}` "
             f"(threshold={threshold}, embeddings may not be synced — try sync_index first)."
         )
     from .note_row import parse_frontmatter
     lines = [f"## Related notes for `{path}`\n"]
+    visible_count = 0
     for stem in related:
         candidate = stem if stem.endswith(".md") else f"{stem}.md"
         title, ntype = stem.split("/")[-1], ""
@@ -2432,6 +2799,8 @@ def find_related_notes(path: str, limit: int = 5, threshold: float = 0.7) -> str
                       # excludes these, so this only guards a stale/renamed path
         tag = f" `{ntype}`" if ntype else ""
         lines.append(f"- [[{stem.removesuffix('.md')}]] — {title}{tag}")
+        visible_count += 1
+    mark_outcome(Outcome(result_count=visible_count))
     return "\n".join(lines)
 
 
@@ -2473,6 +2842,7 @@ def search_grouped(query: str, limit: int = 10) -> str:
         lines.append("*No knowledge notes found.*")
 
     news = groups.get("news", [])
+    mark_outcome(Outcome(result_count=len(knowledge) + len(news)))
     lines.append(f"\n### Morning Briefs / News ({len(news)} results)\n")
     if news:
         for r in news:
@@ -2509,9 +2879,11 @@ def top_notes(by: str = "score", limit: int = 20) -> str:
     # bug, same RLS-inheritance fix, via _store rather than vault_db directly.
     by_lower = by.strip().lower()
     if by_lower not in ("score", "recency"):
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.INVALID_REQUEST))
         return "❌ `by` must be 'score' or 'recency'"
 
     results = _store.top_by_score(limit=limit) if by_lower == "score" else _store.top_by_recency(limit=limit)
+    mark_outcome(Outcome(result_count=len(results)))
     if not results:
         return "No notes found in index — try sync_index first."
 
@@ -2573,6 +2945,7 @@ def init_vault() -> str:
     Call this after cloning the repo or setting up on a new machine.
     """
     actions = _bootstrap_vault(VAULT)
+    mark_outcome(Outcome(result_count=len(actions)))
     if actions:
         return "Vault initialized:\n" + "\n".join(f"  + {a}" for a in actions)
     return "Vault already complete — nothing to create."
@@ -2611,6 +2984,10 @@ def get_agent_instructions() -> str:
         personal = _read(vault_agents).strip()
         result = result.rstrip() + "\n\n---\n\n" + personal
 
+    if base is None:
+        mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.UNAVAILABLE))
+    else:
+        mark_outcome(Outcome())
     return result
 
 
@@ -2642,21 +3019,28 @@ def manage_api_key(
 
     if action == "register":
         if not raw_key:
+            mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.INVALID_REQUEST))
             return "Error: raw_key is required for register"
         if not user_id:
+            mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.INVALID_REQUEST))
             return "Error: user_id is required for register"
         if role not in VALID_ROLES:
+            mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.INVALID_REQUEST))
             return f"Error: role must be one of {sorted(VALID_ROLES)}"
         if role == "member" and not user_uuid:
+            mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.INVALID_REQUEST))
             return "Error: user_uuid is required for role='member'"
         if user_uuid:
             try:
                 from uuid import UUID
                 if str(UUID(user_uuid)) != user_uuid:
+                    mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.INVALID_REQUEST))
                     return "Error: user_uuid must be a canonical lowercase UUID"
             except ValueError:
+                mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.INVALID_REQUEST))
                 return "Error: user_uuid is not a valid UUID"
         if expires_days < 0:
+            mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.INVALID_REQUEST))
             return "Error: expires_days must be >= 0"
         kh = hash_key(raw_key)
         try:
@@ -2666,23 +3050,30 @@ def manage_api_key(
                 expires_days=expires_days or None,
             )
         except ValueError as exc:
+            mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.INVALID_REQUEST))
             return f"Error: {exc}"
         except Exception:
+            mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.UNAVAILABLE))
             return f"Error: failed to register key (hash_prefix={kh[:8]}) — check server logs"
+        mark_outcome(Outcome(result_count=1))
         return f"Registered key for '{user_id}' (role={role}, hash_prefix={kh[:8]})"
 
     if action == "revoke":
         if not raw_key:
+            mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.INVALID_REQUEST))
             return "Error: raw_key is required for revoke"
         kh = hash_key(raw_key)
         revoked = _store.revoke_api_key(kh)
         if revoked:
+            mark_outcome(Outcome(result_count=1))
             return f"Revoked key (hash_prefix={kh[:8]})"
+        mark_outcome(Outcome(result_count=0))
         return f"Key not found or already revoked (hash_prefix={kh[:8]})"
 
     if action == "list":
         rows = _store.list_api_keys(user_id=user_id or None)
         if not rows:
+            mark_outcome(Outcome(result_count=0))
             return "No API keys found."
         lines = ["prefix   | user_id                       | role    | created_at          | revoked_at"]
         lines.append("-" * 95)
@@ -2692,8 +3083,10 @@ def manage_api_key(
                 f"{r['key_hash_prefix']:<8} | {r['user_id']:<29} | {r['role']:<7} | "
                 f"{r['created_at'][:19]} | {revoked[:19]}"
             )
+        mark_outcome(Outcome(result_count=len(rows)))
         return "\n".join(lines)
 
+    mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.INVALID_REQUEST))
     return f"Error: unknown action '{action}'. Use register | revoke | list"
 
 
@@ -2715,6 +3108,7 @@ def query_audit_log(
         limit=limit,
     )
     if not rows:
+        mark_outcome(Outcome(result_count=0))
         return "No audit records found."
     lines = ["ts                   | user_id                       | tool                  | target"]
     lines.append("-" * 100)
@@ -2722,6 +3116,7 @@ def query_audit_log(
         lines.append(
             f"{str(r['ts'])[:19]} | {r['user_id']:<29} | {r['tool']:<21} | {r['target']}"
         )
+    mark_outcome(Outcome(result_count=len(rows)))
     return "\n".join(lines)
 
 
@@ -2733,6 +3128,23 @@ def health_check() -> str:
     duplicate server processes, embedding server, and vault accessibility.
     Returns a plain-text report with OK / WARN / ERROR per item.
     """
+    if _visibility.multiuser_enabled():
+        from dataclasses import asdict
+        try:
+            with _store._conn(timeout=0.5) as conn:
+                conn.execute("SELECT 1")
+            report = {"database": "ready", "mode": "multiuser"}
+            actor = get_current_identity()
+            if actor is not None and actor.is_admin():
+                report["query_active"] = mcp.query_dispatcher.active
+                report["query_stage_totals_ms"] = dict(mcp.query_dispatcher.stage_totals_ms)
+                report["event_delivery"] = asdict(_active_event_sink.stats) if _active_event_sink is not None else {"enabled": False}
+                report["query_window"] = {"enabled": False} if _query_window is None else {"samples": len(_query_window), **_query_window.snapshot()}
+            mark_outcome(Outcome())
+            return json.dumps(report, sort_keys=True)
+        except Exception:
+            mark_outcome(Outcome(EventStatus.ERROR, ErrorCode.UNAVAILABLE))
+            return "Multiuser health unavailable."
     import urllib.request
     lines: list[str] = ["## second-brain health check\n"]
 
@@ -2811,12 +3223,13 @@ def health_check() -> str:
     try:
         from . import vault_db as _vdb
         url = _vdb.EMBED_URL.replace("/v1/embeddings", "/health")
-        with urllib.request.urlopen(url, timeout=2) as resp:
+        with urllib.request.urlopen(url, timeout=2):
             lines.append(f"[{ok}] Embedding server reachable ({url})")
     except Exception:
         lines.append(f"[{warn}] Embedding server offline — semantic search falls back to BM25")
 
     lines.append("\nRun `sync_index` to rebuild index. Run `rm ~/.second-brain/vault.db*` in Terminal to reset DB.")
+    mark_outcome(Outcome())
     return "\n".join(lines)
 
 
@@ -2891,22 +3304,30 @@ def _run_http_with_auth(transport: str) -> None:
     import uvicorn
 
     from .auth import maybe_add_api_key_auth
+    from .shutdown_guard import arm_shutdown_exit
     from .identity import hash_key as _hash_key
 
     app = mcp.sse_app() if transport == "sse" else mcp.streamable_http_app()
+    if _visibility.multiuser_enabled():
+        from .http_limits import HTTPBodyLimitMiddleware
+        app.add_middleware(HTTPBodyLimitMiddleware)
     # auth.py passes the raw key; store expects SHA-256 hash — wrap here
     try:
         _db_keys = _store.count_active_api_keys()
     except Exception as exc:  # store without api_keys support, or DB unreachable
+        if _visibility.multiuser_enabled():
+            raise RuntimeError("Multiuser authentication store unavailable") from None
         print(f"[second-brain] could not count DB API keys: {exc}", file=sys.stderr)
         _db_keys = 0
     n_keys = maybe_add_api_key_auth(
         app,
         lookup_fn=lambda raw: _store.get_identity_for_key(_hash_key(raw)),
-        exempt_paths={"/graph"},  # read-only browser viz; Tailscale-only (see AskUserQuestion)
+        exempt_paths=set() if _visibility.multiuser_enabled() else {"/graph"},
         db_key_count=_db_keys,
+        required=_visibility.multiuser_enabled(),
+        on_shutdown_timeout=arm_shutdown_exit,
     )
-    if n_keys:
+    if n_keys or _visibility.multiuser_enabled():
         print(
             f"[second-brain] API-key auth ENABLED ({n_keys} key(s): "
             f"{n_keys - _db_keys} env, {_db_keys} registered)",
@@ -2925,8 +3346,27 @@ def _run_http_with_auth(transport: str) -> None:
             host=mcp.settings.host,
             port=mcp.settings.port,
             log_level=mcp.settings.log_level.lower(),
+            limit_concurrency=64 if _visibility.multiuser_enabled() else None,
+            timeout_graceful_shutdown=5 if _visibility.multiuser_enabled() else None,
+            access_log=not _visibility.multiuser_enabled(),
         )
-        await uvicorn.Server(config).serve()
+        sink = _start_query_events()
+        try:
+            async with anyio.create_task_group() as tasks:
+                if sink is not None:
+                    from .event_health import watch_delivery
+                    tasks.start_soon(watch_delivery, sink, lambda signal: print(signal, file=sys.stderr))
+                try:
+                    await uvicorn.Server(config).serve()
+                finally:
+                    tasks.cancel_scope.cancel()
+        finally:
+            if not await mcp.close_queries(timeout=1):
+                print("[second-brain] query shutdown not drained", file=sys.stderr)
+                arm_shutdown_exit()
+            _query_recorder.disable()
+            if sink is not None and not sink.close(timeout=1):
+                print("[second-brain] query events shutdown not drained", file=sys.stderr)
 
     anyio.run(_serve)
 

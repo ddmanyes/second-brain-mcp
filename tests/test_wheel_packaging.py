@@ -12,6 +12,7 @@ missing console entry point, then a missing ``AGENTS.md``). Both were found by a
 human hitting them in production. These tests inspect the built artifact itself so
 the next one fails here instead.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -23,6 +24,15 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+CURRENT_MULTIUSER_RUNTIME_MEMBERS = (
+    "mcp_second_brain/auth.py",
+    "mcp_second_brain/identity.py",
+    "mcp_second_brain/intake_identity.py",
+    "mcp_second_brain/server.py",
+    "mcp_second_brain/store/migrate_query_events.py",
+    "mcp_second_brain/store/query_events_schema.sql",
+)
 
 
 def _required_wheel_members() -> tuple[str, ...]:
@@ -39,7 +49,7 @@ def _required_wheel_members() -> tuple[str, ...]:
     templates.add(_DEFAULT_CONFIG[1])
     return (
         "mcp_second_brain/AGENTS.md",
-        "mcp_second_brain/server.py",
+        *CURRENT_MULTIUSER_RUNTIME_MEMBERS,
         *sorted(f"mcp_second_brain/{t}" for t in templates),
     )
 
@@ -107,6 +117,20 @@ def test_wheel_packages_agents_md_with_real_content(built_wheel: Path):
         assert marker in packaged, f"packaged AGENTS.md is missing '{marker}'"
 
 
+@pytest.mark.parametrize("member", CURRENT_MULTIUSER_RUNTIME_MEMBERS)
+def test_wheel_packages_current_multiuser_runtime(built_wheel: Path, member: str):
+    """The wheel must contain the exact reviewed multi-user implementation.
+
+    In particular, ``auth_context`` lives in ``server.py`` and relies on the
+    canonical identity helpers, while the telemetry migration loads its SQL
+    beside the module. Comparing bytes prevents a stale build tree from
+    silently shipping an older implementation under the right filename.
+    """
+    with zipfile.ZipFile(built_wheel) as zf:
+        packaged = zf.read(member)
+    assert packaged == (REPO_ROOT / member).read_bytes()
+
+
 def test_wheel_declares_console_entry_point(built_wheel: Path):
     """The `second-brain` console script must survive packaging.
 
@@ -114,9 +138,7 @@ def test_wheel_declares_console_entry_point(built_wheel: Path):
     content rather than merely the presence of an entry_points.txt.
     """
     with zipfile.ZipFile(built_wheel) as zf:
-        entry_point_files = [
-            n for n in zf.namelist() if n.endswith("entry_points.txt")
-        ]
+        entry_point_files = [n for n in zf.namelist() if n.endswith("entry_points.txt")]
         assert entry_point_files, "wheel declares no entry_points.txt"
         declared = zf.read(entry_point_files[0]).decode("utf-8")
     assert "second-brain" in declared, f"console script missing:\n{declared}"

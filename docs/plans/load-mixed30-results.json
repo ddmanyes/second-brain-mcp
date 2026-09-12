@@ -1,0 +1,184 @@
+{
+  "execution": "sequential phases with independent temporary roots",
+  "generated_at_epoch_seconds": 1789187804.165379,
+  "mode": "mixed30",
+  "not_measured": [
+    "PostgreSQL latency, locks, RLS, connections, or storage metrics",
+    "production ASGI/auth middleware and HTTP transport",
+    "network retrieval, redirects, document conversion, or model calls",
+    "production filesystem, vault, scheduler, worker subprocess, or NAS behavior"
+  ],
+  "phases": [
+    {
+      "actor_isolation_failures": 0,
+      "busy": 0,
+      "clients": 20,
+      "count": 36000,
+      "duplicate_count": 1799,
+      "elapsed_seconds": 1799.95367,
+      "errors": 0,
+      "event_loss": 0,
+      "ingest_count": 1800,
+      "ingest_every_queries": 20,
+      "ingest_stage_ms": {
+        "job_run": {
+          "count": 1800,
+          "p50": 1.896,
+          "p95": 3.366,
+          "p99": 5.452,
+          "total": 3823.437
+        },
+        "queue_wait": {
+          "count": 1800,
+          "p50": 0.002,
+          "p95": 0.002,
+          "p99": 0.003,
+          "total": 2.777
+        },
+        "submit": {
+          "count": 1800,
+          "p50": 43.766,
+          "p95": 79.992,
+          "p99": 84.962,
+          "total": 79286.17
+        }
+      },
+      "latency_ms": {
+        "p50": 0.923,
+        "p95": 1.581,
+        "p99": 1.82
+      },
+      "lifecycle": {
+        "event_actor_count": 20,
+        "event_sink": {
+          "accepted": 36200,
+          "dropped": 0,
+          "failed": 0,
+          "overflow": 0,
+          "pending": 0,
+          "rejected": 0,
+          "written": 36200
+        },
+        "event_sink_closed": true,
+        "events_written_by_fake_sink": 36200,
+        "queries_drained": true,
+        "recorder_callback_failures": 0
+      },
+      "mixture": "query+ingest",
+      "pacing": "fixed_rate_monotonic_deadline",
+      "queue_limits": {
+        "capacity": 50,
+        "per_owner": 5
+      },
+      "resources": {
+        "after": {
+          "cpu_system_seconds": 75.864771,
+          "cpu_user_seconds": 122.329008,
+          "rss_max_bytes": 82771968
+        },
+        "before": {
+          "cpu_system_seconds": 20.492171,
+          "cpu_user_seconds": 54.704476,
+          "rss_max_bytes": 72155136
+        },
+        "cpu_system_seconds_delta": 55.3726,
+        "cpu_user_seconds_delta": 67.624532,
+        "rss_max_bytes_delta": 10616832
+      },
+      "target_rate_per_second": 20.0,
+      "telemetry_enabled": true,
+      "throughput_per_second": 20.001,
+      "timeouts": 0,
+      "warmup_requests": 200
+    }
+  ],
+  "schema": "second-brain.synthetic-multiuser-load.v1",
+  "synthetic_dependencies": {
+    "article_index": "local callback returning true",
+    "real_components": [
+      "ObservedFastMCP registered call_tool wrapper",
+      "QueryDispatcher",
+      "BoundedEventSink",
+      "lcdda DurableQueue and HarvestWorkspace",
+      "commit_shared_article"
+    ],
+    "resolver": "fixed metadata stub only; no source resolution",
+    "retrieval": "deterministic local identity echo"
+  },
+  "telemetry_comparison": {
+    "off": {
+      "event_loss": 0,
+      "latency_ms": {
+        "p50": 0.078,
+        "p95": 0.091,
+        "p99": 0.305
+      },
+      "lifecycle": {
+        "event_actor_count": 0,
+        "event_sink": {
+          "accepted": 0,
+          "dropped": 0,
+          "failed": 0,
+          "overflow": 0,
+          "pending": 0,
+          "rejected": 0,
+          "written": 0
+        },
+        "event_sink_closed": true,
+        "events_written_by_fake_sink": 0,
+        "queries_drained": true,
+        "recorder_callback_failures": 0
+      },
+      "samples": 200,
+      "throughput_per_second": 11401.181,
+      "warmup_requests": 200
+    },
+    "on": {
+      "event_loss": 0,
+      "latency_ms": {
+        "p50": 0.113,
+        "p95": 0.133,
+        "p99": 0.137
+      },
+      "lifecycle": {
+        "event_actor_count": 1,
+        "event_sink": {
+          "accepted": 400,
+          "dropped": 0,
+          "failed": 0,
+          "overflow": 0,
+          "pending": 0,
+          "rejected": 0,
+          "written": 400
+        },
+        "event_sink_closed": true,
+        "events_written_by_fake_sink": 400,
+        "queries_drained": true,
+        "recorder_callback_failures": 0
+      },
+      "samples": 200,
+      "throughput_per_second": 8731.337,
+      "warmup_requests": 200
+    },
+    "order": [
+      "off",
+      "on"
+    ],
+    "p50_overhead_ms": 0.035,
+    "p95_overhead_ms": 0.042,
+    "p95_overhead_target_met": true,
+    "p95_overhead_target_ms": 20
+  },
+  "tested_source_sha256": {
+    "article_attribution.py": "eeac5b6f92b2ad18f6c6622a17676cf7e0d6db59d9e37ea32ba9cdf1b354c237",
+    "identity.py": "2a4888e8308d35e6a732226333d2487bd6f092215bc82bee77edc24115c3de62",
+    "multiuser_load.py": "9452305402d869d42fb00bbb057e64cabce554471407ef7e83edc48b4104fe39",
+    "query_dispatch.py": "4645f3e4a0b307628b090ab7d89f16e3eb900c48cc8a4c2baf80920149a40fb3",
+    "query_event_mcp.py": "c572919bf7b90fc33785c6cf553498983e07a9fa3399857e25a607a6b9b7e0b0",
+    "query_event_store.py": "0d6d8a1b4166f562064c54fc0814242128acb137ee56a98ad2a70befffe8898d",
+    "query_events.py": "9a55b1c475412251be00e6a2ebaf8c59e331ad760bcefc95c5b48f65f852be7f",
+    "queue.py": "18719319ed8fdd74b6e276923768db5f884819cfee8c8197621a8a2a6830baea",
+    "request_budget.py": "a989ae9ad150489e66c57afcbbaa580f38e02e8675dcdd41d87249a8719bac27",
+    "workspace.py": "821fe8d1c59853fb66c177c0c48c4217b3bc8d441a266abb6b59445895196ee0"
+  }
+}

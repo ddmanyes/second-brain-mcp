@@ -29,7 +29,9 @@ import sys
 import urllib.error
 import urllib.request
 
-__all__ = ["RERANK_URL", "NUM_CHUNKS_PER_CANDIDATE", "rerank", "rerank_candidates"]
+from .request_budget import remaining_timeout, stage
+
+__all__ = ["NUM_CHUNKS_PER_CANDIDATE", "RERANK_URL", "rerank", "rerank_candidates"]
 
 RERANK_PORT = int(os.environ.get("RERANK_PORT", "8083"))
 RERANK_URL = os.environ.get("RERANK_URL", f"http://localhost:{RERANK_PORT}/v1/rerank")
@@ -55,18 +57,26 @@ def rerank(query: str, documents: list[str], *, timeout: float = 30.0) -> list[f
         RERANK_URL, data=payload, headers={"Content-Type": "application/json"}
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read())
-    except (urllib.error.URLError, TimeoutError, ValueError) as e:
-        print(f"[reranker] unavailable, skipping rerank: {e}", file=sys.stderr)
+        from .local_model_http import LocalModelRequestError, request_bytes
+
+        with stage("rerank"):
+            body = request_bytes(req, timeout=remaining_timeout(timeout))
+        data = json.loads(body)
+    except (
+        urllib.error.URLError,
+        LocalModelRequestError,
+        TimeoutError,
+        ValueError,
+    ):
+        print("[reranker] unavailable, skipping rerank", file=sys.stderr)
         return None
     try:
         scores = [0.0] * len(documents)
         for r in data["results"]:
             scores[r["index"]] = r["relevance_score"]
         return scores
-    except (KeyError, IndexError, TypeError) as e:
-        print(f"[reranker] unexpected response shape, skipping rerank: {e}", file=sys.stderr)
+    except (KeyError, IndexError, TypeError):
+        print("[reranker] unexpected response shape, skipping rerank", file=sys.stderr)
         return None
 
 

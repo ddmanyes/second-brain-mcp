@@ -1,0 +1,65 @@
+{
+  "accepted_jobs_retained": true,
+  "actor_isolation_failures": 0,
+  "clients": 10,
+  "counts": {
+    "accepted": 210,
+    "dead_workers_reconciled": 30,
+    "duplicates": 149,
+    "ingests": 150,
+    "queries_finished": 3000,
+    "queries_returned": 3000,
+    "query_duration_total_ms": 3466.6548597160727,
+    "revoked_jobs_cancelled": 30
+  },
+  "elapsed_seconds": 300.0216350000119,
+  "event_sink": {
+    "accepted": 3000,
+    "dropped": 0,
+    "failed": 29,
+    "overflow": 0,
+    "pending": 0,
+    "rejected": 0,
+    "written": 2971
+  },
+  "faults": [
+    "slow query adapter",
+    "unavailable database adapter",
+    "event writer failure",
+    "queued credential revocation",
+    "dead worker PID reconciliation"
+  ],
+  "lifecycle": {
+    "event_actor_count": 10,
+    "event_sink": {
+      "accepted": 3000,
+      "dropped": 0,
+      "failed": 29,
+      "overflow": 0,
+      "pending": 0,
+      "rejected": 0,
+      "written": 2971
+    },
+    "event_sink_closed": true,
+    "events_written_by_fake_sink": 2971,
+    "queries_drained": true,
+    "recorder_callback_failures": 0
+  },
+  "not_measured": [
+    "real PostgreSQL or models",
+    "HTTP/network",
+    "real worker process restart",
+    "production vault/NAS"
+  ],
+  "outcomes": {
+    "none": 2940,
+    "timeout": 30,
+    "unavailable": 30
+  },
+  "query_window": {
+    "query_p95_ms": 0.7117500063031912,
+    "query_timeout_rate": 0.01
+  },
+  "schema": "synthetic-mixed-fault-soak.v1",
+  "target_queries_per_second": 10
+}

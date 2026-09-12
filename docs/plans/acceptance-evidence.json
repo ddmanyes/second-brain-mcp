@@ -1,0 +1,214 @@
+{
+  "candidate_probe": {
+    "artifact_revision": "1dae360fb44cf116cc2dc19e06d39efdc732f998672077d7929ae90a5038fc75",
+    "source_revision_match": true,
+    "wheel_imports": true,
+    "worker_revision_match": true
+  },
+  "candidate_wheels": {
+    "lcdda_ingest-0.2.0-py3-none-any.whl": "32812da7db3cd7ff52cbb81b4918011b93a3684adfb0c2963a2656dcbb702d4b",
+    "mcp_second_brain-0.2.0-py3-none-any.whl": "18968faa613116a6391e3ba8ee89090a08356b7c1280ddb4adc571e489d4ec10"
+  },
+  "caveats": [
+    "PG counts overlap general tests; do not add",
+    "model providers are deterministic stubs in PG E2E",
+    "load harness substitutes retrieval, resolver, metadata index",
+    "candidate uses isolated venv with reused validated third-party dependencies",
+    "no commit, push, merge, production install/migration/restart/key issuance"
+  ],
+  "matrix": [
+    {
+      "clients": 1,
+      "mixed_p95_ms": 1.553,
+      "query_p95_ms": 1.195,
+      "ratio": 1.3,
+      "submit_p95_ms": 23.266
+    },
+    {
+      "clients": 5,
+      "mixed_p95_ms": 1.615,
+      "query_p95_ms": 1.57,
+      "ratio": 1.029,
+      "submit_p95_ms": 24.039
+    },
+    {
+      "clients": 10,
+      "mixed_p95_ms": 1.62,
+      "query_p95_ms": 1.665,
+      "ratio": 0.973,
+      "submit_p95_ms": 23.041
+    },
+    {
+      "clients": 20,
+      "mixed_p95_ms": 1.585,
+      "query_p95_ms": 1.611,
+      "ratio": 0.984,
+      "submit_p95_ms": 22.438
+    }
+  ],
+  "mixed_fault_soak": {
+    "accepted_jobs_retained": true,
+    "actor_isolation_failures": 0,
+    "clients": 10,
+    "counts": {
+      "accepted": 210,
+      "dead_workers_reconciled": 30,
+      "duplicates": 149,
+      "ingests": 150,
+      "queries_finished": 3000,
+      "queries_returned": 3000,
+      "query_duration_total_ms": 3466.6548597160727,
+      "revoked_jobs_cancelled": 30
+    },
+    "elapsed_seconds": 300.0216350000119,
+    "event_sink": {
+      "accepted": 3000,
+      "dropped": 0,
+      "failed": 29,
+      "overflow": 0,
+      "pending": 0,
+      "rejected": 0,
+      "written": 2971
+    },
+    "faults": [
+      "slow query adapter",
+      "unavailable database adapter",
+      "event writer failure",
+      "queued credential revocation",
+      "dead worker PID reconciliation"
+    ],
+    "lifecycle": {
+      "event_actor_count": 10,
+      "event_sink": {
+        "accepted": 3000,
+        "dropped": 0,
+        "failed": 29,
+        "overflow": 0,
+        "pending": 0,
+        "rejected": 0,
+        "written": 2971
+      },
+      "event_sink_closed": true,
+      "events_written_by_fake_sink": 2971,
+      "queries_drained": true,
+      "recorder_callback_failures": 0
+    },
+    "not_measured": [
+      "real PostgreSQL or models",
+      "HTTP/network",
+      "real worker process restart",
+      "production vault/NAS"
+    ],
+    "outcomes": {
+      "none": 2940,
+      "timeout": 30,
+      "unavailable": 30
+    },
+    "query_window": {
+      "query_p95_ms": 0.7117500063031912,
+      "query_timeout_rate": 0.01
+    },
+    "schema": "synthetic-mixed-fault-soak.v1",
+    "target_queries_per_second": 10
+  },
+  "scope": "local synthetic acceptance; not production capacity",
+  "soak": {
+    "actor_isolation_failures": 0,
+    "busy": 0,
+    "clients": 20,
+    "count": 36000,
+    "duplicate_count": 1799,
+    "elapsed_seconds": 1799.95367,
+    "errors": 0,
+    "event_loss": 0,
+    "ingest_count": 1800,
+    "ingest_every_queries": 20,
+    "ingest_stage_ms": {
+      "job_run": {
+        "count": 1800,
+        "p50": 1.896,
+        "p95": 3.366,
+        "p99": 5.452,
+        "total": 3823.437
+      },
+      "queue_wait": {
+        "count": 1800,
+        "p50": 0.002,
+        "p95": 0.002,
+        "p99": 0.003,
+        "total": 2.777
+      },
+      "submit": {
+        "count": 1800,
+        "p50": 43.766,
+        "p95": 79.992,
+        "p99": 84.962,
+        "total": 79286.17
+      }
+    },
+    "latency_ms": {
+      "p50": 0.923,
+      "p95": 1.581,
+      "p99": 1.82
+    },
+    "lifecycle": {
+      "event_actor_count": 20,
+      "event_sink": {
+        "accepted": 36200,
+        "dropped": 0,
+        "failed": 0,
+        "overflow": 0,
+        "pending": 0,
+        "rejected": 0,
+        "written": 36200
+      },
+      "event_sink_closed": true,
+      "events_written_by_fake_sink": 36200,
+      "queries_drained": true,
+      "recorder_callback_failures": 0
+    },
+    "mixture": "query+ingest",
+    "pacing": "fixed_rate_monotonic_deadline",
+    "queue_limits": {
+      "capacity": 50,
+      "per_owner": 5
+    },
+    "resources": {
+      "after": {
+        "cpu_system_seconds": 75.864771,
+        "cpu_user_seconds": 122.329008,
+        "rss_max_bytes": 82771968
+      },
+      "before": {
+        "cpu_system_seconds": 20.492171,
+        "cpu_user_seconds": 54.704476,
+        "rss_max_bytes": 72155136
+      },
+      "cpu_system_seconds_delta": 55.3726,
+      "cpu_user_seconds_delta": 67.624532,
+      "rss_max_bytes_delta": 10616832
+    },
+    "target_rate_per_second": 20.0,
+    "telemetry_enabled": true,
+    "throughput_per_second": 20.001,
+    "timeouts": 0,
+    "warmup_requests": 200
+  },
+  "source_hash_drift": [],
+  "telemetry_p95_overhead_ms": 0.03,
+  "test_suites": {
+    "lcdda_general": {
+      "passed": 311
+    },
+    "lcdda_packaging": {
+      "passed": 3
+    },
+    "postgres_opt_in": {
+      "passed": 125
+    },
+    "second_brain_general": {
+      "passed": 950,
+      "skipped": 97
+    }
+  }
+}

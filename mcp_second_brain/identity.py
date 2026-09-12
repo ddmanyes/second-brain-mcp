@@ -12,7 +12,8 @@ import contextvars
 import hashlib
 import os
 import sys
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
@@ -44,6 +45,8 @@ class Identity:
     # keys registered before the lab-open plan (2026-09-12) and for the env-key
     # admin fallback: those have no lab person record and own no private area.
     user_uuid: str | None = None
+    # Opaque lookup reference; never the raw key and never included in repr.
+    credential_id: str | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.role not in VALID_ROLES:
@@ -83,6 +86,34 @@ _RBAC_ENFORCE_ENV = "SB_RBAC_ENFORCE"
 _DENIED_MSG = "[RBAC] read-only access denied: '{}' requires writer or admin role"
 
 
+def rbac_enforced() -> bool:
+    """Return whether read-only role write attempts are blocked."""
+    return os.environ.get(_RBAC_ENFORCE_ENV, "").lower() in (
+        "1",
+        "true",
+        "yes",
+        "enforce",
+    )
+
+
+def canonical_user_id(identity: Identity | None = None) -> str:
+    """Return the middleware-bound canonical EP UUID for a registered identity."""
+    current = identity if identity is not None else get_current_identity()
+    if current is None:
+        raise ValueError("AUTH_IDENTITY_REQUIRED")
+    if not isinstance(current.user_id, str) or current.user_id.startswith("env:"):
+        raise ValueError("AUTH_REGISTERED_IDENTITY_REQUIRED")
+    if not isinstance(current.user_uuid, str) or not current.user_uuid:
+        raise ValueError("AUTH_USER_UUID_REQUIRED")
+    try:
+        parsed = uuid.UUID(current.user_uuid)
+    except (AttributeError, TypeError, ValueError):
+        raise ValueError("AUTH_USER_UUID_INVALID") from None
+    if str(parsed) != current.user_uuid:
+        raise ValueError("AUTH_USER_UUID_NONCANONICAL")
+    return current.user_uuid
+
+
 def check_write_permission(tool_name: str) -> str | None:
     """Return None if write is allowed, or an error string to return to the caller.
 
@@ -98,13 +129,7 @@ def check_write_permission(tool_name: str) -> str | None:
 
     # reader tried a write tool
     user = identity.user_id
-    enforce = os.environ.get(_RBAC_ENFORCE_ENV, "").lower() in (
-        "1",
-        "true",
-        "yes",
-        "enforce",
-    )
-    if enforce:
+    if rbac_enforced():
         print(
             f"[RBAC DENY] {user} blocked from write tool '{tool_name}'",
             file=sys.stderr,

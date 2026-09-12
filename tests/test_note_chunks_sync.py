@@ -1,6 +1,6 @@
 """Tests for Phase B chunk-sync: PostgresStore._sync_chunks_for_note / sync_chunks.
 
-Requires a running Postgres instance — same sb_test convention as
+Requires --run-postgres with an owned disposable container — same convention as
 test_postgres_store.py (see that file's module docstring for the DSN/safety
 guard). ``chunk_and_embed`` is monkeypatched with a deterministic fake so these
 tests don't depend on a live late-chunking (--pooling none) server — the real
@@ -12,20 +12,9 @@ documented in the plan's Phase B execution notes.
 from __future__ import annotations
 
 import hashlib
-import os
 from pathlib import Path
 
 import pytest
-
-TEST_DSN = os.environ.get(
-    "SB_PG_TEST_DSN",
-    "postgresql://postgres:postgres@localhost:5432/sb_test",
-)
-if TEST_DSN.rsplit("/", 1)[-1] in {"sb_personal", "sb_lab"}:
-    raise RuntimeError(
-        f"Refusing to run destructive Postgres tests against live DB in DSN: {TEST_DSN}. "
-        "Point SB_PG_TEST_DSN at a throwaway database (e.g. sb_test)."
-    )
 
 FM = "---\ntitle: T\ntype: note\nstatus: active\ntags: []\n---\n\n"
 
@@ -37,24 +26,20 @@ def test_postgres_store_exposes_metadata_only_index_contract():
 
 
 @pytest.fixture(scope="module")
-def store():
+def store(multiuser_postgres):
     try:
         from mcp_second_brain.store.postgres_store import PostgresStore
     except ImportError:
         pytest.skip("psycopg not installed")
+    # No external DSN, fallback connection or skip-on-failure: this endpoint
+    # belongs to the explicitly opted-in, freshly verified tmpfs container.
+    multiuser_postgres.reset()
+    s = PostgresStore(multiuser_postgres.dsn())
+
     try:
-        s = PostgresStore(TEST_DSN)
-    except Exception as e:
-        pytest.skip(f"Postgres unavailable: {e}")
-
-    with s._pool.connection() as conn:
-        conn.execute("DELETE FROM figures")
-        conn.execute("DELETE FROM note_chunks")
-        conn.execute("DELETE FROM notes")
-        conn.commit()
-
-    yield s
-    s.close()
+        yield s
+    finally:
+        s.close()
 
 
 @pytest.fixture()
@@ -295,15 +280,14 @@ class TestChunkSyncDoesNotHoldTransactionAcrossEmbedding:
     """
 
     @pytest.fixture()
-    def single_conn_store(self):
+    def single_conn_store(self, multiuser_postgres):
         from mcp_second_brain.store.postgres_store import PostgresStore
 
+        s = PostgresStore(multiuser_postgres.dsn(), min_size=1, max_size=1)
         try:
-            s = PostgresStore(TEST_DSN, min_size=1, max_size=1)
-        except Exception as e:
-            pytest.skip(f"Postgres unavailable: {e}")
-        yield s
-        s.close()
+            yield s
+        finally:
+            s.close()
 
     def test_pool_connection_is_free_during_chunk_and_embed_call(
         self, single_conn_store, vault, monkeypatch

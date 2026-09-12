@@ -5,7 +5,7 @@
 **A self-maintaining personal knowledge base for AI agents — a plain-Markdown vault, powered by MCP.**
 
 [![CI](https://github.com/ddmanyes/second-brain-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ddmanyes/second-brain-mcp/actions/workflows/ci.yml)
-[![Python ≥ 3.11](https://img.shields.io/badge/Python-%E2%89%A53.11-blue)](https://www.python.org/)
+[![Python 3.11–3.13](https://img.shields.io/badge/Python-3.11%E2%80%933.13-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-lightgrey)](LICENSE)
 
 📖 English · [繁體中文](README.zh.md)
@@ -45,6 +45,7 @@ The vault directory and templates are created on first run. Then tell your agent
 
 | Tool | What it does |
 | :--- | :--- |
+| `auth_context` | Read the authenticated caller's canonical UUID, role, and RBAC state |
 | `get_context` | Session start — goals + top-ranked notes + auto-rules |
 | `save_article` | URL / PDF → Markdown + figures + embeddings |
 | `search_notes` / `search_figures` | Hybrid BM25 + semantic search (note text / figure content) |
@@ -54,7 +55,7 @@ The vault directory and templates are created on first run. Then tell your agent
 | `vault_sleep` | Compress old, low-activity notes |
 | `get_agent_instructions` | Serve the full filing SOP (AGENTS.md) to remote agents |
 
-Full tool reference (45 tools) lives in **[AGENTS.md](AGENTS.md)**.
+Full tool reference (46 tools) lives in **[AGENTS.md](AGENTS.md)**.
 
 Use `search_notes` when you need content, `health_check` when the server or index may be
 unhealthy, and `audit_article_records` when you need a housekeeping report. Audit results

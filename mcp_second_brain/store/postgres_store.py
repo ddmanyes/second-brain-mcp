@@ -47,6 +47,7 @@ from ..snippets import strip_references
 
 # Decision 2 — reranker (see reranker.py's docstring for the "top-1 chunk gets
 # fooled by boilerplate" lesson this module's NUM_CHUNKS_PER_CANDIDATE encodes).
+from ..request_budget import request_embedding
 from .. import reranker as _reranker
 
 # Lab-open plan (2026-09-12) — see visibility.py's module docstring for the
@@ -119,7 +120,11 @@ class PostgresStore:
             open=True,
             kwargs={"autocommit": False},
         )
-        self._apply_schema()
+        try:
+            self._apply_schema()
+        except Exception:
+            self._pool.close()
+            raise
 
     def _apply_schema(self) -> None:
         if self._multiuser:
@@ -155,27 +160,45 @@ class PostgresStore:
         with self._pool.connection() as conn:
             row = conn.execute(
                 """
+                WITH protected AS (
+                    SELECT c.oid, c.relowner, c.relrowsecurity, c.relforcerowsecurity
+                    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                    WHERE n.nspname = 'public'
+                      AND c.relname IN ('notes', 'note_chunks', 'figures')
+                      AND c.relkind = 'r'
+                )
                 SELECT
-                    EXISTS(SELECT 1 FROM information_schema.columns
-                           WHERE table_name = 'notes' AND column_name = 'owner_id'),
-                    EXISTS(SELECT 1 FROM information_schema.columns
-                           WHERE table_name = 'api_keys' AND column_name = 'user_uuid'),
-                    EXISTS(SELECT 1 FROM information_schema.columns
-                           WHERE table_name = 'api_keys' AND column_name = 'expires_at'),
-                    EXISTS(SELECT 1 FROM pg_tables
-                           WHERE tablename = 'notes' AND rowsecurity)
+                    (SELECT count(*) = 3 FROM information_schema.columns
+                     WHERE table_schema = 'public'
+                       AND table_name IN ('notes', 'note_chunks', 'figures')
+                       AND column_name = 'owner_id'),
+                    (SELECT count(*) = 2 FROM information_schema.columns
+                     WHERE table_schema = 'public' AND table_name = 'api_keys'
+                       AND column_name IN ('user_uuid', 'expires_at')),
+                    (SELECT count(*) = 3 FROM protected),
+                    COALESCE((SELECT bool_and(relrowsecurity AND relforcerowsecurity)
+                              FROM protected), false),
+                    EXISTS(SELECT 1 FROM pg_roles WHERE rolname = current_user
+                           AND NOT rolsuper AND NOT rolbypassrls),
+                    NOT EXISTS(SELECT 1 FROM protected
+                               WHERE pg_has_role(current_user, relowner, 'MEMBER')),
+                    to_regclass('notes') = to_regclass('public.notes')
+                        AND to_regclass('note_chunks') = to_regclass('public.note_chunks')
+                        AND to_regclass('figures') = to_regclass('public.figures'),
+                    to_regclass('api_keys') = to_regclass('public.api_keys')
                 """
             ).fetchone()
         if not row or not all(row):
             raise RuntimeError(
-                "SB_MULTIUSER=1 requires the multiuser schema/RLS migration to "
-                "already be applied (see store/migrate_multiuser.py) — missing "
-                "notes.owner_id / api_keys.user_uuid / api_keys.expires_at / "
-                "row-level security on notes."
+                "SB_MULTIUSER=1 requires migrated public tables, ENABLE/FORCE RLS "
+                "on notes/note_chunks/figures, and a NOSUPERUSER NOBYPASSRLS role "
+                "without membership in table-owning roles. The search path must "
+                "resolve the public tables. Apply migrations separately; startup "
+                "will not repair an unsafe database."
             )
 
     @contextmanager
-    def _conn(self):
+    def _conn(self, *, timeout=None):
         """Checkout a pooled connection and, in multiuser mode, bind the
         caller's identity to the transaction-local Postgres GUCs the RLS
         policies (postgres_rls_schema.sql) read via current_setting(). This
@@ -184,21 +207,63 @@ class PostgresStore:
 
         A no-op wrapper around self._pool.connection() when SB_MULTIUSER is
         unset — :9100/:9106 get byte-identical behaviour to before this
-        existed.
+        existed. Missing identity never grants an administrative bypass; it
+        gets shared-only visibility (also needed for pre-auth key lookup).
+        Background maintenance needing private rows must bind an explicit,
+        authorized Identity rather than relying on an absent request context.
         """
-        with self._pool.connection() as conn:
+        from contextlib import ExitStack
+        from ..request_budget import remaining_timeout, stage
+
+        bound = remaining_timeout(timeout if timeout is not None else (0.5 if self._multiuser else 30))
+        with ExitStack() as stack:
+            with stage("pool_wait"):
+                checkout = self._pool.connection() if timeout is None and not self._multiuser else self._pool.connection(timeout=bound)
+                conn = stack.enter_context(checkout)
             if self._multiuser:
                 from ..identity import get_current_identity
 
                 identity = get_current_identity()
                 actor_id = (identity.user_uuid or "") if identity is not None else ""
-                is_admin = identity is None or identity.is_admin()
+                is_admin = identity is not None and identity.is_admin()
+                milliseconds = str(max(1, int(remaining_timeout(2.0) * 1000)))
                 conn.execute(
                     "SELECT set_config('sb.actor_id', %s, true), "
-                    "set_config('sb.actor_is_admin', %s, true)",
-                    [actor_id, "on" if is_admin else "off"],
+                    "set_config('sb.actor_is_admin', %s, true), "
+                    "set_config('statement_timeout', %s, true), "
+                    "set_config('lock_timeout', '500', true)",
+                    [actor_id, "on" if is_admin else "off", milliseconds],
                 )
-            yield conn
+            with stage("db"):
+                yield conn
+
+    def index_shared_article_metadata(self, vault: Path, md_file: Path) -> bool:
+        """Bounded text/metadata index update without model calls or enrichment.
+
+        Only the managed shared committer should call this after publication.
+        Figures, chunks and vectors retain separate readiness; this returns True
+        for the notes row transaction only.
+        """
+        from ..article_attribution import validate_shared_destination
+        from ..identity import get_current_identity
+        from ..vault_paths import resolve_in_vault
+
+        identity = get_current_identity()
+        if identity is None or not identity.user_uuid or not identity.can_write():
+            raise PermissionError("trusted article identity required")
+        root = Path(vault).resolve()
+        rel = Path(md_file).resolve().relative_to(root).as_posix()
+        validate_shared_destination(rel)
+        target = resolve_in_vault(root, rel, must_exist=True)
+        if target.suffix != ".md":
+            raise ValueError("article index requires Markdown")
+        note = project_note(root, target)
+        with self._conn(timeout=0.5) as conn:
+            conn.execute("SELECT set_config('statement_timeout', '1000', true), "
+                         "set_config('lock_timeout', '500', true)")
+            with conn.cursor() as cur:
+                self._write_note_plan(cur, self._NotePlan(note=note, chunks=None))
+        return True
 
     def close(self) -> None:
         self._pool.close()
@@ -285,7 +350,7 @@ class PostgresStore:
         try:
             full_text = md_file.read_text(encoding="utf-8", errors="ignore")
         except OSError as e:
-            print(f"[pg_store] chunk sync: read failed for {note_path}: {e}", file=sys.stderr)
+            print("[pg_store] chunk read unavailable" if _visibility.multiuser_enabled() else f"[pg_store] chunk sync: read failed for {note_path}: {e}", file=sys.stderr)
             return None
 
         # References are the cited papers' claims, not this note's own (same
@@ -299,8 +364,8 @@ class PostgresStore:
             return chunk_and_embed(body)
         except LateChunkingUnavailable as e:
             print(
-                f"[pg_store] chunk sync: embedding unavailable for {note_path}, "
-                f"keeping existing chunks: {e}",
+                "[pg_store] chunk embedding unavailable; existing chunks preserved" if _visibility.multiuser_enabled() else
+                f"[pg_store] chunk sync: embedding unavailable for {note_path}, keeping existing chunks: {e}",
                 file=sys.stderr,
             )
             return None
@@ -510,7 +575,7 @@ class PostgresStore:
                 break
             except OSError as e:
                 last_err = e
-                print(f"[pg-sync] rglob attempt {attempt + 1} failed (Drive deadlock?): {e}", file=sys.stderr)
+                print("[pg-sync] scan unavailable" if _visibility.multiuser_enabled() else f"[pg-sync] rglob attempt {attempt + 1} failed (Drive deadlock?): {e}", file=sys.stderr)
                 time.sleep(delay)
         if all_md is None:
             assert last_err is not None
@@ -573,7 +638,7 @@ class PostgresStore:
             candidates = list(vault.rglob("*.md"))
         except OSError as e:
             # Google Drive FUSE deadlock — non-fatal, backfill handled next run
-            print(f"[pg-sync] rglob failed (Drive deadlock?): {e}", file=sys.stderr)
+            print("[pg-sync] scan unavailable" if _visibility.multiuser_enabled() else f"[pg-sync] rglob failed (Drive deadlock?): {e}", file=sys.stderr)
             return {"updated": 0, "skipped": "drive_unavailable"}
         changed = []
         for f in candidates:
@@ -593,7 +658,7 @@ class PostgresStore:
                 plans.append(self._plan_note_upsert(vault, f))  # HTTP here, no transaction open
                 updated += 1
             except OSError as e:
-                print(f"[pg-sync] skip {f.name}: {e}", file=sys.stderr)
+                print("[pg-sync] note sync skipped" if _visibility.multiuser_enabled() else f"[pg-sync] skip {f.name}: {e}", file=sys.stderr)
                 skipped += 1
         with self._conn() as conn:
             with conn.cursor() as cur:
@@ -632,13 +697,13 @@ class PostgresStore:
                             full_text = md_file.read_text(encoding="utf-8", errors="ignore")
                             break
                         except OSError as e:
-                            print(f"[pg_store] read_text retry for {path}: {e}", file=sys.stderr)
+                            print("[pg_store] text read retry" if _visibility.multiuser_enabled() else f"[pg_store] read_text retry for {path}: {e}", file=sys.stderr)
                             time.sleep(delay)
                     else:
                         try:
                             full_text = md_file.read_text(encoding="utf-8", errors="ignore")
                         except OSError as e:
-                            print(f"[pg_store] skip embedding {path} (Drive deadlock?): {e}", file=sys.stderr)
+                            print("[pg_store] embedding skipped" if _visibility.multiuser_enabled() else f"[pg_store] skip embedding {path} (Drive deadlock?): {e}", file=sys.stderr)
                             failed += 1
                             continue
                 if full_text is not None:
@@ -651,7 +716,7 @@ class PostgresStore:
             try:
                 vec = _vdb.embed_text(text)
             except ValueError as e:
-                print(f"[pg_store] embedding dim error: {path} — {e}", file=sys.stderr)
+                print("[pg_store] invalid embedding dimensions" if _visibility.multiuser_enabled() else f"[pg_store] embedding dim error: {path} — {e}", file=sys.stderr)
                 vec = None
             if vec:
                 updates.append((str(vec), path))
@@ -737,7 +802,7 @@ class PostgresStore:
                         conn.commit()
                 updated += 1
             except Exception as e:
-                print(f"[pg_store] sync_chunks failed for {path}: {e}", file=sys.stderr)
+                print("[pg_store] chunk sync unavailable" if _visibility.multiuser_enabled() else f"[pg_store] sync_chunks failed for {path}: {e}", file=sys.stderr)
                 failed += 1
 
         remaining = max(total_candidates - updated, 0)
@@ -919,7 +984,7 @@ class PostgresStore:
 
     def _semantic_search(self, query: str, limit: int) -> list[dict]:
         """Vector cosine search via pgvector HNSW."""
-        q_vec = _vdb.embed_text(query)
+        q_vec = request_embedding(query, _vdb.embed_text)
         if not q_vec:
             return []
         vec_str = str(q_vec)
@@ -987,7 +1052,7 @@ class PostgresStore:
         to surface — 20x is a documented, tunable-later heuristic, not a
         precise bound.
         """
-        q_vec = _vdb.embed_text(query)
+        q_vec = request_embedding(query, _vdb.embed_text)
         if not q_vec:
             return []
         vec_str = str(q_vec)
@@ -1156,7 +1221,7 @@ class PostgresStore:
         ]
 
         if rerank and results:
-            query_vec = _vdb.embed_text(query)
+            query_vec = request_embedding(query, _vdb.embed_text)
             if query_vec:
                 chunks_by_path = self._top_chunks_for_paths(
                     [r["path"] for r in results], query_vec, _reranker.NUM_CHUNKS_PER_CANDIDATE
@@ -1684,7 +1749,9 @@ class PostgresStore:
         """
         from ..identity import Identity, KeyState  # local import: circular dependency
 
-        with self._conn() as conn:
+        with self._conn(timeout=0.5) as conn:
+            conn.execute("SELECT set_config('statement_timeout', '1000', true), "
+                         "set_config('lock_timeout', '500', true)")
             row = conn.execute(
                 "SELECT user_id, role, revoked_at, user_uuid, "
                 "(expires_at IS NOT NULL AND expires_at <= now()) AS expired "
@@ -1696,7 +1763,7 @@ class PostgresStore:
         if row[2] is not None or row[4]:
             return KeyState.REVOKED
         user_uuid = str(row[3]) if row[3] is not None else None
-        return Identity(user_id=row[0], role=row[1], user_uuid=user_uuid)
+        return Identity(user_id=row[0], role=row[1], user_uuid=user_uuid, credential_id=key_hash)
 
     def count_active_api_keys(self) -> int:
         """Number of un-revoked keys — lets auth stay enabled with no env key set."""

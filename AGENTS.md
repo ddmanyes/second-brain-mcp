@@ -6,7 +6,7 @@
 >
 > **When adding documentation**: modify the relevant section here, then update the Last updated date.
 >
-> **Last updated:** 2026-09-10
+> **Last updated:** 2026-09-12
 
 ---
 
@@ -14,7 +14,7 @@
 
 Second Brain is a personal knowledge management server that exposes vault read/write, search, archiving, and maintenance via MCP.
 
-- **MCP server**: `server.py` (45 tools — see Tool Reference; keep this count in sync when adding/removing tools)
+- **MCP server**: `server.py` (46 tools — see Tool Reference; keep this count in sync when adding/removing tools)
 - **Index backend**: pluggable `VaultStore` (`store/`), selected by `SB_DB_BACKEND`:
   - `postgres` (central brain) — `store/postgres_store.py`, Postgres 16 + pgvector + pg_trgm, connection-pooled, multi-machine concurrent read/write via MVCC.
   - `duckdb` (default / offline fallback) — `store/duckdb_store.py` wrapping `vault_db.py`.
@@ -60,6 +60,40 @@ Postgres directly.
   `mcp-remote` HTTP form.
 - Offline fallback: with no network, set `SB_DB_BACKEND=duckdb` + stdio for local
   read-only use; reconcile via `sync_all` when back online.
+
+---
+
+## Multi-user laboratory operation
+
+When implementing or verifying laboratory member access, read
+[`docs/plans/IMPLEMENTATION_PLAN.md`](docs/plans/IMPLEMENTATION_PLAN.md) and its
+execution trace. When preparing deployment or rollback, read
+[`docs/plans/RELEASE_CANDIDATE.md`](docs/plans/RELEASE_CANDIDATE.md); preserve its
+distinction between disposable-test evidence and a verified running release.
+
+- With `SB_MULTIUSER=1`, use PostgreSQL with a non-owner application role that
+  cannot bypass RLS. Missing identity, unavailable auth DB, or unsafe schema is a
+  rejection, never an environment-admin or full-vault fallback.
+- Laboratory articles are shared. Record uploader/contributor UUIDs as provenance;
+  these labels do not make an article private. Personal notes and their figures,
+  chunks, links, graph results and statistics remain owner-scoped.
+- Members submit ingestion through the separate managed intake tools. Preserve
+  returned job IDs and inspect status; an accepted job is not a completed ingest.
+  Inspect document, text-index, vectors, chunks and figures readiness separately.
+  Managed PDF page images retain source pages; they are not semantic figure
+  extraction or OCR results. Interrupted jobs require reviewed reconciliation.
+- Paid synthesis is disabled in multiuser mode by default. Only an admin with
+  explicit `SB_ALLOW_PAID_SYNTHESIS=1` may use server-side paid synthesis; members
+  retrieve literature and synthesize in their own clients.
+- Query telemetry is opt-in and stores sanitized outcomes/counts/timings. It does
+  not store query text, private paths, keys or result bodies. Admin aggregate
+  reports use `python -m mcp_second_brain.query_event_report --key-stdin`.
+- Maintenance begins with the relevant CLI's preview. An explicit `--apply`
+  performs a bounded mutation; the application role cannot purge event history.
+  Keep API keys on standard input and DSNs in the configured secret environment.
+- For PostgreSQL tests, use the owned disposable harness and `--run-postgres`.
+  An external `SB_PG_TEST_DSN` is refused. Source changes and synthetic load
+  results alone do not establish installed-version, model-quality or NAS readiness.
 
 ---
 
@@ -110,6 +144,7 @@ Postgres directly.
 | "Refresh semantic keywords" | `expand_semantic_keywords_tool()` | Batch (re)extract `semantic_keywords` via Gemini CLI |
 | "Enrich neighbor keywords / cluster topic" | `enrich_neighbor_keywords_tool()` | Derives `neighbor_keywords` + `cluster_topic` from embeddings |
 | "System health check" | `health_check()` | DB / index / vault / embedding-server diagnostics |
+| "Verify my registered identity and role" | `auth_context()` | Returns canonical registered UUID and role; rejects missing identity |
 | "Manage remote API keys" | `manage_api_key(action, …)` | create / list / revoke `X-API-Key` (admin) |
 | "Show audit log" | `query_audit_log(user_id, tool_name, …)` | Multi-user tool-call audit trail (admin) |
 

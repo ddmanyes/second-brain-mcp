@@ -434,3 +434,29 @@ class TestKeyRevocationAndExpiry:
         assert isinstance(identity, Identity)
         assert identity.role == "member"
         assert identity.user_uuid == two_members["a_uuid"]
+        assert identity.credential_id == key_hash
+        from mcp_second_brain.intake_identity import IntakeIdentityBridge
+        from types import SimpleNamespace
+        actor = SimpleNamespace(user_id=identity.user_uuid, credential_id=key_hash, admin=False)
+        bridge = IntakeIdentityBridge(store.get_identity_for_key)
+        assert bridge.verify(actor)
+        store.revoke_api_key(key_hash)
+        assert not bridge.verify(actor)
+
+
+def test_managed_article_metadata_index_is_shared_without_embedding(two_members, monkeypatch):
+    from mcp_second_brain.store import postgres_store
+    monkeypatch.setattr(postgres_store._vdb, "embed_text", lambda _: pytest.fail("metadata commit called a model"))
+    vault, store = two_members["vault"], two_members["store"]
+    path = vault / "20-areas/research/2026_Test_Shared.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('---\ntitle: "Synthetic shared article"\ntype: article\ntags: [research]\n---\n\nSynthetic evidence.')
+    with _as(two_members["identity_a"]):
+        assert store.index_shared_article_metadata(vault, path) is True
+    with _as(two_members["identity_b"]):
+        with store._conn() as conn:
+            row = conn.execute("SELECT owner_id, title FROM notes WHERE path=%s", [path.relative_to(vault).as_posix()]).fetchone()
+        assert row == (None, "Synthetic shared article")
+    with _as(two_members["identity_a"]):
+        with pytest.raises(ValueError):
+            store.index_shared_article_metadata(vault, vault / two_members["a_note"])

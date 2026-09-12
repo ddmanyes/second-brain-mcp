@@ -1,10 +1,10 @@
 [project]
 name = "mcp-second-brain"
-version = "0.2.0"
+version = "0.3.0"
 description = "Self-maintaining personal knowledge database — MCP server with figure-level search, auto-wikilinks, and Ebbinghaus-based memory compression"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 keywords = ["mcp", "knowledge-base", "second-brain", "llm", "obsidian", "duckdb", "rag"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -54,6 +54,3 @@ packages = ["mcp_second_brain"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "AGENTS.md" = "mcp_second_brain/AGENTS.md"
-
-[tool.uv]
-override-dependencies = ["magika>=1.0.0"]

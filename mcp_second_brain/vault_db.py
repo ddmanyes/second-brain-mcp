@@ -704,6 +704,8 @@ def _call_embed_api(text: str) -> list[float] | None:
     retry the next (shorter) tier immediately — no backoff sleep. Only a non-deterministic
     500 (e.g. transient overload) gets the exponential backoff, since hammering helps no one.
     """
+    from .local_model_http import LocalModelHTTPError, request_bytes
+    from .request_budget import remaining_timeout
     tiers = (2048, 1024, 512, 256)
     last = len(tiers) - 1
     for i, max_chars in enumerate(tiers):
@@ -713,19 +715,20 @@ def _call_embed_api(text: str) -> list[float] | None:
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                return json.loads(resp.read())["data"][0]["embedding"]
-        except urllib.error.HTTPError as e:
+            body = request_bytes(req, timeout=remaining_timeout(10))
+            return json.loads(body)["data"][0]["embedding"]
+        except (urllib.error.HTTPError, LocalModelHTTPError) as e:
             if e.code == 500:
                 if i >= last:
                     return None  # already at smallest tier — give up
                 body = ""
                 try:
-                    body = e.read().decode("utf-8", "replace")
+                    bounded = e.body if isinstance(e, LocalModelHTTPError) else e.read()
+                    body = bounded.decode("utf-8", "replace")
                 except Exception:
                     pass
                 if "too large" not in body:
-                    time.sleep(2 ** i)  # transient overload — back off before retrying shorter
+                    time.sleep(remaining_timeout(2 ** i))  # never sleep beyond the request budget
                 continue  # retry next (shorter) tier
             return None
         except Exception:
@@ -790,7 +793,8 @@ def embed_text(text: str) -> list[float] | None:
     result = _call_embed_api(text)
     if result is None:
         # Server not running — try to auto-start (disabled in tests via EMBED_AUTO_START=False)
-        if EMBED_AUTO_START and _ensure_embed_server():
+        from .visibility import multiuser_enabled
+        if EMBED_AUTO_START and not multiuser_enabled() and _ensure_embed_server():
             result = _call_embed_api(text)
         
         # If it still failed, set a 60-second cooldown to fail fast next time

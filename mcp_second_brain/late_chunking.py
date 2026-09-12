@@ -93,11 +93,24 @@ def _post_json(path: str, payload: dict, *, timeout: float = 60.0) -> dict | lis
         data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"},
     )
+    from .local_model_http import (
+        MAX_RESPONSE_BYTES,
+        LocalModelRequestError,
+        request_bytes,
+    )
+    from .request_budget import remaining_timeout
+
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read())
+        body = request_bytes(
+            req,
+            timeout=remaining_timeout(timeout),
+            max_response_bytes=MAX_RESPONSE_BYTES,
+        )
+        return json.loads(body)
     except urllib.error.URLError as e:
         raise LateChunkingUnavailable(f"{path} failed: {e}") from e
+    except LocalModelRequestError:
+        raise LateChunkingUnavailable("local model request failed") from None
 
 
 def _tokenize_ids(text: str) -> list[int]:

@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import hmac
 import os
-from typing import Callable, Optional, Union
+from typing import Callable, Union
 
 from .identity import Identity, KeyState, set_identity
 
@@ -44,6 +44,7 @@ SINGLE_KEY_ENV = "SB_API_KEY"
 MULTI_KEY_ENV = "SB_API_KEYS"
 HEADER = b"x-api-key"
 _UNAUTH_BODY = b'{"jsonrpc":"2.0","error":{"code":-32001,"message":"unauthorized: missing or invalid API key"},"id":null}'
+_UNAVAILABLE_BODY = b'{"error":"authentication unavailable"}'
 
 # Type for the optional DB-backed key→identity lookup injected at startup.
 # Returns an Identity, KeyState.REVOKED, or None when the key is unknown.
@@ -80,7 +81,7 @@ def _key_accepted(provided: str | None, valid: set[str]) -> bool:
     # hmac.compare_digest raises TypeError on non-ASCII str, which would surface as a
     # 500 (plus a traceback per attempt) instead of a clean 401. No valid key contains
     # non-ASCII, so reject such input up front.
-    if not provided.isascii():
+    if len(provided) > 512 or not provided.isascii():
         return False
     # constant-time compare against each valid key
     return any(hmac.compare_digest(provided, k) for k in valid if k.isascii())
@@ -88,8 +89,8 @@ def _key_accepted(provided: str | None, valid: set[str]) -> bool:
 
 def _env_admin_identity(key: str) -> Identity:
     """Synthesised admin identity for an env key with no DB row (back-compat)."""
-    prefix = key[:8] if len(key) >= 8 else key
-    return Identity(user_id=f"env:{prefix}", role="admin")
+    from .identity import hash_key
+    return Identity(user_id=f"env:{hash_key(key)}", role="admin")
 
 
 def _authenticate(
@@ -107,7 +108,7 @@ def _authenticate(
     # hmac.compare_digest raises TypeError on non-ASCII str, which would surface as a
     # 500 (plus a traceback per attempt) instead of a clean 401. No valid key contains
     # non-ASCII, so reject such input up front.
-    if not provided.isascii():
+    if len(provided) > 512 or not provided.isascii():
         return None
 
     if lookup_fn is not None:
@@ -117,6 +118,9 @@ def _authenticate(
         if result is KeyState.REVOKED:
             return None  # deny; must never reach the admin fallback below
 
+    from .visibility import multiuser_enabled
+    if multiuser_enabled():
+        return None
     if _key_accepted(provided, valid):
         return _env_admin_identity(provided)
     return None
@@ -135,16 +139,28 @@ class APIKeyMiddleware:
         keys: set[str],
         lookup_fn: KeyLookupFn | None = None,
         exempt_paths: set[str] | None = None,
+        on_shutdown_timeout=None,
     ):
+        self.on_shutdown_timeout = on_shutdown_timeout
         self.app = app
         self.keys = keys
         self.lookup_fn = lookup_fn
+        from .query_dispatch import QueryDispatcher
+        self._lookup_dispatch = QueryDispatcher(capacity=4, per_actor=4, timeout=2.0)
         # Read-only HTTP routes that a browser opens directly (can't send X-API-Key).
         # Exempting them relies on the Tailscale boundary alone — the same fallback as
         # when no key is configured. Only use for non-mutating, non-sensitive routes.
         self.exempt_paths = exempt_paths or set()
 
     async def __call__(self, scope, receive, send):
+        if scope["type"] == "lifespan":
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                drained = await self._lookup_dispatch.close(timeout=2.0)
+                if not drained and self.on_shutdown_timeout is not None:
+                    self.on_shutdown_timeout()
+            return
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -152,7 +168,20 @@ class APIKeyMiddleware:
             await self.app(scope, receive, send)  # Tailscale-only route; no identity bound
             return
         key = _provided_key(scope)
-        identity = _authenticate(key, self.keys, self.lookup_fn)
+        try:
+            if self.lookup_fn is not None and key and key.isascii() and len(key) <= 512:
+                identity = await self._lookup_dispatch.run(
+                    "authentication", _authenticate, key, self.keys, self.lookup_fn
+                )
+            else:
+                identity = _authenticate(key, self.keys, None)
+        except Exception:
+            # Never expose lookup payloads or fall back to an environment admin
+            # during an authentication-store outage.
+            await send({"type": "http.response.start", "status": 503,
+                        "headers": [(b"content-type", b"application/json")]})
+            await send({"type": "http.response.body", "body": _UNAVAILABLE_BODY})
+            return
         if identity is None:
             await send(
                 {
@@ -180,6 +209,8 @@ def maybe_add_api_key_auth(
     lookup_fn: KeyLookupFn | None = None,
     exempt_paths: set[str] | None = None,
     db_key_count: int = 0,
+    required: bool = False,
+    on_shutdown_timeout=None,
 ) -> int:
     """Install API-key auth on the Starlette app if any key is configured.
 
@@ -192,8 +223,8 @@ def maybe_add_api_key_auth(
     Returns the number of usable keys (0 = auth disabled, middleware not added).
     """
     keys = configured_keys()
-    if not keys and db_key_count <= 0:
+    if not keys and db_key_count <= 0 and not required:
         return 0
     app.add_middleware(APIKeyMiddleware, keys=keys, lookup_fn=lookup_fn,
-                       exempt_paths=exempt_paths)
+                       exempt_paths=exempt_paths, on_shutdown_timeout=on_shutdown_timeout)
     return len(keys) + db_key_count
