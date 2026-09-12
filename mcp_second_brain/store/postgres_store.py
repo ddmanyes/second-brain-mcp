@@ -10,10 +10,12 @@ Environment variables:
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import json
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -46,6 +48,12 @@ from ..snippets import strip_references
 # Decision 2 — reranker (see reranker.py's docstring for the "top-1 chunk gets
 # fooled by boilerplate" lesson this module's NUM_CHUNKS_PER_CANDIDATE encodes).
 from .. import reranker as _reranker
+
+# Lab-open plan (2026-09-12) — see visibility.py's module docstring for the
+# full picture. Imported at module scope (not lazily like ..identity below)
+# because _conn() needs multiuser_enabled() on every checkout, not just on
+# the API-key paths.
+from .. import visibility as _visibility
 
 _SCORE_SQL = """
 (access_count + 1.0) / (1.0 + ln(GREATEST(
@@ -100,6 +108,10 @@ class PostgresStore:
 
     def __init__(self, dsn: str, min_size: int = 1, max_size: int = 10) -> None:
         self._dsn = dsn
+        # Lab-open plan (2026-09-12): SB_MULTIUSER — see visibility.py. Read
+        # once at construction (matches how SB_DB_BACKEND/SB_PG_DSN are also
+        # only read once, in factory.py) rather than on every _conn() call.
+        self._multiuser = _visibility.multiuser_enabled()
         self._pool = ConnectionPool(
             dsn,
             min_size=min_size,
@@ -110,6 +122,9 @@ class PostgresStore:
         self._apply_schema()
 
     def _apply_schema(self) -> None:
+        if self._multiuser:
+            self._verify_multiuser_schema()
+            return
         schema_path = Path(__file__).parent / "postgres_schema.sql"
         local_cache = Path.home() / ".local/share/second-brain/postgres_schema.sql"
         try:
@@ -124,6 +139,66 @@ class PostgresStore:
         with self._pool.connection() as conn:
             conn.execute(sql)
             conn.commit()
+
+    def _verify_multiuser_schema(self) -> None:
+        """SB_MULTIUSER=1 connects as the non-superuser sb_app role (see the
+        plan's Phase 2), which lacks CREATE EXTENSION / ALTER TABLE / CREATE
+        POLICY privileges — running postgres_schema.sql or
+        postgres_rls_schema.sql here, as _apply_schema does for single-user
+        deployments, would fail outright (and if it didn't fail, doing DDL on
+        every process start from a fleet of servers is its own hazard).
+        Migration is a separate, explicit step run once as the owning role
+        (see store/migrate_multiuser.py); this only verifies it already
+        happened, so a forgotten migration fails loudly at startup — serving
+        traffic with no RLS enabled must never happen silently.
+        """
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    EXISTS(SELECT 1 FROM information_schema.columns
+                           WHERE table_name = 'notes' AND column_name = 'owner_id'),
+                    EXISTS(SELECT 1 FROM information_schema.columns
+                           WHERE table_name = 'api_keys' AND column_name = 'user_uuid'),
+                    EXISTS(SELECT 1 FROM information_schema.columns
+                           WHERE table_name = 'api_keys' AND column_name = 'expires_at'),
+                    EXISTS(SELECT 1 FROM pg_tables
+                           WHERE tablename = 'notes' AND rowsecurity)
+                """
+            ).fetchone()
+        if not row or not all(row):
+            raise RuntimeError(
+                "SB_MULTIUSER=1 requires the multiuser schema/RLS migration to "
+                "already be applied (see store/migrate_multiuser.py) — missing "
+                "notes.owner_id / api_keys.user_uuid / api_keys.expires_at / "
+                "row-level security on notes."
+            )
+
+    @contextmanager
+    def _conn(self):
+        """Checkout a pooled connection and, in multiuser mode, bind the
+        caller's identity to the transaction-local Postgres GUCs the RLS
+        policies (postgres_rls_schema.sql) read via current_setting(). This
+        replaces plain self._pool.connection() everywhere below so RLS
+        applies to every query without each of them repeating the SET.
+
+        A no-op wrapper around self._pool.connection() when SB_MULTIUSER is
+        unset — :9100/:9106 get byte-identical behaviour to before this
+        existed.
+        """
+        with self._pool.connection() as conn:
+            if self._multiuser:
+                from ..identity import get_current_identity
+
+                identity = get_current_identity()
+                actor_id = (identity.user_uuid or "") if identity is not None else ""
+                is_admin = identity is None or identity.is_admin()
+                conn.execute(
+                    "SELECT set_config('sb.actor_id', %s, true), "
+                    "set_config('sb.actor_is_admin', %s, true)",
+                    [actor_id, "on" if is_admin else "off"],
+                )
+            yield conn
 
     def close(self) -> None:
         self._pool.close()
@@ -165,7 +240,7 @@ class PostgresStore:
         rel = str(md_file.relative_to(vault))
         chash = _vdb._content_hash_of_file(md_file)
 
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             row = conn.execute(
                 "SELECT content_hash FROM notes WHERE path = %s", [rel]
             ).fetchone()
@@ -199,7 +274,7 @@ class PostgresStore:
         specifically to reach the parts of long documents the single-vector
         embedding can't).
         """
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             row = conn.execute(
                 "SELECT content_hash FROM note_chunks WHERE note_path = %s LIMIT 1",
                 [note_path],
@@ -236,27 +311,40 @@ class PostgresStore:
         note_path: str,
         content_hash: str,
         chunks: list[tuple[str, list[float]]],
+        owner_id: str | None = None,
     ) -> None:
         """Pure SQL: full replace (DELETE + re-INSERT) of one note's chunks.
 
         Never an in-place update — the caller (_write_note_plan / sync_chunks)
         only calls this once the new chunk set is already computed in hand,
         so the DELETE is never left with nothing to replace it.
+
+        owner_id (lab-open plan, 2026-09-12): denormalised from the parent
+        note (visibility.owner_of_path(note_path)) so postgres_rls_schema.sql
+        can filter note_chunks directly, without an EXISTS subquery against
+        notes on every row — see that file's header comment.
         """
         cur.execute("DELETE FROM note_chunks WHERE note_path = %s", [note_path])
         for idx, (chunk_text, emb) in enumerate(chunks):
             cur.execute(
                 """
-                INSERT INTO note_chunks (note_path, chunk_idx, chunk_text, content_hash, embedding)
-                VALUES (%s, %s, %s, %s, %s::vector)
+                INSERT INTO note_chunks
+                    (note_path, chunk_idx, chunk_text, content_hash, embedding, owner_id)
+                VALUES (%s, %s, %s, %s, %s::vector, %s)
                 """,
-                [note_path, idx, chunk_text, content_hash, str(emb) if emb else None],
+                [note_path, idx, chunk_text, content_hash, str(emb) if emb else None, owner_id],
             )
 
     def _write_note_plan(self, cur: psycopg.Cursor, plan: "PostgresStore._NotePlan") -> None:
         """Pure SQL: write a precomputed _NotePlan. No HTTP, safe inside a
         short-lived transaction."""
         note = plan.note
+        # Lab-open plan (2026-09-12): owner_id is derived purely from the
+        # note's path (visibility.owner_of_path), so it is always recomputed
+        # on every write rather than COALESCEd like the optional enrichment
+        # fields above it — a note that moved out of/into 90-personal/ must
+        # have its owner_id change to match, not keep stale ownership.
+        owner_id = _visibility.owner_of_path(note.path)
         cur.execute(
             """
             INSERT INTO notes (
@@ -264,13 +352,13 @@ class PostgresStore:
                 content_hash, body_snippet, embedding, violations,
                 semantic_keywords, neighbor_keywords, cluster_topic,
                 authors, author_ids, author_search, doi, pmid, pmcid,
-                journal, publication_year, canonical_url
+                journal, publication_year, canonical_url, owner_id
             ) VALUES (
                 %s, %s, %s, %s, %s, %s,
                 %s, %s, %s::vector, %s,
                 %s, %s, %s,
                 %s, %s, %s, %s, %s, %s,
-                %s, %s, %s
+                %s, %s, %s, %s
             )
             ON CONFLICT (path) DO UPDATE SET
                 title              = EXCLUDED.title,
@@ -293,7 +381,8 @@ class PostgresStore:
                 pmcid              = EXCLUDED.pmcid,
                 journal            = EXCLUDED.journal,
                 publication_year   = EXCLUDED.publication_year,
-                canonical_url      = EXCLUDED.canonical_url
+                canonical_url      = EXCLUDED.canonical_url,
+                owner_id           = EXCLUDED.owner_id
             """,
             [
                 note.path,
@@ -318,11 +407,12 @@ class PostgresStore:
                 note.journal,
                 note.publication_year,
                 note.canonical_url,
+                owner_id,
             ],
         )
 
         if plan.chunks is not None:
-            self._write_chunks(cur, note.path, note.content_hash, plan.chunks)
+            self._write_chunks(cur, note.path, note.content_hash, plan.chunks, owner_id)
 
     # ------------------------------------------------------------------
     # Core indexing
@@ -332,7 +422,7 @@ class PostgresStore:
         plan = self._plan_note_upsert(vault, md_file)  # HTTP calls happen here, no transaction open
         if plan is None:
             return
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             with conn.cursor() as cur:
                 self._write_note_plan(cur, plan)
             conn.commit()
@@ -371,7 +461,7 @@ class PostgresStore:
             validate=_vdb.validate_note,
             log_prefix="pg_store_metadata_only",
         )
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             with conn.cursor() as cur:
                 stored = cur.execute(
                     "SELECT content_hash, title, tags FROM notes WHERE path = %s FOR UPDATE",
@@ -443,7 +533,7 @@ class PostgresStore:
                     plans.append(self._plan_note_upsert(vault, f))
                     seen.add(str(f.relative_to(vault)))
                     count += 1
-                with self._pool.connection() as conn:
+                with self._conn() as conn:
                     with conn.cursor() as cur:
                         for plan in plans:
                             if plan is not None:
@@ -452,7 +542,7 @@ class PostgresStore:
                 batch = []
 
         # Reconcile: remove stale rows
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             with conn.cursor() as cur:
                 if seen:
                     cur.execute("CREATE TEMP TABLE IF NOT EXISTS _seen_paths (path TEXT)")
@@ -505,7 +595,7 @@ class PostgresStore:
             except OSError as e:
                 print(f"[pg-sync] skip {f.name}: {e}", file=sys.stderr)
                 skipped += 1
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             with conn.cursor() as cur:
                 for plan in plans:
                     if plan is not None:
@@ -520,7 +610,7 @@ class PostgresStore:
         return
 
     def sync_embeddings(self, vault: Path | None = None) -> dict:
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 "SELECT path, title, body_snippet, tags FROM notes WHERE embedding IS NULL"
             ).fetchall()
@@ -570,7 +660,7 @@ class PostgresStore:
                 failed += 1
 
         if updates:
-            with self._pool.connection() as conn:
+            with self._conn() as conn:
                 with conn.cursor() as cur:
                     for vec_str, path in updates:
                         cur.execute(
@@ -603,7 +693,7 @@ class PostgresStore:
         script was also working through). The returned "remaining" count lets
         a caller decide whether to run it again.
         """
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             total_row = conn.execute(
                 """
                 SELECT COUNT(*) FROM (
@@ -641,7 +731,7 @@ class PostgresStore:
             try:
                 chunks = self._plan_chunks_for_note(path, content_hash, md_file)  # HTTP, no txn
                 if chunks is not None:
-                    with self._pool.connection() as conn:
+                    with self._conn() as conn:
                         with conn.cursor() as cur:
                             self._write_chunks(cur, path, content_hash, chunks)
                         conn.commit()
@@ -666,7 +756,7 @@ class PostgresStore:
             return {}
 
         paths = list(cache.keys())
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 "SELECT path, title, tags, semantic_keywords FROM notes WHERE path = ANY(%s)",
                 [paths],
@@ -700,7 +790,7 @@ class PostgresStore:
             result[path] = {"neighbor_keywords": top, "cluster_topic": topic}
 
         if result:
-            with self._pool.connection() as conn:
+            with self._conn() as conn:
                 with conn.cursor() as cur:
                     for path, data in result.items():
                         cur.execute(
@@ -719,7 +809,7 @@ class PostgresStore:
     # ------------------------------------------------------------------
 
     def record_access(self, path: str) -> None:
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             conn.execute(
                 """
                 UPDATE notes
@@ -732,7 +822,7 @@ class PostgresStore:
             conn.commit()
 
     def set_note_status(self, path: str, status: str) -> None:
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             conn.execute(
                 "UPDATE notes SET status = %s WHERE path = %s", [status, path]
             )
@@ -741,7 +831,7 @@ class PostgresStore:
     def update_snapshot(
         self, path: str, snapshot_path: str, tier: str, token_est: int
     ) -> None:
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             conn.execute(
                 "UPDATE notes SET snapshot_path=%s, snapshot_tier=%s, snapshot_token_est=%s WHERE path=%s",
                 [snapshot_path, tier, token_est, path],
@@ -749,7 +839,7 @@ class PostgresStore:
             conn.commit()
 
     def mark_rules_extracted(self, path: str) -> None:
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             conn.execute(
                 "UPDATE notes SET rules_extracted_at = CURRENT_TIMESTAMP WHERE path = %s",
                 [path],
@@ -771,19 +861,27 @@ class PostgresStore:
         token_est: int = 0,
         caption: str = "",
     ) -> None:
-        with self._pool.connection() as conn:
+        # Lab-open plan (2026-09-12): owner_id denormalised from note_path,
+        # same reasoning as _write_chunks — see postgres_rls_schema.sql.
+        owner_id = _visibility.owner_of_path(note_path)
+        with self._conn() as conn:
             conn.execute(
                 """INSERT INTO figures
-                   (note_path, fig_index, image_url, local_path, ocr_text, description, token_est, caption)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                   (note_path, fig_index, image_url, local_path, ocr_text, description,
+                    token_est, caption, owner_id)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    ON CONFLICT (note_path, fig_index) DO UPDATE SET
                        image_url = EXCLUDED.image_url,
                        local_path = EXCLUDED.local_path,
                        ocr_text = EXCLUDED.ocr_text,
                        description = EXCLUDED.description,
                        token_est = EXCLUDED.token_est,
-                       caption = EXCLUDED.caption""",
-                [note_path, fig_index, image_url, local_path, ocr_text, description, token_est, caption],
+                       caption = EXCLUDED.caption,
+                       owner_id = EXCLUDED.owner_id""",
+                [
+                    note_path, fig_index, image_url, local_path, ocr_text, description,
+                    token_est, caption, owner_id,
+                ],
             )
             conn.commit()
 
@@ -794,7 +892,7 @@ class PostgresStore:
     def _trgm_search(self, query: str, limit: int) -> list[dict]:
         """Trigram-based keyword search (language-neutral, CJK-safe)."""
         q = f"%{query}%"
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 """
                 SELECT path, title,
@@ -825,7 +923,7 @@ class PostgresStore:
         if not q_vec:
             return []
         vec_str = str(q_vec)
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 """
                 SELECT path, title, 1 - (embedding <=> %s::vector) AS score
@@ -861,7 +959,7 @@ class PostgresStore:
         why this needs its own trgm/GIN index rather than reusing notes').
         """
         q = f"%{query}%"
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 """
                 SELECT c.note_path, n.title, max(similarity(%s, c.chunk_text)) AS score
@@ -894,7 +992,7 @@ class PostgresStore:
             return []
         vec_str = str(q_vec)
         funnel = max(limit * 20, 200)
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 """
                 WITH top_chunks AS (
@@ -927,7 +1025,7 @@ class PostgresStore:
         """
         if not paths:
             return {}
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 """
                 SELECT note_path, chunk_text FROM (
@@ -1000,7 +1098,7 @@ class PostgresStore:
         if exclude_types and any(all_lists):
             excluded = set(exclude_types)
             candidate_paths = list({r["path"] for lst in all_lists for r in lst})
-            with self._pool.connection() as conn:
+            with self._conn() as conn:
                 rows = conn.execute(
                     "SELECT path, note_type FROM notes WHERE path = ANY(%s)",
                     [candidate_paths],
@@ -1039,7 +1137,7 @@ class PostgresStore:
 
         paths = [p for p, _ in scored]
         score_map = {p: s * penalty_map[p] for p, s in scored}
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 "SELECT path, title, note_type FROM notes WHERE path = ANY(%s)",
                 [paths],
@@ -1067,9 +1165,21 @@ class PostgresStore:
 
         return results[:limit]
 
+    def hybrid_search_grouped(self, query: str, limit: int = 10) -> dict[str, list[dict]]:
+        """See base.py's docstring for why this must exist as a VaultStore
+        method (RLS inheritance for search_grouped) rather than server.py
+        calling vault_db.hybrid_search_grouped() directly. Mirrors that
+        function's knowledge/news split exactly, but through self.hybrid_search
+        / self.search_news — both already route through self._conn(), which
+        is what makes Postgres RLS apply here for free.
+        """
+        knowledge = self.hybrid_search(query, limit=limit, exclude_types=_vdb.KNOWLEDGE_EXCLUDE)
+        news = self.search_news(query, days=7, limit=limit)
+        return {"knowledge": knowledge, "news": news}
+
     def search_news(self, query: str, days: int = 7, limit: int = 20) -> list[dict]:
         q_like = f"% {query} %" if query.isdigit() else f"%{query.lower()}%"
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 """
                 SELECT path, title, 1.0 AS score, note_date
@@ -1162,7 +1272,7 @@ class PostgresStore:
             params.append(year)
 
         params.append(max(limit * 10, 100))
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 f"""
                 SELECT path, title, authors, author_ids, doi, pmid, pmcid,
@@ -1206,7 +1316,7 @@ class PostgresStore:
         )
         params: list = [p for w in words for p in (f"%{w}%", f"%{w}%", f"%{w}%")]
         params.append(limit)
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 f"SELECT note_path, fig_index, image_url, ocr_text, description, "
                 f"coalesce(caption,''), coalesce(token_est,0) "
@@ -1227,7 +1337,7 @@ class PostgresStore:
         ]
 
     def get_figure(self, note_path: str, fig_index: int) -> dict | None:
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             row = conn.execute(
                 "SELECT note_path, fig_index, image_url, local_path, ocr_text, "
                 "description, coalesce(caption,''), coalesce(token_est,0) "
@@ -1243,7 +1353,7 @@ class PostgresStore:
         }
 
     def get_figures_for_note(self, note_path: str) -> list[dict]:
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 "SELECT note_path, fig_index, image_url, local_path, ocr_text, "
                 "description, coalesce(caption,''), coalesce(token_est,0) "
@@ -1277,7 +1387,7 @@ class PostgresStore:
                 if other_path != path
             ]
         else:
-            with self._pool.connection() as conn:
+            with self._conn() as conn:
                 row = conn.execute(
                     "SELECT embedding FROM notes WHERE path = %s", [path]
                 ).fetchone()
@@ -1311,7 +1421,7 @@ class PostgresStore:
             extra = f"AND note_type NOT IN ({placeholders})"
             params = list(exclude_types)
         params.append(limit)
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 f"""
                 SELECT path, title, note_type, last_accessed
@@ -1338,7 +1448,7 @@ class PostgresStore:
             extra = f"AND note_type NOT IN ({placeholders})"
             params = list(exclude_types)
         params.append(limit)
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 f"""
                 SELECT path, title, note_type,
@@ -1359,7 +1469,7 @@ class PostgresStore:
     def sleep_candidates(
         self, min_age_days: int = 90, max_score: float = 0.5
     ) -> list[dict]:
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 f"""
                 SELECT path, title, age_days, score FROM (
@@ -1385,14 +1495,14 @@ class PostgresStore:
     # ------------------------------------------------------------------
 
     def load_embedding_cache(self) -> dict[str, list[float]]:
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 "SELECT path, embedding FROM notes WHERE embedding IS NOT NULL"
             ).fetchall()
         return {r[0]: _parse_vec(r[1]) or [] for r in rows}
 
     def get_notes_with_snapshots(self) -> set[str]:
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 "SELECT path FROM notes WHERE snapshot_path IS NOT NULL AND snapshot_path != ''"
             ).fetchall()
@@ -1401,7 +1511,7 @@ class PostgresStore:
     def get_rules_candidates(
         self, min_access: int = 5, stale_days: int = 90
     ) -> list[str]:
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 """
                 SELECT path FROM notes
@@ -1421,7 +1531,7 @@ class PostgresStore:
             "SELECT path, note_type, embedding FROM notes "
             "WHERE embedding IS NOT NULL AND (status IS NULL OR status != 'consolidated')"
         )
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             rows = (
                 conn.execute(sql + " AND note_type = %s", [note_type_filter]).fetchall()
                 if note_type_filter
@@ -1434,12 +1544,12 @@ class PostgresStore:
     # ------------------------------------------------------------------
 
     def has_index(self) -> bool:
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             row = conn.execute("SELECT COUNT(*) FROM notes").fetchone()
         return bool(row and row[0] > 0)
 
     def get_snapshot_path(self, path: str) -> str | None:
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             row = conn.execute(
                 "SELECT snapshot_path FROM notes WHERE path = %s", [path]
             ).fetchone()
@@ -1451,7 +1561,7 @@ class PostgresStore:
             if force
             else "SELECT path FROM notes WHERE semantic_keywords IS NULL"
         )
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             rows = conn.execute(sql).fetchall()
         return [r[0] for r in rows]
 
@@ -1461,12 +1571,12 @@ class PostgresStore:
             if force
             else "SELECT path FROM notes WHERE embedding IS NOT NULL AND neighbor_keywords IS NULL"
         )
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             rows = conn.execute(sql).fetchall()
         return [r[0] for r in rows]
 
     def get_paths_with_embeddings(self) -> list[str]:
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 "SELECT path FROM notes WHERE embedding IS NOT NULL"
             ).fetchall()
@@ -1478,7 +1588,7 @@ class PostgresStore:
 
     def db_stats(self) -> dict:
         long_running = 0
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             row = conn.execute("SELECT COUNT(*) FROM notes").fetchone()
             total = row[0] if row else 0
             by_type = conn.execute(
@@ -1523,7 +1633,7 @@ class PostgresStore:
     # ------------------------------------------------------------------
 
     def append_audit_log(self, user_id: str, tool: str, target: str = "") -> None:
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             conn.execute(
                 "INSERT INTO audit_log (user_id, tool, target) VALUES (%s, %s, %s)",
                 [user_id, tool, target],
@@ -1546,7 +1656,7 @@ class PostgresStore:
             params.append(tool)
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         params.append(limit)
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 f"SELECT ts, user_id, tool, target FROM audit_log {where} "
                 f"ORDER BY ts DESC LIMIT %s",
@@ -1562,49 +1672,79 @@ class PostgresStore:
     # ------------------------------------------------------------------
 
     def get_identity_for_key(self, key_hash: str) -> "Identity | KeyState | None":
-        """Return Identity for an active key, KeyState.REVOKED if revoked, else None.
+        """Return Identity for an active, unexpired key, KeyState.REVOKED if
+        revoked OR expired, else None.
 
         Revoked must stay distinguishable from unknown: auth.py falls back to an
         env-key admin identity on None, so answering None for a revoked key would
-        promote it to admin instead of denying it.
+        promote it to admin instead of denying it. Lab-open plan (2026-09-12):
+        an expired key (expires_at in the past) gets exactly the same
+        treatment as a revoked one — Phase 4's acceptance test is "expires_at
+        過期同樣 401", not "200 as some other role".
         """
         from ..identity import Identity, KeyState  # local import: circular dependency
 
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             row = conn.execute(
-                "SELECT user_id, role, revoked_at FROM api_keys WHERE key_hash = %s",
+                "SELECT user_id, role, revoked_at, user_uuid, "
+                "(expires_at IS NOT NULL AND expires_at <= now()) AS expired "
+                "FROM api_keys WHERE key_hash = %s",
                 [key_hash],
             ).fetchone()
         if row is None:
             return None
-        if row[2] is not None:
+        if row[2] is not None or row[4]:
             return KeyState.REVOKED
-        return Identity(user_id=row[0], role=row[1])
+        user_uuid = str(row[3]) if row[3] is not None else None
+        return Identity(user_id=row[0], role=row[1], user_uuid=user_uuid)
 
     def count_active_api_keys(self) -> int:
         """Number of un-revoked keys — lets auth stay enabled with no env key set."""
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             row = conn.execute(
                 "SELECT COUNT(*) FROM api_keys WHERE revoked_at IS NULL"
             ).fetchone()
         return int(row[0]) if row else 0
 
-    def register_api_key(self, key_hash: str, user_id: str, role: str) -> None:
-        """Insert a new API key. Raises psycopg.errors.UniqueViolation if duplicate."""
+    def register_api_key(
+        self,
+        key_hash: str,
+        user_id: str,
+        role: str,
+        *,
+        user_uuid: str | None = None,
+        expires_days: int | None = None,
+    ) -> None:
+        """Insert a new API key. Raises psycopg.errors.UniqueViolation if duplicate.
+
+        user_uuid: canonical UUID from EP lab-access (lab_identity_invitations /
+            lab_person_profiles) — None for legacy keys, matching api_keys.user_uuid
+            being nullable. Required in practice for role='member' (see
+            visibility.slugify_user), but not validated here — manage_lab_access.py's
+            person activate is what enforces that pairing before calling this.
+        expires_days: if given, expires_at is set to now() + this many days;
+            None (default) means no expiry, same as every key before this plan.
+        """
         from ..identity import VALID_ROLES
 
         if role not in VALID_ROLES:
             raise ValueError(f"role must be one of {sorted(VALID_ROLES)}, got {role!r}")
-        with self._pool.connection() as conn:
+        expires_at = (
+            datetime.now(timezone.utc) + timedelta(days=expires_days)
+            if expires_days is not None
+            else None
+        )
+        with self._conn() as conn:
             conn.execute(
-                "INSERT INTO api_keys (key_hash, user_id, role) VALUES (%s, %s, %s)",
-                [key_hash, user_id, role],
+                "INSERT INTO api_keys (key_hash, user_id, role, user_uuid, expires_at) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                [key_hash, user_id, role, user_uuid, expires_at],
             )
             conn.commit()
 
     def revoke_api_key(self, key_hash: str) -> bool:
         """Set revoked_at = NOW(). Returns True if a row was updated."""
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             cur = conn.execute(
                 "UPDATE api_keys SET revoked_at = NOW() "
                 "WHERE key_hash = %s AND revoked_at IS NULL",
@@ -1622,7 +1762,7 @@ class PostgresStore:
             params.append(user_id)
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         params.append(limit)
-        with self._pool.connection() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 f"SELECT key_hash, user_id, role, created_at, revoked_at "
                 f"FROM api_keys {where} ORDER BY created_at DESC LIMIT %s",

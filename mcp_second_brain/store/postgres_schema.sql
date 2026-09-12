@@ -51,6 +51,15 @@ ALTER TABLE notes ADD COLUMN IF NOT EXISTS journal TEXT;
 ALTER TABLE notes ADD COLUMN IF NOT EXISTS publication_year INTEGER;
 ALTER TABLE notes ADD COLUMN IF NOT EXISTS canonical_url TEXT;
 
+-- Lab-open plan (2026-09-12): NULL = shared (visible to everyone), a UUID =
+-- that user's private note. Nullable and additive — every pre-existing row
+-- lands on NULL, i.e. stays shared, no backfill needed. See visibility.py
+-- for how this is derived from a note's path, and postgres_rls_schema.sql
+-- for the RLS policy that actually enforces it (this column alone enforces
+-- nothing; SB_MULTIUSER-unset deployments never enable RLS at all).
+ALTER TABLE notes ADD COLUMN IF NOT EXISTS owner_id UUID;
+CREATE INDEX IF NOT EXISTS idx_notes_owner ON notes(owner_id);
+
 -- ---------------------------------------------------------------------------
 -- figures — extracted figures from PDFs / notes
 -- ---------------------------------------------------------------------------
@@ -70,6 +79,11 @@ CREATE TABLE IF NOT EXISTS figures (
 
 -- PDF pipeline Phase 2.5c: figure caption (detected during page-render extraction)
 ALTER TABLE figures ADD COLUMN IF NOT EXISTS caption TEXT;
+
+-- Lab-open plan (2026-09-12): see note_chunks.owner_id's comment above —
+-- same reasoning, same "base schema, not the RLS file" placement.
+ALTER TABLE figures ADD COLUMN IF NOT EXISTS owner_id UUID;
+CREATE INDEX IF NOT EXISTS idx_figures_owner ON figures(owner_id);
 
 -- Existing databases predate the NOT NULL declaration above.  This statement
 -- is idempotent and fails closed if preflight ever finds legacy NULL rows.
@@ -165,6 +179,17 @@ CREATE TABLE IF NOT EXISTS api_keys (
 
 CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
 
+-- Lab-open plan (2026-09-12): user_uuid is the canonical identity from EP's
+-- lab-access registry (lab_identity_invitations / lab_person_profiles) — see
+-- identity.Identity.user_uuid and visibility.py. expires_at lets a lab
+-- member's key be time-boxed; NULL means "no expiry", same as every key
+-- before this plan. Both nullable/additive: legacy keys (env-admin fallback,
+-- the two pre-lab-open pilot keys) keep user_uuid=NULL and are never treated
+-- as owning a 90-personal/ area.
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS user_uuid UUID;
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_api_keys_user_uuid ON api_keys(user_uuid);
+
 -- ---------------------------------------------------------------------------
 -- audit_log — immutable write-action record (MULTIUSER_PLAN P3)
 -- ---------------------------------------------------------------------------
@@ -209,6 +234,18 @@ CREATE TABLE IF NOT EXISTS note_chunks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_note_chunks_path ON note_chunks(note_path);
+
+-- Lab-open plan (2026-09-12): denormalised from the parent note (see
+-- notes.owner_id above) so postgres_rls_schema.sql's RLS policy can filter
+-- note_chunks directly, without an EXISTS-against-notes subquery on every
+-- row. Lives here (the base schema _apply_schema() always applies), not in
+-- postgres_rls_schema.sql, because postgres_store.py's
+-- _write_chunks()/upsert_figure() write it unconditionally on every note
+-- sync regardless of SB_MULTIUSER — the column must exist for every
+-- deployment even though only SB_MULTIUSER=1 ever enables the policy that
+-- reads it. The RLS file only adds the enforcement, never the column.
+ALTER TABLE note_chunks ADD COLUMN IF NOT EXISTS owner_id UUID;
+CREATE INDEX IF NOT EXISTS idx_note_chunks_owner ON note_chunks(owner_id);
 
 -- Keyword search on chunk_text — the point of Phase B's B-1: without this,
 -- hybrid_search's keyword path stays limited to notes.body_snippet's leading

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
-VALID_ROLES = frozenset(("reader", "writer", "admin"))
+VALID_ROLES = frozenset(("reader", "member", "writer", "admin"))
 
 
 class KeyState(Enum):
@@ -38,14 +38,23 @@ _current: contextvars.ContextVar[Optional["Identity"]] = contextvars.ContextVar(
 @dataclass(frozen=True)
 class Identity:
     user_id: str
-    role: str  # 'reader' | 'writer' | 'admin'
+    role: str  # 'reader' | 'member' | 'writer' | 'admin'
+    # UUID string from lab_identity_invitations/lab_person_profiles (EP lab-access
+    # is the identity registry of record — see visibility.py). None for legacy
+    # keys registered before the lab-open plan (2026-09-12) and for the env-key
+    # admin fallback: those have no lab person record and own no private area.
+    user_uuid: str | None = None
 
     def __post_init__(self) -> None:
         if self.role not in VALID_ROLES:
             raise ValueError(f"role must be one of {VALID_ROLES}, got {self.role!r}")
 
     def can_write(self) -> bool:
-        return self.role in ("writer", "admin")
+        # 'member' can write — but only inside their own 90-personal/ area;
+        # visibility.py's L3 namespace check is what actually confines it there,
+        # not this predicate. This only decides "may attempt a write tool at
+        # all", same as it always has for writer/admin.
+        return self.role in ("member", "writer", "admin")
 
     def is_admin(self) -> bool:
         return self.role == "admin"

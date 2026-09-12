@@ -30,6 +30,7 @@ from . import figures as _fig
 from . import pdf_image_restore as _pdf_image_restore
 from . import frontmatter as _fm
 from . import llm_cli, vault_db
+from . import visibility as _visibility
 from . import vault_sleep as _vs
 from .article_audit import audit_article_records as _audit_article_records
 from .article_metadata import bibliographic_frontmatter
@@ -93,20 +94,47 @@ def _audit_target(sig: inspect.Signature, param: str | None, args, kwargs) -> st
     return str(bound.arguments.get(param, ""))
 
 
-def write_tool(*, target: str | None = None, target_const: str = ""):
+def _raw_target(sig: inspect.Signature, param: str | None, args, kwargs):
+    """Like _audit_target but returns the bound value itself (not str()'d) —
+    needed for visibility checks below, which must tell a single path apart
+    from a list of paths (target="note_paths") rather than working from
+    _audit_target's stringified-for-the-audit-log representation."""
+    if param is None:
+        return None
+    bound = sig.bind(*args, **kwargs)
+    bound.apply_defaults()
+    return bound.arguments.get(param)
+
+
+def write_tool(*, target: str | None = None, target_const: str = "", target_is_vault_path: bool = True):
     """Register an MCP tool that mutates the vault.
 
     Owns the entire write-tool prologue — no tool body may hand-roll it:
 
       1. RBAC write guard (reader blocked or audited per ``SB_RBAC_ENFORCE``);
       2. an immutable audit record, actor taken from the identity contextvar;
-      3. ``VaultPathError`` → the caller-visible error string it carries, so
+      3. lab-open plan (2026-09-12): a visibility.can_write() check on the
+         resolved target path(s) — this is what actually confines a 'member'
+         identity to their own 90-personal/<uuid>/ area (check_write_permission
+         lets member attempt any write tool; visibility.py's L3 namespace rule
+         decides the target). It also stops anyone (including admin, whose
+         audit privilege is read-only per the role table) writing into
+         someone else's private area, and is a no-op for identity=None and
+         for shared-area targets from writer/admin — unaffected either way;
+      4. ``VaultPathError`` → the caller-visible error string it carries, so
          path validation inside the body can just raise.
 
     Args:
         target: name of the parameter identifying what is written (e.g. "path").
         target_const: fixed target for tools that always write the same place
             (e.g. update_goals → memory/goals.md). Mutually exclusive with target.
+        target_is_vault_path: False for the two tools whose target/target_const
+            is a caller-audit label rather than an existing vault-relative path
+            (new_note's target="title"; save_article's target="source", an
+            external URL/file). Both compute their *real* destination
+            internally and — for a 'member' caller — redirect it under their
+            own private root before ever touching disk, so this module-level
+            check does not apply to them; step 3 above is skipped.
 
     The tool name comes from ``__name__``, so it can never drift from the function
     it guards, and the tool is registered in ``WRITE_TOOLS``.
@@ -126,6 +154,15 @@ def write_tool(*, target: str | None = None, target_const: str = ""):
             if err := check_write_permission(name):
                 return err
             _log_write(name, target_const or _audit_target(sig, target, args, kwargs))
+            if target_is_vault_path:
+                raw = target_const or _raw_target(sig, target, args, kwargs)
+                candidates = raw if isinstance(raw, (list, tuple)) else ([raw] if raw else [])
+                identity = get_current_identity()
+                for candidate in candidates:
+                    try:
+                        _visibility.assert_visible(str(candidate), identity, for_write=True)
+                    except VaultPathError as exc:
+                        return str(exc)
             try:
                 return fn(*args, **kwargs)
             except VaultPathError as exc:
@@ -172,8 +209,25 @@ def _vault_path(rel: str, *, must_exist: bool = True, missing_hint: str = "") ->
 
     Binds the module-level VAULT at call time so tests can monkeypatch it.
     Raises VaultPathError, which guarded tools surface automatically.
+
+    Lab-open plan (2026-09-12): also the single choke point (L2) for private-
+    note visibility — every one of this function's 20+ call sites gets a
+    visibility.can_read() check for free. identity=None (no auth middleware
+    installed) always passes, so SB_MULTIUSER-unset deployments (:9100,
+    :9106) are unaffected. The write-direction restriction (member confined
+    to their own private area) is a separate check in write_tool() above,
+    since resolving a path for reading and being allowed to overwrite it are
+    different questions — see visibility.py's can_read vs can_write.
     """
-    return resolve_in_vault(VAULT, rel, must_exist=must_exist, missing_hint=missing_hint)
+    # Escape-containment and visibility are checked before existence, so a
+    # caller who cannot see a path gets the same "not visible" error whether
+    # or not that path exists — existence of another member's private note
+    # must not be inferable from which error message comes back.
+    full = resolve_in_vault(VAULT, rel, must_exist=False)
+    _visibility.assert_visible(rel, get_current_identity())
+    if must_exist and not full.exists():
+        raise VaultPathError(f"Note not found: {rel}{missing_hint}")
+    return full
 
 
 # ── 防止兩個 HTTP server 搶同一個 port：kill 舊的 HTTP 進程 ──────────────────
@@ -556,7 +610,7 @@ def get_context() -> str:
     return f"{rules_section}## Current Goals\n\n{goals}\n\n---\n\n{index_section}{related_section}"
 
 
-@write_tool(target="title")
+@write_tool(target="title", target_is_vault_path=False)
 def new_note(note_type: str, title: str, content: str = "", tags: str = "") -> str:
     """Create a new note in the vault using the correct folder and template.
 
@@ -592,6 +646,14 @@ def new_note(note_type: str, title: str, content: str = "", tags: str = "") -> s
         _, tmpl_rel = NOTE_CONFIG.get(nt, _DEFAULT_CONFIG)
     else:
         folder, tmpl_rel = NOTE_CONFIG.get(nt, _DEFAULT_CONFIG)
+
+    # Lab-open plan (2026-09-12): a 'member' caller's notes always land under
+    # their own private area, never the shared classification folders above —
+    # but keep the same classification as a subfolder inside it, so a
+    # member's own notes are still organised the same way shared ones are.
+    identity = get_current_identity()
+    if identity is not None and identity.role == "member":
+        folder = f"{_visibility.private_root(identity)}/{folder}"
 
     tmpl_path = VAULT / tmpl_rel
 
@@ -810,15 +872,23 @@ def _load_edges() -> list[dict]:
     gp = _graph_path()
     if not gp.exists():
         return []
+    # Lab-open plan (2026-09-12): exclude edges sourced from a private note
+    # not visible to the caller — see visibility.foreign_private_note_stems'
+    # docstring for why this is a read-time filter rather than relying only
+    # on the (out-of-repo) extraction pipeline to have skipped 90-personal/.
+    excluded = _visibility.foreign_private_note_stems(VAULT, get_current_identity())
     edges = []
     for line in gp.read_text(encoding="utf-8", errors="ignore").splitlines():
         line = line.strip()
         if not line:
             continue
         try:
-            edges.append(json.loads(line))
+            edge = json.loads(line)
         except Exception:
             continue
+        if excluded and edge.get("note") in excluded:
+            continue
+        edges.append(edge)
     return edges
 
 
@@ -1787,7 +1857,7 @@ def _normalise_source_url(source: str) -> str:
     return source
 
 
-@write_tool(target="source")
+@write_tool(target="source", target_is_vault_path=False)
 def save_article(
     source: str,
     title: str = "",
@@ -1837,6 +1907,18 @@ def save_article(
 
     today = date.today().isoformat()
 
+    # Lab-open plan (2026-09-12): same redirect as new_note — a 'member'
+    # caller's articles land under their own private area, dest_folder kept
+    # as a subfolder inside it so the caller's requested classification
+    # (e.g. '20-areas/research') still means the same thing. The ORIGINAL
+    # dest_folder (pre-redirect) is what note_type classification below must
+    # use — the redirected folder starts with 90-personal/<uuid>/, which
+    # would otherwise misclassify every member research article as generic.
+    requested_dest_folder = dest_folder
+    identity = get_current_identity()
+    if identity is not None and identity.role == "member":
+        dest_folder = f"{_visibility.private_root(identity)}/{dest_folder}"
+
     # Both the folder and the final file must resolve inside the vault; the folder
     # does not exist yet on a first save, hence must_exist=False.
     folder = _vault_path(dest_folder, must_exist=False)
@@ -1858,7 +1940,7 @@ def save_article(
         return f"Already saved: {rel}"
 
     # note_type follows folder path components (exact match, not startswith prefix)
-    folder_parts = Path(dest_folder).parts
+    folder_parts = Path(requested_dest_folder).parts
     note_type = (
         "research"
         if len(folder_parts) >= 2 and folder_parts[0] == "20-areas" and folder_parts[1] == "research"
@@ -2320,24 +2402,36 @@ def find_related_notes(path: str, limit: int = 5, threshold: float = 0.7) -> str
     Returns:
         Markdown list of related note paths and titles, or a message if no embeddings found.
     """
-    from .vault_db import find_related, _connect
-    related = find_related(path, limit=limit, threshold=threshold)
+    # Lab-open plan (2026-09-04 architecture note, fixed 2026-09-12): this used
+    # to call vault_db.find_related()/._connect() directly — vault_db is
+    # unconditionally a local DuckDB file, so on SB_DB_BACKEND=postgres (every
+    # lcdda deployment) it silently queried an index nothing ever writes to,
+    # always returning []. Going through _store.find_related() both fixes
+    # that and — the reason it matters for this plan — makes this tool
+    # inherit Postgres RLS (L1) the same way every other _store-backed search
+    # tool does, instead of bypassing it entirely.
+    related = _store.find_related(path, limit=limit, threshold=threshold)
     if not related:
         return (
             f"No related notes found for `{path}` "
             f"(threshold={threshold}, embeddings may not be synced — try sync_index first)."
         )
+    from .note_row import parse_frontmatter
     lines = [f"## Related notes for `{path}`\n"]
-    with _connect() as con:
-        for stem in related:
-            row = con.execute(
-                "SELECT title, note_type FROM notes WHERE path = ? OR path = ?",
-                [stem, stem + ".md"],
-            ).fetchone()
-            title = row[0] if row else stem.split("/")[-1]
-            ntype = row[1] if row else ""
-            tag = f" `{ntype}`" if ntype else ""
-            lines.append(f"- [[{stem.removesuffix('.md')}]] — {title}{tag}")
+    for stem in related:
+        candidate = stem if stem.endswith(".md") else f"{stem}.md"
+        title, ntype = stem.split("/")[-1], ""
+        try:
+            full = _vault_path(candidate, must_exist=False)
+            if full.exists():
+                fm = parse_frontmatter(full.read_text(encoding="utf-8", errors="ignore"))
+                title = fm.get("title") or title
+                ntype = fm.get("type", "")
+        except VaultPathError:
+            continue  # not visible to this caller — _store.find_related already
+                      # excludes these, so this only guards a stale/renamed path
+        tag = f" `{ntype}`" if ntype else ""
+        lines.append(f"- [[{stem.removesuffix('.md')}]] — {title}{tag}")
     return "\n".join(lines)
 
 
@@ -2357,8 +2451,16 @@ def search_grouped(query: str, limit: int = 10) -> str:
     Returns:
         Markdown with two sections: Knowledge and News.
     """
-    from .vault_db import hybrid_search_grouped
-    groups = hybrid_search_grouped(query, limit=limit)
+    # Lab-open plan (2026-09-12): same vault_db-bypasses-Postgres bug as
+    # find_related_notes/top_notes (see those tools' comments above) — this
+    # used to call vault_db.hybrid_search_grouped() directly, which is
+    # unconditionally a local DuckDB query. On SB_DB_BACKEND=postgres (every
+    # lcdda deployment) that read a copy of the index nothing ever writes to
+    # — and, the reason it matters for this plan, bypassed Postgres RLS (L1)
+    # entirely: a 'member' identity could see every private note through
+    # this one tool even though every other search tool correctly filters.
+    # _store.hybrid_search_grouped() (store/base.py) fixes both.
+    groups = _store.hybrid_search_grouped(query, limit=limit)
     lines = [f"## Search: `{query}`\n"]
 
     knowledge = groups.get("knowledge", [])
@@ -2403,12 +2505,13 @@ def top_notes(by: str = "score", limit: int = 20) -> str:
     Returns:
         Ranked Markdown table of notes.
     """
-    from .vault_db import top_by_score, top_by_recency
+    # See find_related_notes' comment above — same vault_db-bypasses-Postgres
+    # bug, same RLS-inheritance fix, via _store rather than vault_db directly.
     by_lower = by.strip().lower()
     if by_lower not in ("score", "recency"):
         return "❌ `by` must be 'score' or 'recency'"
 
-    results = top_by_score(limit=limit) if by_lower == "score" else top_by_recency(limit=limit)
+    results = _store.top_by_score(limit=limit) if by_lower == "score" else _store.top_by_recency(limit=limit)
     if not results:
         return "No notes found in index — try sync_index first."
 
@@ -2517,13 +2620,21 @@ def manage_api_key(
     raw_key: str = "",
     user_id: str = "",
     role: str = "reader",
+    user_uuid: str = "",
+    expires_days: int = 0,
 ) -> str:
     """Manage API keys for multi-user access (admin only).
 
     action: "register" | "revoke" | "list"
     raw_key: the plaintext API key (register/revoke). Never stored; only its SHA-256 hash is persisted.
     user_id: human-readable owner label (register/list filter).
-    role: "reader" | "writer" | "admin" (register only, default "reader").
+    role: "reader" | "member" | "writer" | "admin" (register only, default "reader").
+          'member' (lab-open plan) requires user_uuid — it is how the key's
+          private 90-personal/<uuid>/ area is derived (see visibility.py).
+    user_uuid: canonical UUID from EP lab-access (register only). Required
+          for role='member'; optional for other roles.
+    expires_days: if > 0, the key expires that many days from now (register
+          only). 0 (default) means no expiry, same as every key before this.
 
     Returns a plain-text summary of the operation.
     """
@@ -2536,9 +2647,24 @@ def manage_api_key(
             return "Error: user_id is required for register"
         if role not in VALID_ROLES:
             return f"Error: role must be one of {sorted(VALID_ROLES)}"
+        if role == "member" and not user_uuid:
+            return "Error: user_uuid is required for role='member'"
+        if user_uuid:
+            try:
+                from uuid import UUID
+                if str(UUID(user_uuid)) != user_uuid:
+                    return "Error: user_uuid must be a canonical lowercase UUID"
+            except ValueError:
+                return "Error: user_uuid is not a valid UUID"
+        if expires_days < 0:
+            return "Error: expires_days must be >= 0"
         kh = hash_key(raw_key)
         try:
-            _store.register_api_key(kh, user_id, role)
+            _store.register_api_key(
+                kh, user_id, role,
+                user_uuid=user_uuid or None,
+                expires_days=expires_days or None,
+            )
         except ValueError as exc:
             return f"Error: {exc}"
         except Exception:

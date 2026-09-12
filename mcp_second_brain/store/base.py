@@ -153,6 +153,30 @@ class VaultStore(Protocol):
         """Search cnyes_archive notes within the last N days."""
         ...
 
+    def hybrid_search_grouped(
+        self, query: str, limit: int = 10
+    ) -> dict[str, list[dict]]:
+        """Hybrid search split into {"knowledge": [...], "news": [...]}.
+
+        knowledge = hybrid_search() excluding KNOWLEDGE_EXCLUDE types; news =
+        search_news() over the last 7 days. Backs the search_grouped tool.
+
+        Lab-open plan (2026-09-12): search_grouped used to call
+        vault_db.hybrid_search_grouped() directly — vault_db is
+        unconditionally a local DuckDB file, so on SB_DB_BACKEND=postgres
+        (every lcdda deployment) that silently queried an index nothing
+        writes to (same bug as find_related_notes/top_notes, fixed the same
+        way) and — the reason it matters here — bypassed Postgres RLS (L1)
+        entirely: a 'member' identity could see every private note through
+        this one tool while every other search tool correctly filtered.
+        Requiring this as a VaultStore method (rather than server.py calling
+        vault_db directly) means PostgresStore's implementation routes through
+        self.hybrid_search()/self.search_news(), which already checkout
+        connections via _conn() — so RLS applies here exactly like it does
+        everywhere else, with no separate enforcement path to keep in sync.
+        """
+        ...
+
     def search_articles(
         self,
         *,
@@ -329,8 +353,20 @@ class VaultStore(Protocol):
         """Number of un-revoked keys, so auth can stay on with no env key set."""
         ...
 
-    def register_api_key(self, key_hash: str, user_id: str, role: str) -> None:
-        """Insert a new API key row. Raises if key_hash already exists."""
+    def register_api_key(
+        self,
+        key_hash: str,
+        user_id: str,
+        role: str,
+        *,
+        user_uuid: str | None = None,
+        expires_days: int | None = None,
+    ) -> None:
+        """Insert a new API key row. Raises if key_hash already exists.
+
+        user_uuid/expires_days (lab-open plan, 2026-09-12): optional canonical
+        EP lab-access UUID and key lifetime; both None preserves the exact
+        prior behaviour (no expiry, no owner UUID)."""
         ...
 
     def revoke_api_key(self, key_hash: str) -> bool:

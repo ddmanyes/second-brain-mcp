@@ -140,6 +140,9 @@ class DuckDBStore:
     def search_news(self, query: str, days: int = 7, limit: int = 20) -> list[dict]:
         return vault_db.search_news(query, days, limit)
 
+    def hybrid_search_grouped(self, query: str, limit: int = 10) -> dict[str, list[dict]]:
+        return vault_db.hybrid_search_grouped(query, limit=limit)
+
     def search_articles(
         self,
         *,
@@ -316,7 +319,15 @@ class DuckDBStore:
     def count_active_api_keys(self) -> int:
         return 0  # no api_keys table in single-user mode
 
-    def register_api_key(self, key_hash: str, user_id: str, role: str) -> None:  # noqa: ARG002
+    def register_api_key(
+        self,
+        key_hash: str,
+        user_id: str,
+        role: str,
+        *,
+        user_uuid: str | None = None,  # noqa: ARG002
+        expires_days: int | None = None,  # noqa: ARG002
+    ) -> None:  # noqa: ARG002
         pass
 
     def revoke_api_key(self, key_hash: str) -> bool:  # noqa: ARG002
