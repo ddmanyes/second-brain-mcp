@@ -85,6 +85,11 @@ distinction between disposable-test evidence and a verified running release.
 - Paid synthesis is disabled in multiuser mode by default. Only an admin with
   explicit `SB_ALLOW_PAID_SYNTHESIS=1` may use server-side paid synthesis; members
   retrieve literature and synthesize in their own clients.
+- PostgreSQL multiuser search keeps lexical and semantic retrieval across notes
+  and chunks, fused with RRF, but skips the optional cross-encoder reranker by
+  default. Set `SB_MULTIUSER_RERANK=1` only after the shared host passes a reviewed
+  latency/capacity gate. The default trades the reranker's measured relevance gain
+  for predictable bounded query latency; single-user search keeps reranking enabled.
 - Query telemetry is opt-in and stores sanitized outcomes/counts/timings. It does
   not store query text, private paths, keys or result bodies. Admin aggregate
   reports use `python -m mcp_second_brain.query_event_report --key-stdin`.

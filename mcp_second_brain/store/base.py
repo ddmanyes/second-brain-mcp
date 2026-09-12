@@ -140,10 +140,14 @@ class VaultStore(Protocol):
         apply_path_penalty: bool = True,
         rerank: bool = True,
     ) -> list[dict]:
-        """Hybrid keyword + semantic search (BM25/trgm + cosine, RRF fusion),
-        then reranked (decision 2 of the chunking/embedding plan) unless
-        rerank=False. DuckDBStore ignores rerank — Postgres-only, see
-        reranker.py; ordinary RRF order is already what DuckDBStore returns.
+        """Hybrid keyword + semantic search (BM25/trgm + cosine, RRF fusion).
+
+        PostgreSQL then reranks by default (decision 2 of the
+        chunking/embedding plan), unless rerank=False. Multiuser PostgreSQL
+        skips that optional cross-encoder unless SB_MULTIUSER_RERANK=1; its
+        lexical and semantic retrieval plus RRF fusion remain active.
+        DuckDBStore ignores rerank — ordinary RRF order is already what it
+        returns.
         """
         ...
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import hashlib
 import json
+import os
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -64,6 +65,7 @@ _SCORE_SQL = """
 """.strip()
 
 _SYNC_BATCH_SIZE = 50
+_MULTIUSER_RERANK_ENV = "SB_MULTIUSER_RERANK"
 
 
 def _vec_to_pg(vec: list[float]) -> list[float]:
@@ -1126,12 +1128,19 @@ class PostgresStore:
         then reranked (decision 2).
 
         rerank: pass the fused candidates through the reranker before
-        truncating to `limit`. Default on — the A/B experiment
+        truncating to `limit`. Default on for legacy/single-user deployments — the A/B experiment
         (decisions/second-brain-reranker-ab對照實驗結果-決策2.md) found a
         consistent, substantial ranking improvement. Fails soft: an
         unreachable reranker leaves RRF order unchanged rather than erroring
         (see reranker.rerank()). Callers that want the pre-rerank baseline
         (e.g. tests, or a future A/B comparison) pass rerank=False.
+
+        Multiuser deployments stop at lexical + semantic + RRF ranking unless
+        ``SB_MULTIUSER_RERANK=1`` explicitly opts into the cross-encoder. A
+        shared service has a bounded query dispatcher, while cross-encoder
+        latency grows with the candidate/chunk workload; making that optional
+        prevents one local reranker from consuming the whole request deadline.
+        The four retrieval lists and their RRF fusion are unchanged.
 
         Fusion strategy (fixed 2026-09-04, the "back_half_1" retrieval-gap
         candidate from the plan note): all four ranked lists — notes-BM25,
@@ -1188,9 +1197,13 @@ class PostgresStore:
                 if p not in penalty_map:
                     penalty_map[p] = _vdb._path_penalty(p) if apply_path_penalty else 1.0
 
+        use_reranker = rerank and (
+            not self._multiuser or os.environ.get(_MULTIUSER_RERANK_ENV) == "1"
+        )
+
         # Reranking needs a wider funnel than the final `limit` — it can only
         # promote candidates that are already in the pool, not find new ones.
-        funnel_limit = max(limit * 2, 20) if rerank else limit
+        funnel_limit = max(limit * 2, 20) if use_reranker else limit
         scored = sorted(
             rrf_scores.items(),
             key=lambda x: x[1] * penalty_map[x[0]],
@@ -1220,7 +1233,7 @@ class PostgresStore:
             if p in meta
         ]
 
-        if rerank and results:
+        if use_reranker and results:
             query_vec = request_embedding(query, _vdb.embed_text)
             if query_vec:
                 chunks_by_path = self._top_chunks_for_paths(
