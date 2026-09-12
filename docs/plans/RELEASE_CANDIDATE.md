@@ -1,6 +1,6 @@
 # 多人 managed intake 本機驗證與發布候選 Runbook
 
-狀態：**0.3.0 包裝契約已更新；正式候選仍被依賴一致性與 clean-commit 重建 gate 阻擋**  
+狀態：**0.3.0 包裝與獨立依賴 gate 已通過；正式候選仍待 clean-commit 重建與環境驗收**
 日期：2026-09-12  
 本文件只描述候選建立、隔離驗證、部署驗收與 rollback。它不授權 commit、merge、push、安裝正式套件、修改正式 DB／service／key、啟動排程或呼叫付費模型。
 
@@ -21,7 +21,7 @@
 
 1. 正式發布分別從已審閱乾淨 commit 建立兩個 wheel。本輪先建立明確列出逐檔 SHA 的 dirty-source 隔離 snapshot，供本機驗證；它不是正式發布 commit。
 2. 對每個 wheel 計算 SHA-256，建立只含檔名、版本、候選 commit、SHA-256、Python 版本與建置命令的 manifest。
-3. 在全新隔離 venv 安裝兩個 wheel 與 `uv.lock` 的 runtime set，且不得以 `.pth` 或 `PYTHONPATH` 共用 test site。本輪已建立版本化 venv，但 `pip check` 發現既有 lock override 的 `magika==1.0.3` 與 `markitdown==0.1.7` 宣告的 `magika~=0.6.1` 不一致，因此仍不可接受。確認 `lcdda-ingest` 不會因 Second Brain 未在 PyPI 而偷偷改變核心 dependency contract。
+3. 在全新隔離 venv 安裝兩個 wheel 與 `uv.lock` 的 runtime set，且不得以 `.pth` 或 `PYTHONPATH` 共用 test site。本輪已移除與 `markitdown==0.1.7` metadata 衝突的全域 `magika>=1.0.0` override，將 Python 支援誠實限定為 3.11–3.13，並解析到相容的 `magika==0.6.3`；版本化 venv 的 `pip check` 及本機 Markdown/PDF 轉換已通過。確認 `lcdda-ingest` 不會因 Second Brain 未在 PyPI 而偷偷改變核心 dependency contract。
 4. 從不含 source checkout 的工作目錄執行 packaging smoke、module import 與 managed health probe，證明實際載入 wheel 內容。
 5. server 與 worker 必須使用同一個 venv/interpreter。記錄 server 算出的 `lcdda_ingest.managed_health.artifact_revision()`，再以 `ManagedSettings.worker_environment()` 呼叫 `verify_worker()`；兩者必須完全相同。
 6. 啟動後抽查一個 worker 的 interpreter、已安裝 wheel SHA 與 `LCDDA_ARTIFACT_REVISION`。任一不一致即停止 admission，不得以調整 `PYTHONPATH` 指回 source checkout 規避。
@@ -34,7 +34,7 @@
 | server artifact revision | 中繼 probe：`35f4fc1810151e51d40780a910de427dea2fe87770938c664943e10a1c05bda6`；後續安全修改已使它過期 |
 | worker artifact revision | 中繼 probe 與 server 相同；clean-commit wheel 仍須重跑 |
 | wheel smoke output | 中繼 probe：`wheel_imports=true`、`versions_match=true`、`auth_context_registered=true`、`query_event_migration_packaged=true`、12 個 managed modules 可從新 venv 匯入、`worker_revision_match=true` |
-| 獨立 runtime venv | `/Users/lab_center/.venvs/lcdda-0.3.0-20260912`；135 packages；無 `.pth`/source checkout；`pip check` exit 1，故未通過 |
+| 獨立 runtime venv | `/Users/lab_center/.venvs/lcdda-0.3.0-20260912`；135 packages；無 `.pth`/source checkout；`pip check` exit 0；本機 Markdown/PDF 轉換通過且未呼叫外部模型 |
 
 ## 3. 隔離驗證環境
 
@@ -54,7 +54,7 @@
 | SB 一般 suite | 見 execution trace 完整環境命令 | 0 | 950 passed / 97 skipped | 主代理 |
 | lcdda 一般 suite | SB test interpreter + LC tests | 0 | 311 passed；packaging 另 3 passed | 主代理 |
 | 隔離 wheel | 中繼 manifest / wheel-probe.log | 0 | 雙 wheel 版本、auth_context、telemetry migration、managed imports 與 worker revision 通過；dirty snapshot 已被後續安全修改取代 | 主代理 |
-| 版本化 venv 依賴 | `versioned-venv-verification.json` / `uv pip check` | 1 | `markitdown 0.1.7` 要求 `magika~=0.6.1`，但權威 lock override 安裝 `magika 1.0.3`；候選停止 | 主代理 |
+| 版本化 venv 依賴 | `versioned-venv-verification.json` / `uv pip check` | 0 | 135 packages 相容；`markitdown 0.1.7` + `magika 0.6.3`；Markdown/PDF 本機轉換通過，無外部模型 | 主代理 |
 | disposable PG/RLS | 12 檔 --run-postgres suite | 0 | 125 passed（含 E2E/restore/retention） | 主代理 |
 | ASGI composition | managed HTTP/server suite | 0 | 含 311 suite；upload deadline/late-finalize/ops 拒絕 | 主代理 |
 | worker/lease/RSS | heartbeat/watchdog/owned-worker suite | 0 | 含 311 suite；真 macOS subprocess 測試 | 主代理 |
@@ -144,7 +144,7 @@ Rollback 演練證據與 RTO/RPO：`[待填]`。
 ## 9. 尚未補齊的部署項目
 
 - 舊 0.2.0 證據已過期。0.3.0 中繼 dirty snapshot 已證明 packaging/import 路徑，但後續安全修改使其不再對應目前 source；仍須由審閱後 clean commit 重建正式候選。
-- 獨立版本化 venv 已依 `uv.lock` 安裝 135 個 runtime packages 與雙 wheel，但 `pip check` 的 `markitdown`／`magika` 不相容尚未解決，不得把 import smoke 通過解讀為 dependency gate 通過。
+- 獨立版本化 venv 已依 `uv.lock` 安裝 135 個 runtime packages 與雙 wheel，`pip check`、Markdown/PDF 本機轉換及 import smoke 均通過。Git 歷史顯示舊 override 是為 Python 3.14 的 wheel 缺口而加；本版改為不宣告支援 Python 3.14，避免用 override 製造 metadata 不一致。
 - 40 分鐘矩陣與 30 分鐘 mixed 已完成合成 gate；正式 PG/HTTP/模型/NAS 壓测仍待部署環境驗收。
 - 正式 application role、RLS migration、grants/policies 與 rollback SQL 尚未在 staging 演練。
 - 正式 runtime/NAS 的路徑 ownership、ACL、free-space 門檻、備份、恢復、I/O latency 與 page-image 容量尚未驗證。
