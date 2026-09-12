@@ -517,6 +517,10 @@ def _extract_semantic_keywords_via_gemini(content: str) -> list[str]:
     tier was deprecated. Returns empty list if extraction fails — never raises.
     （函式名保留向後相容，實際後端已非 Gemini。）
     """
+    # This legacy helper can fall back to authenticated host CLIs. Multiuser
+    # notes must not leave the service through an implicit background call.
+    if _visibility.multiuser_enabled():
+        return []
     prompt = (
         "從以下文章中提取最多10個繁體中文語義關鍵字（同義詞、概念、主題），"
         "以JSON array格式回傳，例如：[\"關鍵字1\",\"關鍵字2\"]，只輸出JSON array，不要其他文字。\n\n"
@@ -549,6 +553,11 @@ def _run_keyword_enrichment_async(dest: Path, content: str) -> None:
 
     Returns immediately — never blocks the caller.
     """
+    # Also stop before spawning: the legacy worker is unbounded and does not
+    # propagate the request's identity/deadline context to its thread.
+    if _visibility.multiuser_enabled():
+        return
+
     def _worker():
         try:
             sk = _extract_semantic_keywords_via_gemini(content)
